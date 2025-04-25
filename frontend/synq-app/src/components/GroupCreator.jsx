@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import MapView from './MapView';
+import MapView from '../MapView';
 import geocodeAddress from './geocodeAddress';
 
 const GroupCreator = () => {

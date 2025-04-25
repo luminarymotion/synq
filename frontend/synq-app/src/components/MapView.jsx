@@ -11,7 +11,7 @@ import { fromLonLat, toLonLat } from 'ol/proj';
 import { boundingExtent } from 'ol/extent';
 import { defaults as defaultControls } from 'ol/control';
 import { LineString } from 'ol/geom';
-import { calculateRoute, getTrafficInfo } from './services/routeService';
+import { calculateRoute, getTrafficInfo } from './routeService';
 
 function MapView({ users, destination, userLocation, onSetDestinationFromMap }) {
   const mapRef = useRef();
