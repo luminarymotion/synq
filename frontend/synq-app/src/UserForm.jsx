@@ -5,12 +5,16 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   const [destinationSuggestions, setDestinationSuggestions] = useState([]);
   const [userLocationSuggestions, setUserLocationSuggestions] = useState([]);
   const [showModal, setShowModal] = useState(false);
+  const [lastSelectedAddress, setLastSelectedAddress] = useState('');
+  const [lastSelectedDestination, setLastSelectedDestination] = useState('');
+  const [lastSelectedUserLocation, setLastSelectedUserLocation] = useState('');
   const typingTimeout = useRef(null);
   const destinationTimeout = useRef(null);
   const userLocationTimeout = useRef(null);
+  const addressTimeout = useRef(null);
 
   useEffect(() => {
-    if (!form.address || form.address.length < 3) {
+    if (!form.address || form.address.length < 3 || form.address === lastSelectedAddress) {
       setSuggestions([]);
       return;
     }
@@ -33,10 +37,10 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }, 300); // debounce
 
     return () => clearTimeout(typingTimeout.current);
-  }, [form.address]);
+  }, [form.address, lastSelectedAddress]);
 
   useEffect(() => {
-    if (!form.destination || form.destination.length < 3) {
+    if (!form.destination || form.destination.length < 3 || form.destination === lastSelectedDestination) {
       setDestinationSuggestions([]);
       return;
     }
@@ -59,10 +63,10 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }, 300); // debounce
 
     return () => clearTimeout(destinationTimeout.current);
-  }, [form.destination]);
+  }, [form.destination, lastSelectedDestination]);
 
   useEffect(() => {
-    if (!form.userLocation || form.userLocation.length < 3) {
+    if (!form.userLocation || form.userLocation.length < 3 || form.userLocation === lastSelectedUserLocation) {
       setUserLocationSuggestions([]);
       return;
     }
@@ -85,10 +89,12 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }, 300); // debounce
 
     return () => clearTimeout(userLocationTimeout.current);
-  }, [form.userLocation]);
+  }, [form.userLocation, lastSelectedUserLocation]);
 
   const handleSelect = (place) => {
-    onChange({ target: { name: 'address', value: place.display_name } });
+    const selectedAddress = place.display_name;
+    setLastSelectedAddress(selectedAddress);
+    onChange({ target: { name: 'address', value: selectedAddress } });
     setSuggestions([]);
     if (typingTimeout.current) {
       clearTimeout(typingTimeout.current);
@@ -96,7 +102,9 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   };
 
   const handleDestinationSelect = (place) => {
-    onChange({ target: { name: 'destination', value: place.display_name } });
+    const selectedDestination = place.display_name;
+    setLastSelectedDestination(selectedDestination);
+    onChange({ target: { name: 'destination', value: selectedDestination } });
     setDestinationSuggestions([]);
     if (destinationTimeout.current) {
       clearTimeout(destinationTimeout.current);
@@ -107,13 +115,25 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   };
 
   const handleUserLocationSelect = (place) => {
-    onChange({ target: { name: 'userLocation', value: place.display_name } });
+    const selectedLocation = place.display_name;
+    setLastSelectedUserLocation(selectedLocation);
+    onChange({ target: { name: 'userLocation', value: selectedLocation } });
     setUserLocationSuggestions([]);
     if (userLocationTimeout.current) {
       clearTimeout(userLocationTimeout.current);
     }
     if (onUserLocationChange) {
-      onUserLocationChange(place.display_name);
+      onUserLocationChange(selectedLocation);
+    }
+  };
+
+  const handleAddressSelect = (place) => {
+    const selectedAddress = place.display_name;
+    setLastSelectedAddress(selectedAddress);
+    onChange({ target: { name: 'address', value: selectedAddress } });
+    setSuggestions([]);
+    if (addressTimeout.current) {
+      clearTimeout(addressTimeout.current);
     }
   };
 
@@ -121,6 +141,30 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     e.preventDefault();
     onSubmit(e);
     setShowModal(false);
+    // Clear all suggestions and last selected values
+    setDestinationSuggestions([]);
+    setUserLocationSuggestions([]);
+    setSuggestions([]);
+    setLastSelectedAddress('');
+    setLastSelectedDestination('');
+    setLastSelectedUserLocation('');
+  };
+
+  // Handle input focus to clear last selected values
+  const handleInputFocus = (field) => {
+    switch (field) {
+      case 'address':
+        setLastSelectedAddress('');
+        break;
+      case 'destination':
+        setLastSelectedDestination('');
+        break;
+      case 'userLocation':
+        setLastSelectedUserLocation('');
+        break;
+      default:
+        break;
+    }
   };
 
   return (
@@ -138,6 +182,7 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
               name="userLocation"
               value={form.userLocation || ''}
               onChange={onChange}
+              onFocus={() => handleInputFocus('userLocation')}
               autoComplete="off"
             />
           </div>
@@ -171,15 +216,9 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
               name="destination"
               value={form.destination || ''}
               onChange={onChange}
+              onFocus={() => handleInputFocus('destination')}
               autoComplete="off"
             />
-            <button 
-              className="btn btn-primary" 
-              type="button"
-              onClick={() => setShowModal(true)}
-            >
-              Add User
-            </button>
           </div>
           {destinationSuggestions.length > 0 && (
             <ul className="list-group position-absolute w-100 shadow-sm" style={{ zIndex: 1000, maxHeight: '200px', overflowY: 'auto' }}>
@@ -196,6 +235,19 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
             </ul>
           )}
         </div>
+      </div>
+
+      {/* Add User */}
+      <div className="row g-3 mb-4 p-3 bg-light rounded shadow-sm">
+        <div className="mt-3">
+              <button 
+                className="btn btn-primary w-100" 
+                type="button"
+                onClick={() => setShowModal(true)}
+              >
+                Create A Group Ride
+              </button>
+            </div>
       </div>
 
       {/* Add User Modal */}
@@ -250,6 +302,7 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
                       name="address"
                       value={form.address}
                       onChange={onChange}
+                      onFocus={() => handleInputFocus('address')}
                       autoComplete="off"
                       required
                     />

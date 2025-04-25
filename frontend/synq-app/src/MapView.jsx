@@ -20,6 +20,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
   const [route, setRoute] = useState(null);
   const [trafficData, setTrafficData] = useState(null);
   const [error, setError] = useState(null);
+  const [routeDetails, setRouteDetails] = useState(null);
 
   useEffect(() => {
     // Use CartoDB's Voyager tiles for a modern look
@@ -67,28 +68,163 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       if (userLocation && destination) {
         try {
           setError(null);
-          const routeData = await calculateRoute(userLocation, destination);
+          // Get all passengers from the users array
+          const passengers = users.filter(user => user.role === 'passenger');
+          console.log('Calculating route with:', { userLocation, destination, passengers });
+          
+          // If there are no passengers, don't calculate route
+          if (passengers.length === 0) {
+            setRoute(null);
+            setRouteDetails(null);
+            return;
+          }
+
+          const routeData = await calculateRoute(userLocation, destination, passengers);
+          console.log('Received route data:', routeData);
+          
+          if (!routeData || !routeData.features || !routeData.features[0]) {
+            throw new Error('Invalid route data received');
+          }
+
           setRoute(routeData);
 
-          // Try to get traffic data, but don't fail if it doesn't work
-          try {
-            const traffic = await getTrafficInfo(routeData);
-            setTrafficData(traffic);
-          } catch (trafficError) {
-            console.warn('Could not get traffic data:', trafficError);
-            // Don't set error state for traffic data failure
+          // Calculate route details
+          const segments = routeData.features[0].properties.segments;
+          console.log('Route segments:', segments);
+
+          // Get the optimized passenger order from the route coordinates
+          const optimizedPassengers = [];
+          if (routeData.features[0].geometry.coordinates.length > 2) {
+            // Skip first (start) and last (destination) coordinates
+            const passengerCoordinates = routeData.features[0].geometry.coordinates.slice(1, -1);
+            
+            console.log('Passenger coordinates from route:', passengerCoordinates);
+            console.log('Available passengers:', passengers);
+            
+            // Create a map of passenger coordinates for easier matching
+            const passengerMap = new Map();
+            passengers.forEach(passenger => {
+              // Use a more precise key for matching
+              const key = `${passenger.lng.toFixed(4)},${passenger.lat.toFixed(4)}`;
+              passengerMap.set(key, passenger);
+              console.log(`Added passenger to map: ${passenger.name} at ${key}`);
+            });
+
+            // Match coordinates to passengers
+            passengerCoordinates.forEach((coord, index) => {
+              const [lng, lat] = coord;
+              console.log(`Processing coordinate ${index}: [${lng}, ${lat}]`);
+              
+              // Try exact match first
+              let key = `${lng.toFixed(4)},${lat.toFixed(4)}`;
+              let passenger = passengerMap.get(key);
+
+              // If no exact match, try finding the closest passenger
+              if (!passenger) {
+                let minDistance = Infinity;
+                let closestPassenger = null;
+
+                passengers.forEach(p => {
+                  const distance = Math.sqrt(
+                    Math.pow(p.lng - lng, 2) + Math.pow(p.lat - lat, 2)
+                  );
+                  if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPassenger = p;
+                  }
+                });
+
+                console.log(`Closest passenger distance: ${minDistance}`);
+                // Increased threshold for matching
+                if (minDistance < 0.001) { // More lenient threshold
+                  passenger = closestPassenger;
+                  console.log(`Matched to closest passenger: ${passenger?.name}`);
+                }
+              }
+
+              if (passenger) {
+                console.log(`Matched passenger: ${passenger.name} to coordinate ${index}`);
+                optimizedPassengers.push(passenger);
+              } else {
+                console.log(`No passenger matched for coordinate ${index}`);
+              }
+            });
           }
+
+          // If no passengers were matched, use the original passenger order
+          if (optimizedPassengers.length === 0 && passengers.length > 0) {
+            console.log('No passengers matched, using original order');
+            optimizedPassengers.push(...passengers);
+          }
+
+          console.log('Final optimized passenger order:', optimizedPassengers);
+
+          // Calculate cumulative times for each segment
+          let cumulativeTime = 0;
+          const segmentsWithCumulativeTime = segments.map((segment, index) => {
+            cumulativeTime += segment.duration;
+            return {
+              ...segment,
+              cumulativeTime
+            };
+          });
+
+          // Create route details with the correct passenger order
+          const details = {
+            totalDistance: segments.reduce((sum, seg) => sum + seg.distance, 0),
+            totalDuration: segments.reduce((sum, seg) => sum + seg.duration, 0),
+            segments: []
+          };
+
+          // Add the first segment with the first passenger
+          if (optimizedPassengers.length > 0) {
+            details.segments.push({
+              distance: segments[0].distance,
+              duration: segments[0].duration,
+              cumulativeTime: segmentsWithCumulativeTime[0].cumulativeTime,
+              passenger: optimizedPassengers[0],
+              isDestination: false,
+              type: 'pickup'
+            });
+          }
+
+          // Add the middle segments with the remaining passengers
+          for (let i = 1; i < segments.length - 1; i++) {
+            const passenger = optimizedPassengers[i];
+            console.log(`Creating segment ${i} with passenger:`, passenger);
+            details.segments.push({
+              distance: segments[i].distance,
+              duration: segments[i].duration,
+              cumulativeTime: segmentsWithCumulativeTime[i].cumulativeTime,
+              passenger: passenger || null,
+              isDestination: false,
+              type: passenger ? 'pickup' : 'travel'
+            });
+          }
+
+          // Add the final destination segment
+          details.segments.push({
+            distance: segments[segments.length - 1].distance,
+            duration: segments[segments.length - 1].duration,
+            cumulativeTime: segmentsWithCumulativeTime[segments.length - 1].cumulativeTime,
+            passenger: null,
+            isDestination: true,
+            type: 'destination'
+          });
+
+          console.log('Final route details:', details);
+          setRouteDetails(details);
         } catch (error) {
           console.error('Error calculating route:', error);
-          setError(error.message);
+          setError(error.message || 'Failed to calculate route');
           setRoute(null);
-          setTrafficData(null);
+          setRouteDetails(null);
         }
       }
     };
 
     calculateAndDisplayRoute();
-  }, [userLocation, destination]);
+  }, [userLocation, destination, users]);
 
   useEffect(() => {
     const source = vectorSourceRef.current;
@@ -109,9 +245,9 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       userLocationFeature.setStyle(
         new Style({
           image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/4CAF50/marker.png', // Green marker for user location
+            src: 'https://img.icons8.com/ios-filled/50/4CAF50/marker.png',
             scale: 0.8,
-            anchor: [0.5, 1], // Center the marker on the point
+            anchor: [0.5, 1],
           }),
         })
       );
@@ -119,18 +255,19 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       features.push(userLocationFeature);
     }
 
-    // Add users
+    // Add users with different styles based on their role
     users.forEach((user) => {
       const userFeature = new Feature({
         geometry: new Point(fromLonLat([user.lng, user.lat])),
         name: user.name,
       });
 
-      // Create a custom style for each user
       const userStyle = new Style({
         image: new CircleStyle({
           radius: 8,
-          fill: new Fill({ color: user.color }),
+          fill: new Fill({ 
+            color: user.role === 'driver' ? '#2196F3' : user.color
+          }),
           stroke: new Stroke({ 
             color: '#ffffff',
             width: 2
@@ -152,9 +289,9 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       destFeature.setStyle(
         new Style({
           image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/fa314a/marker.png', // Red destination pin
+            src: 'https://img.icons8.com/ios-filled/50/fa314a/marker.png',
             scale: 0.8,
-            anchor: [0.5, 1], // Center the marker on the point
+            anchor: [0.5, 1],
           }),
         })
       );
@@ -165,17 +302,19 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
     // Add route if available
     if (route && route.features && route.features[0]) {
       try {
+        console.log('Adding route to map:', route.features[0].geometry.coordinates);
         const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
         const routeFeature = new Feature({
           geometry: new LineString(coordinates),
           name: 'Route',
         });
 
-        // Style the route based on traffic data
+        // Style the route with a more prominent line
         const routeStyle = new Style({
           stroke: new Stroke({
-            color: trafficData ? getTrafficColor(trafficData) : '#3388ff',
-            width: 6,
+            color: '#2196F3',
+            width: 8,
+            lineDash: [5, 5],
           }),
         });
 
@@ -199,7 +338,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
       map.getView().setZoom(12);
     }
-  }, [users, destination, userLocation, route, trafficData]);
+  }, [users, destination, userLocation, route]);
 
   // Helper function to get color based on traffic data
   const getTrafficColor = (trafficData) => {
@@ -220,61 +359,150 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
     }
   };
 
+  // Helper function to format duration
+  const formatDuration = (seconds) => {
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) {
+      return `${minutes} min`;
+    }
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return `${hours}h ${remainingMinutes}min`;
+  };
+
+  // Helper function to format distance
+  const formatDistance = (meters) => {
+    const kilometers = meters / 1000;
+    return `${kilometers.toFixed(1)} km`;
+  };
+
   return (
-    <div className="map-container">
-      <div
-        ref={mapRef}
-        style={{
-          width: '100%',
-          height: '500px',
-          border: '1px solid #ccc',
-          marginTop: '20px',
-          borderRadius: '12px',
-          boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-        }}
-      />
-      {error && (
-        <div className="error-message">
-          <p>{error}</p>
-        </div>
-      )}
-      {route && route.features && route.features[0] && (
-        <div className="route-info">
-          <p>Distance: {(route.features[0].properties.segments[0].distance / 1000).toFixed(1)} km</p>
-          <p>Duration: {Math.round(route.features[0].properties.segments[0].duration / 60)} minutes</p>
+    <div className="map-and-details-container">
+      <div className="map-section">
+        <div
+          ref={mapRef}
+          style={{
+            width: '100%',
+            height: '500px',
+            border: '1px solid #ccc',
+            borderRadius: '12px',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+          }}
+        />
+        {error && (
+          <div className="error-message">
+            <p>{error}</p>
+          </div>
+        )}
+      </div>
+      {routeDetails && (
+        <div className="route-details-section">
+          <div className="route-info">
+            <h5>Optimized Route Details</h5>
+            <div className="total-info">
+              <p>Total Distance: {formatDistance(routeDetails.totalDistance)}</p>
+              <p>Total Duration: {formatDuration(routeDetails.totalDuration)}</p>
+            </div>
+            <div className="segments-info">
+              <div className="segment start">
+                <h6>Starting Point</h6>
+                <p>Your Location</p>
+              </div>
+              {routeDetails.segments.map((segment, index) => (
+                <div key={index} className="segment">
+                  {segment.type === 'pickup' && segment.passenger ? (
+                    <div>
+                      <h6>Pickup {index + 1}: {segment.passenger.name}</h6>
+                      <p>Distance: {formatDistance(segment.distance)}</p>
+                      <p>Time to Pickup: {formatDuration(segment.duration)}</p>
+                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
+                      <p>Address: {segment.passenger.address}</p>
+                    </div>
+                  ) : segment.type === 'travel' ? (
+                    <div>
+                      <h6>Travel to Next Stop</h6>
+                      <p>Distance: {formatDistance(segment.distance)}</p>
+                      <p>Duration: {formatDuration(segment.duration)}</p>
+                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
+                    </div>
+                  ) : segment.type === 'destination' ? (
+                    <div>
+                      <h6>Final Destination</h6>
+                      <p>Distance: {formatDistance(segment.distance)}</p>
+                      <p>Time to Destination: {formatDuration(segment.duration)}</p>
+                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
       <style jsx>{`
-        .map-container {
+        .map-and-details-container {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          margin-top: 20px;
+          width: 100%;
+        }
+        .map-section {
+          width: 100%;
           position: relative;
         }
-        .map-container :global(.ol-control) {
-          background-color: rgba(255, 255, 255, 0.9);
-          border-radius: 4px;
-          padding: 2px;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        .map-container :global(.ol-zoom) {
-          top: 10px;
-          right: 10px;
-          left: auto;
-        }
-        .map-container :global(.ol-attribution) {
-          bottom: 5px;
-          right: 5px;
-          background-color: rgba(255, 255, 255, 0.9);
-          border-radius: 4px;
-          padding: 2px 5px;
+        .route-details-section {
+          width: 100%;
+          max-width: 800px;
+          margin: 0 auto;
+          padding: 0 20px;
         }
         .route-info {
-          position: absolute;
-          top: 10px;
-          left: 10px;
-          background-color: rgba(255, 255, 255, 0.9);
-          padding: 10px;
-          border-radius: 4px;
+          background-color: white;
+          padding: 20px;
+          border-radius: 12px;
           box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          z-index: 1000;
+        }
+        .route-info h5 {
+          margin-top: 0;
+          margin-bottom: 15px;
+          color: #333;
+          font-size: 1.2em;
+        }
+        .total-info {
+          margin-bottom: 20px;
+          padding-bottom: 15px;
+          border-bottom: 1px solid #eee;
+        }
+        .total-info p {
+          margin: 8px 0;
+          font-weight: 500;
+          font-size: 1.1em;
+        }
+        .segments-info {
+          display: flex;
+          flex-direction: column;
+          gap: 15px;
+        }
+        .segment {
+          padding: 15px;
+          background-color: #f8f9fa;
+          border-radius: 8px;
+          border: 1px solid #eee;
+        }
+        .segment.start {
+          background-color: #e3f2fd;
+          border-color: #2196F3;
+        }
+        .segment h6 {
+          margin: 0 0 10px 0;
+          color: #2196F3;
+          font-size: 1.1em;
+          font-weight: 600;
+        }
+        .segment p {
+          margin: 5px 0;
+          color: #666;
         }
         .error-message {
           position: absolute;
@@ -286,6 +514,8 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           border-radius: 4px;
           box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
           z-index: 1000;
+          max-width: 300px;
+          word-wrap: break-word;
         }
       `}</style>
     </div>
