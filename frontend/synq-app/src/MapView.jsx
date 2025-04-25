@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import 'ol/ol.css';
 import { Map, View } from 'ol';
 import { OSM } from 'ol/source';
@@ -10,11 +10,16 @@ import { Style, Fill, Stroke, Circle as CircleStyle, Icon } from 'ol/style';
 import { fromLonLat, toLonLat } from 'ol/proj';
 import { boundingExtent } from 'ol/extent';
 import { defaults as defaultControls } from 'ol/control';
+import { LineString } from 'ol/geom';
+import { calculateRoute, getTrafficInfo } from './services/routeService';
 
 function MapView({ users, destination, userLocation, onSetDestinationFromMap }) {
   const mapRef = useRef();
   const vectorSourceRef = useRef(new VectorSource());
   const mapInstanceRef = useRef(null);
+  const [route, setRoute] = useState(null);
+  const [trafficData, setTrafficData] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     // Use CartoDB's Voyager tiles for a modern look
@@ -55,6 +60,35 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       map.setTarget(null);
     };
   }, []);
+
+  // Calculate route when user location or destination changes
+  useEffect(() => {
+    const calculateAndDisplayRoute = async () => {
+      if (userLocation && destination) {
+        try {
+          setError(null);
+          const routeData = await calculateRoute(userLocation, destination);
+          setRoute(routeData);
+
+          // Try to get traffic data, but don't fail if it doesn't work
+          try {
+            const traffic = await getTrafficInfo(routeData);
+            setTrafficData(traffic);
+          } catch (trafficError) {
+            console.warn('Could not get traffic data:', trafficError);
+            // Don't set error state for traffic data failure
+          }
+        } catch (error) {
+          console.error('Error calculating route:', error);
+          setError(error.message);
+          setRoute(null);
+          setTrafficData(null);
+        }
+      }
+    };
+
+    calculateAndDisplayRoute();
+  }, [userLocation, destination]);
 
   useEffect(() => {
     const source = vectorSourceRef.current;
@@ -128,6 +162,30 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       features.push(destFeature);
     }
 
+    // Add route if available
+    if (route && route.features && route.features[0]) {
+      try {
+        const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
+        const routeFeature = new Feature({
+          geometry: new LineString(coordinates),
+          name: 'Route',
+        });
+
+        // Style the route based on traffic data
+        const routeStyle = new Style({
+          stroke: new Stroke({
+            color: trafficData ? getTrafficColor(trafficData) : '#3388ff',
+            width: 6,
+          }),
+        });
+
+        routeFeature.setStyle(routeStyle);
+        features.push(routeFeature);
+      } catch (error) {
+        console.error('Error adding route to map:', error);
+      }
+    }
+
     source.addFeatures(features);
 
     if (features.length > 0) {
@@ -141,7 +199,26 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
       map.getView().setZoom(12);
     }
-  }, [users, destination, userLocation]);
+  }, [users, destination, userLocation, route, trafficData]);
+
+  // Helper function to get color based on traffic data
+  const getTrafficColor = (trafficData) => {
+    if (!trafficData || !trafficData.features || !trafficData.features[0]) {
+      return '#3388ff'; // Default blue
+    }
+    // This is a simple example - you might want to implement more sophisticated logic
+    const trafficLevel = trafficData.features[0].properties.traffic_level;
+    switch (trafficLevel) {
+      case 'low':
+        return '#4CAF50'; // Green
+      case 'medium':
+        return '#FFC107'; // Yellow
+      case 'high':
+        return '#F44336'; // Red
+      default:
+        return '#3388ff'; // Blue
+    }
+  };
 
   return (
     <div className="map-container">
@@ -156,6 +233,17 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
         }}
       />
+      {error && (
+        <div className="error-message">
+          <p>{error}</p>
+        </div>
+      )}
+      {route && route.features && route.features[0] && (
+        <div className="route-info">
+          <p>Distance: {(route.features[0].properties.segments[0].distance / 1000).toFixed(1)} km</p>
+          <p>Duration: {Math.round(route.features[0].properties.segments[0].duration / 60)} minutes</p>
+        </div>
+      )}
       <style jsx>{`
         .map-container {
           position: relative;
@@ -177,6 +265,27 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           background-color: rgba(255, 255, 255, 0.9);
           border-radius: 4px;
           padding: 2px 5px;
+        }
+        .route-info {
+          position: absolute;
+          top: 10px;
+          left: 10px;
+          background-color: rgba(255, 255, 255, 0.9);
+          padding: 10px;
+          border-radius: 4px;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+          z-index: 1000;
+        }
+        .error-message {
+          position: absolute;
+          top: 10px;
+          left: 10px;
+          background-color: rgba(244, 67, 54, 0.9);
+          color: white;
+          padding: 10px;
+          border-radius: 4px;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+          z-index: 1000;
         }
       `}</style>
     </div>
