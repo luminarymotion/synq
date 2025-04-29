@@ -1,13 +1,14 @@
 import './App.css';
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import UserForm from './components/UserForm';
 import MapView from './components/MapView';
 import UserTable from './components/UserTable';
 import AccountCreation from './components/AccountCreation';
+import ProfileForm from './components/ProfileForm';
 import { auth } from './services/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 function App() {
   const [users, setUsers] = useState([]);
@@ -22,6 +23,7 @@ function App() {
   const [userLocation, setUserLocation] = useState(null);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const location = useLocation();
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -32,6 +34,11 @@ function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Debug current route
+  useEffect(() => {
+    console.log('Current location:', location.pathname);
+  }, [location]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -97,6 +104,14 @@ function App() {
     }
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
   if (loading) {
     return (
       <div className="container mt-5 text-center">
@@ -117,7 +132,15 @@ function App() {
         element={
           user ? (
             <div className="container my-4">
-              <h1 className="mb-4">Synq Route Optimizer</h1>
+              <div className="d-flex justify-content-between align-items-center mb-4">
+                <h1>Synq Route Optimizer</h1>
+                <button 
+                  className="btn btn-outline-danger"
+                  onClick={handleSignOut}
+                >
+                  Sign Out
+                </button>
+              </div>
               <UserForm 
                 form={form} 
                 onChange={handleChange} 
@@ -138,10 +161,13 @@ function App() {
           )
         } 
       />
+      <Route path="/signup" element={<AccountCreation />}>
+        <Route path="profile" element={<ProfileForm />} />
+      </Route>
       <Route 
-        path="/signup" 
+        path="*" 
         element={
-          user ? <Navigate to="/" replace /> : <AccountCreation />
+          user ? <Navigate to="/" replace /> : <Navigate to="/signup" replace />
         } 
       />
     </Routes>
