@@ -1,9 +1,14 @@
 import './App.css';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import 'bootstrap/dist/css/bootstrap.min.css';
-import UserForm from './UserForm';
-import MapView from './MapView';
-import UserTable from './UserTable';
+import UserForm from './components/UserForm';
+import MapView from './components/MapView';
+import UserTable from './components/UserTable';
+import AccountCreation from './components/AccountCreation';
+import ProfileForm from './components/ProfileForm';
+import { auth } from './services/firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 
 function App() {
   const [users, setUsers] = useState([]);
@@ -16,6 +21,24 @@ function App() {
   });
   const [destination, setDestination] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const location = useLocation();
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log('Auth state changed:', user);
+      setUser(user);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Debug current route
+  useEffect(() => {
+    console.log('Current location:', location.pathname);
+  }, [location]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -27,10 +50,9 @@ function App() {
     const response = await fetch(url);
     const data = await response.json();
     if (data.length > 0) {
-      // Extract the name of the establishment if possible, otherwise use full address
       const display_name = data[0].display_name;
       const nameParts = display_name.split(',');
-      const establishmentName = nameParts.length > 1 ? nameParts[0].trim() : display_name; // Extract first part as name
+      const establishmentName = nameParts.length > 1 ? nameParts[0].trim() : display_name;
       return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), address: establishmentName };
     }
     return null;
@@ -43,7 +65,7 @@ function App() {
 
     const coords = await geocodeAddress(address);
     if (coords) {
-      const color = `#${Math.floor(Math.random() * 16777215).toString(16)}`; // Generate random color
+      const color = `#${Math.floor(Math.random() * 16777215).toString(16)}`;
       setUsers((prevUsers) => [...prevUsers, { 
         name, 
         address: coords.address, 
@@ -58,7 +80,7 @@ function App() {
         destination: form.destination, 
         role: 'passenger',
         userLocation: form.userLocation 
-      }); // Reset form but keep destination and user location
+      });
     } else {
       alert('Address not found!');
     }
@@ -82,24 +104,73 @@ function App() {
     }
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="container mt-5 text-center">
+        <div className="spinner-border" role="status">
+          <span className="visually-hidden">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  console.log('Current user state:', user);
+  console.log('Current loading state:', loading);
+
   return (
-    <div className="container my-4">
-      <h1 className="mb-4">Synq Route Optimizer</h1>
-      <UserForm 
-        form={form} 
-        onChange={handleChange} 
-        onSubmit={addUser} 
-        onDestinationChange={handleDestinationChange}
-        onUserLocationChange={handleUserLocationChange}
+    <Routes>
+      <Route 
+        path="/" 
+        element={
+          user ? (
+            <div className="container my-4">
+              <div className="d-flex justify-content-between align-items-center mb-4">
+                <h1>Synq Route Optimizer</h1>
+                <button 
+                  className="btn btn-outline-danger"
+                  onClick={handleSignOut}
+                >
+                  Sign Out
+                </button>
+              </div>
+              <UserForm 
+                form={form} 
+                onChange={handleChange} 
+                onSubmit={addUser} 
+                onDestinationChange={handleDestinationChange}
+                onUserLocationChange={handleUserLocationChange}
+              />
+              <UserTable users={users} onDelete={handleDelete} />
+              <MapView 
+                users={users} 
+                destination={destination}
+                userLocation={userLocation}
+                onSetDestinationFromMap={(coords) => setDestination(coords)}
+              />
+            </div>
+          ) : (
+            <Navigate to="/signup" replace />
+          )
+        } 
       />
-      <UserTable users={users} onDelete={handleDelete} />
-      <MapView 
-        users={users} 
-        destination={destination}
-        userLocation={userLocation}
-        onSetDestinationFromMap={(coords) => setDestination(coords)}
+      <Route path="/signup" element={<AccountCreation />}>
+        <Route path="profile" element={<ProfileForm />} />
+      </Route>
+      <Route 
+        path="*" 
+        element={
+          user ? <Navigate to="/" replace /> : <Navigate to="/signup" replace />
+        } 
       />
-    </div>
+    </Routes>
   );
 }
 
