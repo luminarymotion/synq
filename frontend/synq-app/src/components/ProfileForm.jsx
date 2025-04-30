@@ -1,181 +1,124 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { auth } from '../services/firebase';
+import { RecaptchaVerifier, signInWithPhoneNumber } from 'firebase/auth';
 
-const ProfileForm = () => {
-  const navigate = useNavigate();
-  const [formData, setFormData] = useState({
-    username: '',
-    phoneNumber: ''
-  });
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+function ProfileForm() {
+  const [name, setName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [confirmationResult, setConfirmationResult] = useState(null);
+  const recaptchaContainer = useRef(null);
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+  useEffect(() => {
+    if (!window.recaptchaVerifier && recaptchaContainer.current) {
+      window.recaptchaVerifier = new RecaptchaVerifier(auth, recaptchaContainer.current, {
+        size: 'normal',
+        callback: () => console.log('reCAPTCHA resolved'),
+        'expired-callback': () => console.warn('reCAPTCHA expired'),
+      });
+
+      window.recaptchaVerifier.render().then((widgetId) => {
+        window.recaptchaWidgetId = widgetId;
+      });
+    }
+  }, []);
+
+  const formatPhoneNumber = (raw) => {
+    const digits = raw.replace(/\D/g, '');
+    return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
   };
 
-  const formatPhoneNumber = (value) => {
-    const numbers = value.replace(/\D/g, '');
-    if (numbers.length <= 3) {
-      return numbers;
-    } else if (numbers.length <= 6) {
-      return `(${numbers.slice(0, 3)}) ${numbers.slice(3)}`;
-    } else {
-      return `(${numbers.slice(0, 3)}) ${numbers.slice(3, 6)}-${numbers.slice(6, 10)}`;
+  const sendVerificationCode = async () => {
+    try {
+      const formattedNumber = formatPhoneNumber(phoneNumber);
+      const result = await signInWithPhoneNumber(auth, formattedNumber, window.recaptchaVerifier);
+      setConfirmationResult(result);
+      alert('Verification code sent!');
+    } catch (error) {
+      console.error('Error sending code:', error);
+      alert('Failed to send verification code. Please check the phone number format.');
     }
   };
 
-  const handlePhoneChange = (e) => {
-    const formattedNumber = formatPhoneNumber(e.target.value);
-    setFormData(prev => ({
-      ...prev,
-      phoneNumber: formattedNumber
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-
+  const verifyCode = async () => {
     try {
-      // TODO: Implement your own form submission logic here
-      console.log('Form submitted:', formData);
+      if (!confirmationResult) {
+        alert('No confirmation result. Please send the code first.');
+        return;
+      }
+
+      const result = await confirmationResult.confirm(verificationCode);
+      const user = result.user;
+      alert(`Phone number verified for ${user.phoneNumber}`);
     } catch (error) {
-      console.error('Error:', error);
-      setError('An error occurred. Please try again.');
-    } finally {
-      setLoading(false);
+      console.error('Error verifying code:', error);
+      alert('Invalid verification code.');
     }
   };
 
   return (
-    <div className="container vh-100 d-flex justify-content-center align-items-center">
-      <div className="card shadow-lg border-0" style={{ 
-        width: '100%', 
-        maxWidth: '400px',
-        borderRadius: '15px',
-        backgroundColor: '#ffffff'
-      }}>
-        <div className="card-body p-4 p-md-5">
-          <div className="text-center mb-4">
-            <h2 className="mb-2" style={{ 
-              color: '#2d3748',
-              fontWeight: '600'
-            }}>Create Your Account</h2>
-            <p className="text-muted" style={{ fontSize: '0.95rem' }}>
-              Choose a username and enter your phone number
-            </p>
-          </div>
+    <div className="container py-5 d-flex justify-content-center">
+      <div className="w-100" style={{ maxWidth: '600px' }}>
+        <div className="card shadow">
+          <div className="card-body p-4">
+            <h2 className="text-center mb-4">Profile Setup</h2>
 
-          {error && (
-            <div className="alert alert-danger" role="alert" style={{
-              borderRadius: '10px',
-              fontSize: '0.9rem'
-            }}>
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit}>
             <div className="mb-4">
-              <label htmlFor="username" className="form-label" style={{ 
-                color: '#4a5568',
-                fontSize: '0.95rem',
-                fontWeight: '500'
-              }}>Username</label>
+              <label htmlFor="name" className="form-label">Your Name</label>
               <input
+                id="name"
                 type="text"
-                className="form-control form-control-lg"
-                id="username"
-                name="username"
-                value={formData.username}
-                onChange={handleChange}
-                placeholder="Choose a username"
-                disabled={loading}
-                style={{
-                  borderRadius: '10px',
-                  border: '1px solid #e2e8f0',
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.95rem'
-                }}
+                className="form-control"
+                placeholder="Enter your name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
               />
             </div>
 
             <div className="mb-4">
-              <label htmlFor="phoneNumber" className="form-label" style={{ 
-                color: '#4a5568',
-                fontSize: '0.95rem',
-                fontWeight: '500'
-              }}>Phone Number</label>
+              <label htmlFor="phone" className="form-label">Phone Number</label>
               <input
+                id="phone"
                 type="tel"
-                className="form-control form-control-lg"
-                id="phoneNumber"
-                name="phoneNumber"
-                value={formData.phoneNumber}
-                onChange={handlePhoneChange}
-                placeholder="(555) 555-5555"
-                maxLength="14"
-                disabled={loading}
-                style={{
-                  borderRadius: '10px',
-                  border: '1px solid #e2e8f0',
-                  padding: '0.75rem 1rem',
-                  fontSize: '0.95rem'
-                }}
+                className="form-control"
+                placeholder="e.g. 4155552671"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
               />
-              <div className="form-text mt-2" style={{ fontSize: '0.85rem' }}>
-                Enter your 10-digit U.S. phone number
-              </div>
             </div>
 
-            <div className="d-grid gap-3">
-              <button
-                type="submit"
-                className="btn btn-primary btn-lg"
-                disabled={loading}
-                style={{
-                  borderRadius: '10px',
-                  padding: '0.75rem 1rem',
-                  fontSize: '1rem',
-                  fontWeight: '500',
-                  backgroundColor: '#4299e1',
-                  border: 'none',
-                  boxShadow: '0 2px 4px rgba(66, 153, 225, 0.2)'
-                }}
-              >
-                {loading ? 'Creating Account...' : 'Create Account'}
-              </button>
+            <button
+              onClick={sendVerificationCode}
+              className="btn btn-primary w-100 mb-4"
+            >
+              Send Verification Code
+            </button>
+
+            <div className="mb-4">
+              <label htmlFor="code" className="form-label">Verification Code</label>
+              <input
+                id="code"
+                type="text"
+                className="form-control"
+                placeholder="Enter verification code"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value)}
+              />
             </div>
 
-            <div className="d-grid gap-3 mt-3">
-              <button
-                type="button"
-                className="btn btn-outline-secondary btn-lg"
-                onClick={() => navigate('/signup')}
-                disabled={loading}
-                style={{
-                  borderRadius: '10px',
-                  padding: '0.75rem 1rem',
-                  fontSize: '1rem',
-                  fontWeight: '500',
-                  border: '1px solid #e2e8f0',
-                  color: '#4a5568'
-                }}
-              >
-                Back to Sign Up
-              </button>
-            </div>
-          </form>
+            <button
+              onClick={verifyCode}
+              className="btn btn-success w-100"
+            >
+              Verify Code
+            </button>
+
+            <div id="recaptcha-container" ref={recaptchaContainer} className="mt-4"></div>
+          </div>
         </div>
       </div>
     </div>
   );
-};
+}
 
-export default ProfileForm; 
+export default ProfileForm;
