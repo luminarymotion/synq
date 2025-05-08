@@ -1,145 +1,186 @@
-// // src/pages/SignUp.jsx
-// import { useState } from 'react';
-// import { auth, db, RecaptchaVerifier } from '../firebase';
-// import {
-//   signInWithPhoneNumber,
-//   onAuthStateChanged,
-// } from 'firebase/auth';
-// import {
-//   doc,
-//   setDoc,
-// } from 'firebase/firestore';
-
-// function SignUp() {
-//   const [step, setStep] = useState(1); // 1 = phone, 2 = code, 3 = name/role
-//   const [phone, setPhone] = useState('');
-//   const [code, setCode] = useState('');
-//   const [confirmationResult, setConfirmationResult] = useState(null);
-
-//   const [userData, setUserData] = useState({
-//     name: '',
-//     role: 'passenger',
-//   });
-
-//   const handlePhoneSubmit = async (e) => {
-//     e.preventDefault();
-
-//     window.recaptchaVerifier = new RecaptchaVerifier('recaptcha-container', {
-//       size: 'invisible',
-//       callback: () => {},
-//     }, auth);
-
-//     try {
-//       const confirmation = await signInWithPhoneNumber(auth, phone, window.recaptchaVerifier);
-//       setConfirmationResult(confirmation);
-//       setStep(2);
-//     } catch (err) {
-//       alert('Failed to send code. Check number format.');
-//       console.error(err);
-//     }
-//   };
-
-//   const handleCodeVerify = async (e) => {
-//     e.preventDefault();
-//     try {
-//       await confirmationResult.confirm(code);
-//       setStep(3);
-//     } catch (err) {
-//       alert('Invalid code');
-//       console.error(err);
-//     }
-//   };
-
-//   const handleFinalSubmit = async (e) => {
-//     e.preventDefault();
-
-//     const user = auth.currentUser;
-//     if (!user) return alert('User not signed in');
-
-//     await setDoc(doc(db, 'users', user.uid), {
-//       phone: user.phoneNumber,
-//       name: userData.name,
-//       role: userData.role,
-//       createdAt: Date.now(),
-//     });
-
-//     alert('Account created!');
-//     // TODO: redirect to profile or dashboard
-//   };
-
-//   return (
-//     <div className="container mt-5" style={{ maxWidth: '400px' }}>
-//       <h2 className="mb-4">Create Account</h2>
-
-//       {step === 1 && (
-//         <form onSubmit={handlePhoneSubmit}>
-//           <input
-//             type="tel"
-//             className="form-control mb-3"
-//             placeholder="+1 555 555 5555"
-//             value={phone}
-//             onChange={(e) => setPhone(e.target.value)}
-//             required
-//           />
-//           <div id="recaptcha-container"></div>
-//           <button type="submit" className="btn btn-primary w-100">
-//             Send Code
-//           </button>
-//         </form>
-//       )}
-
-//       {step === 2 && (
-//         <form onSubmit={handleCodeVerify}>
-//           <input
-//             type="text"
-//             className="form-control mb-3"
-//             placeholder="Enter 6-digit code"
-//             value={code}
-//             onChange={(e) => setCode(e.target.value)}
-//             required
-//           />
-//           <button type="submit" className="btn btn-success w-100">
-//             Verify Code
-//           </button>
-//         </form>
-//       )}
-
-//       {step === 3 && (
-//         <form onSubmit={handleFinalSubmit}>
-//           <input
-//             type="text"
-//             className="form-control mb-3"
-//             placeholder="Your Name"
-//             value={userData.name}
-//             onChange={(e) => setUserData((prev) => ({ ...prev, name: e.target.value }))}
-//             required
-//           />
-//           <select
-//             className="form-select mb-3"
-//             value={userData.role}
-//             onChange={(e) => setUserData((prev) => ({ ...prev, role: e.target.value }))}
-//           >
-//             <option value="driver">Driver</option>
-//             <option value="passenger">Passenger</option>
-//           </select>
-//           <button type="submit" className="btn btn-success w-100">
-//             Create Account
-//           </button>
-//         </form>
-//       )}
-//     </div>
-//   );
-// }
-
-// export default SignUp;
-
 import { useState } from 'react';
-import { auth, db, RecaptchaVerifier } from '../services/firebase';
-import {
-  signInWithPhoneNumber,
-  onAuthStateChanged,
-} from 'firebase/auth';
-import {
-  doc,
-  setDoc,
-} from 'firebase/firestore';
+import { Link, useNavigate } from 'react-router-dom';
+
+import { createUserWithEmailAndPassword } from 'firebase/auth';
+import { auth } from '../services/firebase';
+import '../App.css';
+
+function SignUp() {
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+    confirmPassword: ''
+  });
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    if (formData.password !== formData.confirmPassword) {
+      setError("Passwords don't match");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        formData.email,
+        formData.password
+      );
+      console.log('User created:', userCredential.user);
+      navigate('/profile-setup'); // Redirect to profile setup
+    } catch (error) {
+      console.error('Error creating user:', error);
+      setError(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (error) {
+    return (
+      <div className="container mt-5">
+        <div className="alert alert-danger" role="alert">
+          {error}
+        </div>
+        <button 
+          className="btn btn-primary mt-3"
+          onClick={() => setError(null)}
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container mt-5">
+      <div className="row justify-content-center">
+        <div className="col-md-10">
+          <div className="card">
+            <div className="card-body">
+              <h2 className="text-center mb-4">Sign Up</h2>
+              <form onSubmit={handleSubmit}>
+                <div className="mb-3">
+                  <label htmlFor="email" className="form-label">Email</label>
+                  <input
+                    type="email"
+                    className="form-control"
+                    id="email"
+                    name="email"
+                    value={formData.email}
+                    onChange={handleChange}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                <div className="mb-3">
+                  <label htmlFor="password" className="form-label">Password</label>
+                  <input
+                    type="password"
+                    className="form-control"
+                    id="password"
+                    name="password"
+                    value={formData.password}
+                    onChange={handleChange}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                <div className="mb-3">
+                  <label htmlFor="confirmPassword" className="form-label">Confirm Password</label>
+                  <input
+                    type="password"
+                    className="form-control"
+                    id="confirmPassword"
+                    name="confirmPassword"
+                    value={formData.confirmPassword}
+                    onChange={handleChange}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                <div className="d-grid">
+                  <button 
+                    type="submit" 
+                    className="btn btn-primary"
+                    disabled={loading}
+                  >
+                    {loading ? 'Creating Account...' : 'Sign Up'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="text-center mt-3">
+                <p>
+                  Already have an account?{' '}
+                  <Link to="/login">Back to Login</Link>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Phone authentication UI
+      <div className="phone-sign-in">
+        <PhoneInput
+          country={'us'}
+          value={phoneNumber}
+          onChange={(number) => setPhoneNumber('+' + number)}
+        />
+
+        <button
+          onClick={sendOTP}
+          type="button"
+          className="btn btn-primary"
+          disabled={!recaptchaSolved || !phoneNumber}
+        >
+          Send OTP
+        </button>
+
+        <div id="recaptcha" className="mt-3"></div>
+
+        {confirmationResult && (
+          <>
+            <div className="mt-3">
+              <input
+                type="text"
+                className="form-control"
+                placeholder="Enter verification code"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value)}
+              />
+            </div>
+            <div className="mt-2">
+              <button
+                onClick={verifyOTP}
+                type="button"
+                className="btn btn-success"
+                disabled={!verificationCode}
+              >
+                Verify OTP
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      */}
+    </div>
+  );
+}
+
+export default SignUp;
