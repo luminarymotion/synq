@@ -1,6 +1,6 @@
 // src/firebase.js
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -30,5 +30,11 @@ console.log("Auth object properties:", {
 
 // Initialize Firestore
 const db = getFirestore(app);
+
+// Set persistence to LOCAL (persists even after browser restart)
+setPersistence(auth, browserLocalPersistence)
+  .catch((error) => {
+    console.error("Auth persistence error:", error);
+  });
 
 export { auth, db };

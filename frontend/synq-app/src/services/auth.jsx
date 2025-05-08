@@ -4,6 +4,8 @@ import {
     signOut,
     GoogleAuthProvider,
     signInWithPopup,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
 } from "firebase/auth";
 import { auth } from './firebase';
 
@@ -11,6 +13,7 @@ const UserAuthContext = createContext();
 
 export function UserAuthContextProvider({ children }) {
     const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true);
 
     // to do - login with username and phone number
     const logIn = async (email, password) => {
@@ -18,9 +21,12 @@ export function UserAuthContextProvider({ children }) {
         console.log('Login attempt with:', email, password);
     };
 
-    const signUp = async (username, phoneNumber) => {
-        // TODO: Implement signup logic
-        console.log('Signup attempt with:', username, phoneNumber);
+    const signUp = (email, password) => {
+        return createUserWithEmailAndPassword(auth, email, password);
+    };
+
+    const login = (email, password) => {
+        return signInWithEmailAndPassword(auth, email, password);
     };
 
     const logOut = () => {
@@ -62,6 +68,7 @@ export function UserAuthContextProvider({ children }) {
         const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
             console.log("Auth", currentUser);
             setUser(currentUser);
+            setLoading(false);
         });
 
         return () => {
@@ -73,13 +80,14 @@ export function UserAuthContextProvider({ children }) {
         user,
         logIn,
         signUp,
+        login,
         logOut,
         googleSignIn
     };
 
     return (
         <UserAuthContext.Provider value={value}>
-            {children}
+            {!loading && children}
         </UserAuthContext.Provider>
     );
 }
