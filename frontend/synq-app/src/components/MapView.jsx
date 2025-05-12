@@ -21,6 +21,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
   const [trafficData, setTrafficData] = useState(null);
   const [error, setError] = useState(null);
   const [routeDetails, setRouteDetails] = useState(null);
+  const [warning, setWarning] = useState(null);
 
   useEffect(() => {
     // Use CartoDB's Voyager tiles for a modern look
@@ -68,22 +69,67 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       if (userLocation && destination) {
         try {
           setError(null);
+          setWarning(null);
+          
           // Get all passengers from the users array
           const passengers = users.filter(user => user.role === 'passenger');
           console.log('Calculating route with:', { userLocation, destination, passengers });
-          
-          // If there are no passengers, don't calculate route
+
+          // Calculate direct route if no passengers
           if (passengers.length === 0) {
-            setRoute(null);
-            setRouteDetails(null);
+            const directRouteData = await calculateRoute(userLocation, destination);
+            if (!directRouteData || !directRouteData.features || !directRouteData.features[0]) {
+              throw new Error('Invalid route data received');
+            }
+
+            // Calculate total distance
+            const totalDistance = directRouteData.features[0].properties.segments.reduce(
+              (sum, seg) => sum + seg.distance, 
+              0
+            );
+
+            // Check distance limit
+            if (totalDistance > 150000) {
+              setWarning('Warning: Route distance exceeds 150km. Some features may be limited.');
+            }
+
+            setRoute(directRouteData);
+            setRouteDetails({
+              totalDistance,
+              totalDuration: directRouteData.features[0].properties.segments.reduce(
+                (sum, seg) => sum + seg.duration, 
+                0
+              ),
+              segments: [{
+                distance: totalDistance,
+                duration: directRouteData.features[0].properties.segments.reduce(
+                  (sum, seg) => sum + seg.duration, 
+                  0
+                ),
+                type: 'direct',
+                isDestination: true
+              }]
+            });
             return;
           }
 
+          // Calculate optimized route with passengers
           const routeData = await calculateRoute(userLocation, destination, passengers);
           console.log('Received route data:', routeData);
           
           if (!routeData || !routeData.features || !routeData.features[0]) {
             throw new Error('Invalid route data received');
+          }
+
+          // Calculate total distance for the optimized route
+          const totalDistance = routeData.features[0].properties.segments.reduce(
+            (sum, seg) => sum + seg.distance, 
+            0
+          );
+
+          // Check distance limit
+          if (totalDistance > 150000) {
+            setWarning('Warning: Route distance exceeds 150km. Some features may be limited.');
           }
 
           setRoute(routeData);
@@ -394,6 +440,11 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
             <p>{error}</p>
           </div>
         )}
+        {warning && (
+          <div className="warning-message">
+            <p>{warning}</p>
+          </div>
+        )}
       </div>
       {routeDetails && (
         <div className="route-details-section">
@@ -504,18 +555,21 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           margin: 5px 0;
           color: #666;
         }
-        .error-message {
+        .warning-message {
           position: absolute;
           top: 10px;
           left: 10px;
-          background-color: rgba(244, 67, 54, 0.9);
-          color: white;
+          background-color: rgba(255, 193, 7, 0.9);
+          color: #000;
           padding: 10px;
           border-radius: 4px;
           box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
           z-index: 1000;
           max-width: 300px;
           word-wrap: break-word;
+        }
+        .error-message {
+          top: ${warning ? '60px' : '10px'};
         }
       `}</style>
     </div>
