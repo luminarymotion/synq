@@ -1,43 +1,32 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useUserAuth } from '../services/auth';
 import '../App.css';
 
 function ProfileSetup() {
-  const { user } = useUserAuth();
+  const { user, needsProfileSetup, setNeedsProfileSetup } = useUserAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [formData, setFormData] = useState({
-    username: '',
+    displayName: user?.displayName || '',
     phoneNumber: ''
   });
 
   useEffect(() => {
-    const checkProfile = async () => {
-      if (!user) {
-        navigate('/login');
-        return;
-      }
+    if (!user) {
+      navigate('/login');
+      return;
+    }
 
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          // If profile exists, redirect to dashboard
-          navigate('/dashboard');
-        }
-      } catch (err) {
-        console.error('Error checking profile:', err);
-        setError('Error checking profile status');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkProfile();
-  }, [user, navigate]);
+    // If user doesn't need profile setup, redirect to dashboard
+    if (!needsProfileSetup) {
+      navigate('/dashboard');
+      return;
+    }
+  }, [user, needsProfileSetup, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -53,21 +42,29 @@ function ProfileSetup() {
     setLoading(true);
 
     try {
-      // Create user profile in Firestore
-      await setDoc(doc(db, 'users', user.uid), {
-        ...formData,
-        email: user.email,
-        photoURL: user.photoURL || null,
-        createdAt: new Date().toISOString(),
+      if (!formData.displayName || !formData.phoneNumber) {
+        throw new Error('Please fill in all required fields');
+      }
+
+      // Format phone number to ensure it's just digits
+      const formattedPhone = formData.phoneNumber.replace(/\D/g, '');
+      
+      // Update user profile in Firestore
+      const userRef = doc(db, 'users', user.uid);
+      await updateDoc(userRef, {
+        displayName: formData.displayName.trim(),
+        phoneNumber: formattedPhone,
         updatedAt: new Date().toISOString()
       });
 
-      // Redirect to dashboard after successful profile creation
+      // Update the needsProfileSetup state
+      setNeedsProfileSetup(false);
+
+      // Redirect to dashboard after successful profile update
       navigate('/dashboard');
     } catch (err) {
-      console.error('Error creating profile:', err);
-      setError('Error creating profile. Please try again.');
-    } finally {
+      console.error('Error updating profile:', err);
+      setError(err.message || 'Error updating profile. Please try again.');
       setLoading(false);
     }
   };
@@ -79,6 +76,7 @@ function ProfileSetup() {
           <div className="spinner-border" role="status">
             <span className="visually-hidden">Loading...</span>
           </div>
+          <p className="mt-2">Updating your profile...</p>
         </div>
       </div>
     );
@@ -109,20 +107,32 @@ function ProfileSetup() {
               <h2 className="text-center mb-4">Complete Your Profile</h2>
               <p className="text-center text-muted mb-4">
                 Please provide some additional information to help us personalize your experience.
+                {user?.providerData[0]?.providerId === 'google.com' && (
+                  <span className="d-block mt-2">
+                    We noticed you signed in with Google. Please customize your display name and add your phone number.
+                  </span>
+                )}
               </p>
               
               <form onSubmit={handleSubmit}>
                 <div className="mb-3">
-                  <label htmlFor="username" className="form-label">Username</label>
+                  <label htmlFor="displayName" className="form-label">Display Name</label>
                   <input
                     type="text"
                     className="form-control"
-                    id="username"
-                    name="username"
-                    value={formData.username}
+                    id="displayName"
+                    name="displayName"
+                    value={formData.displayName}
                     onChange={handleChange}
+                    placeholder={user?.displayName || "Enter your display name"}
                     required
+                    disabled={loading}
+                    minLength={2}
+                    maxLength={30}
                   />
+                  <small className="text-muted">
+                    This is how other users will see you in the app
+                  </small>
                 </div>
 
                 <div className="mb-3">
@@ -135,7 +145,14 @@ function ProfileSetup() {
                     value={formData.phoneNumber}
                     onChange={handleChange}
                     placeholder="(123) 456-7890"
+                    required
+                    pattern="[0-9]{10}"
+                    title="Please enter a valid 10-digit phone number"
+                    disabled={loading}
                   />
+                  <small className="text-muted">
+                    We'll use this to notify you about ride updates
+                  </small>
                 </div>
 
                 <div className="d-grid">

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../services/firebase';
+import { createUserProfile } from '../services/firebaseOperations';
 import '../App.css';
 
 function SignUp() {
@@ -40,8 +41,25 @@ function SignUp() {
         formData.email,
         formData.password
       );
+
+      // Create a basic profile that will be completed in profile-setup
+      const profileResult = await createUserProfile(userCredential.user.uid, {
+        email: formData.email,
+        displayName: null, // Will be set in profile-setup
+        photoURL: null,
+        phoneNumber: null, // Will be set in profile-setup
+        preferences: {
+          notifications: true,
+          locationSharing: false
+        }
+      });
+
+      if (!profileResult.success) {
+        throw new Error('Failed to create user profile');
+      }
+
       console.log('User created:', userCredential.user);
-      navigate('/profile-setup'); // Redirect to profile setup
+      navigate('/profile-setup');
     } catch (error) {
       console.error('Error creating user:', error);
       setError(error.message);
@@ -184,3 +202,4 @@ function SignUp() {
 }
 
 export default SignUp;
+ 

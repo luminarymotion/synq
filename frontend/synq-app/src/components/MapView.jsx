@@ -74,7 +74,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           // Get all passengers from the users array
           const passengers = users.filter(user => user.role === 'passenger');
           console.log('Calculating route with:', { userLocation, destination, passengers });
-
+          
           // Calculate direct route if no passengers
           if (passengers.length === 0) {
             const directRouteData = await calculateRoute(userLocation, destination);
