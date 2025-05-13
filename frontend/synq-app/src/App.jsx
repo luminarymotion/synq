@@ -6,6 +6,7 @@ import SignUp from './pages/SignUp';
 import RouteOptimizer from './pages/RouteOptimizer';
 import ProfileSetup from './pages/ProfileSetup';
 import Dashboard from './pages/Dashboard';
+import Friends from './components/Friends';
 import Header from './components/Header';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
 
@@ -25,23 +26,45 @@ const ProtectedRoute = ({ children }) => {
   );
 };
 
-function App() {
+// Separate component that uses the auth context
+function AppRoutes() {
+  const { user, needsProfileSetup } = useUserAuth();
+
   return (
-    <UserAuthContextProvider>
+    <div className="App">
+      <Header />
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<SignUp />} />
-        <Route path="/profile-setup" element={<ProfileSetup />} />
-        
-        {/* Protected Routes */}
         <Route path="/" element={
-          <ProtectedRoute>
-            <RouteOptimizer />
-          </ProtectedRoute>
+          user ? (
+            needsProfileSetup ? (
+              <Navigate to="/profile-setup" />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
+          ) : (
+            <Navigate to="/login" />
+          )
+        } />
+        <Route path="/login" element={
+          user ? <Navigate to={needsProfileSetup ? "/profile-setup" : "/dashboard"} /> : <Login />
+        } />
+        <Route path="/signup" element={
+          user ? <Navigate to={needsProfileSetup ? "/profile-setup" : "/dashboard"} /> : <SignUp />
+        } />
+        <Route path="/profile-setup" element={
+          user ? (
+            needsProfileSetup ? (
+              <ProfileSetup />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
+          ) : (
+            <Navigate to="/login" />
+          )
         } />
         <Route path="/dashboard" element={
           <ProtectedRoute>
-            <Dashboard />
+            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Dashboard />}
           </ProtectedRoute>
         } />
         <Route path="/create-group" element={
@@ -56,7 +79,7 @@ function App() {
         } />
         <Route path="/friends" element={
           <ProtectedRoute>
-            <div>Friends Page (Coming Soon)</div>
+            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Friends />}
           </ProtectedRoute>
         } />
         <Route path="/profile" element={
@@ -70,6 +93,15 @@ function App() {
           </ProtectedRoute>
         } />
       </Routes>
+    </div>
+  );
+}
+
+// Main App component that provides the auth context
+function App() {
+  return (
+    <UserAuthContextProvider>
+      <AppRoutes />
     </UserAuthContextProvider>
   );
 }

@@ -52,7 +52,7 @@ function Header() {
           </Link>
           
           <Link to="/friends" className="nav-tab">
-            SynqMap
+            Friends
           </Link>
           
           <div className="nav-tab dropdown" ref={groupDropdownRef}>
