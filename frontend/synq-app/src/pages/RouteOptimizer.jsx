@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { createRide } from '../services/firebaseOperations';
 
 function RouteOptimizer() {
   const navigate = useNavigate();
@@ -23,6 +24,8 @@ function RouteOptimizer() {
   const [destination, setDestination] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [isStartingRide, setIsStartingRide] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [createdRideId, setCreatedRideId] = useState(null);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -50,13 +53,16 @@ function RouteOptimizer() {
     const coords = await geocodeAddress(address);
     if (coords) {
       const color = `#${Math.floor(Math.random() * 16777215).toString(16)}`;
+      // Generate a temporary ID for the passenger
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       setUsers((prevUsers) => [...prevUsers, { 
         name, 
         address: coords.address, 
         lat: coords.lat, 
         lng: coords.lng, 
         color,
-        role 
+        role,
+        tempId // Add temporary ID for tracking
       }]);
       setForm({ 
         name: '', 
@@ -96,40 +102,62 @@ function RouteOptimizer() {
 
     try {
       setIsStartingRide(true);
+      console.log('Starting ride creation process...');
       
       // Get full addresses for all locations
+      console.log('Fetching addresses...');
       const [driverAddress, destinationAddress] = await Promise.all([
         // Get full address for driver location
         fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${userLocation.lat}&lon=${userLocation.lng}&addressdetails=1`)
           .then(res => res.json())
           .then(data => data.display_name)
-          .catch(() => 'Location not found'),
+          .catch((error) => {
+            console.error('Error getting driver address:', error);
+            return 'Location not found';
+          }),
         
         // Get full address for destination
         fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${destination.lat}&lon=${destination.lng}&addressdetails=1`)
           .then(res => res.json())
           .then(data => data.display_name)
-          .catch(() => 'Destination not found')
+          .catch((error) => {
+            console.error('Error getting destination address:', error);
+            return 'Destination not found';
+          })
       ]);
 
+      console.log('Driver address:', driverAddress);
+      console.log('Destination address:', destinationAddress);
+
       // Get full addresses for all passengers
+      console.log('Fetching passenger addresses...');
       const passengerAddresses = await Promise.all(
         users.map(async (user) => {
-          const fullAddress = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${user.lat}&lon=${user.lng}&addressdetails=1`
-          )
-            .then(res => res.json())
-            .then(data => data.display_name)
-            .catch(() => 'Location not found');
-          
-          return {
-            ...user,
-            fullAddress
-          };
+          try {
+            const fullAddress = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${user.lat}&lon=${user.lng}&addressdetails=1`
+            )
+              .then(res => res.json())
+              .then(data => data.display_name)
+              .catch(() => 'Location not found');
+            
+            console.log(`Passenger ${user.name} address:`, fullAddress);
+            return {
+              ...user,
+              fullAddress
+            };
+          } catch (error) {
+            console.error(`Error getting address for passenger ${user.name}:`, error);
+            return {
+              ...user,
+              fullAddress: 'Location not found'
+            };
+          }
         })
       );
 
       // Create a new ride document in Firestore with full addresses
+      console.log('Preparing ride data...');
       const rideData = {
         driver: {
           uid: user.uid,
@@ -141,7 +169,8 @@ function RouteOptimizer() {
           name: passenger.name,
           location: { lat: passenger.lat, lng: passenger.lng },
           address: passenger.fullAddress,
-          status: 'pending' // pending, picked-up, completed
+          status: 'pending',
+          tempId: passenger.tempId
         })),
         destination: {
           location: destination,
@@ -150,19 +179,22 @@ function RouteOptimizer() {
         status: 'active',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        routeDetails: null, // Will be updated with actual route details
-        groupId: null // Will be updated when we implement group functionality
+        routeDetails: null
       };
 
       console.log('Creating ride with data:', rideData);
-      const rideRef = await addDoc(collection(db, 'rides'), rideData);
-      console.log('Ride started with ID:', rideRef.id);
-      
-      // Navigate to dashboard
-      navigate('/dashboard');
+      const result = await createRide(rideData);
+      console.log('Ride creation result:', result);
+
+      if (result.success) {
+        setCreatedRideId(result.rideId);
+        setShowSuccessModal(true);
+      } else {
+        throw new Error(result.error?.message || 'Failed to create ride');
+      }
     } catch (error) {
       console.error('Error starting ride:', error);
-      alert('Failed to start ride. Please try again.');
+      alert(`Failed to start ride: ${error.message || 'Please try again.'}`);
     } finally {
       setIsStartingRide(false);
     }
@@ -214,6 +246,102 @@ function RouteOptimizer() {
           </div>
         )}
       </div>
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div className="modal-backdrop" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1050
+        }}>
+          <div className="modal-content" style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '20px',
+            maxWidth: '500px',
+            width: '90%',
+            position: 'relative',
+            zIndex: 1051,
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+          }}>
+            <div className="modal-header" style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '20px'
+            }}>
+              <h5 className="modal-title" style={{ margin: 0 }}>Ride Created Successfully!</h5>
+              <button 
+                type="button" 
+                className="btn-close" 
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  navigate('/dashboard');
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '1.5rem',
+                  cursor: 'pointer',
+                  padding: '0.5rem'
+                }}
+              >×</button>
+            </div>
+            <div className="modal-body" style={{ marginBottom: '20px' }}>
+              <div className="text-center mb-4">
+                <i className="bi bi-check-circle-fill text-success" style={{ fontSize: '3rem', color: '#28a745' }}></i>
+              </div>
+              <p className="text-center mb-3">Your ride has been created successfully!</p>
+              <div className="alert alert-info" style={{
+                backgroundColor: '#e3f2fd',
+                border: '1px solid #90caf9',
+                borderRadius: '4px',
+                padding: '15px',
+                marginBottom: '15px'
+              }}>
+                <strong>Ride ID:</strong> {createdRideId}
+              </div>
+              <p className="text-muted small text-center">
+                You can use this ID to reference your ride. It will also be visible in your rides list.
+              </p>
+            </div>
+            <div className="modal-footer" style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: '10px'
+            }}>
+              <button 
+                type="button" 
+                className="btn btn-primary" 
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  navigate('/dashboard');
+                }}
+                style={{
+                  backgroundColor: '#2196F3',
+                  color: 'white',
+                  border: 'none',
+                  padding: '8px 16px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseOver={(e) => e.target.style.backgroundColor = '#1976D2'}
+                onMouseOut={(e) => e.target.style.backgroundColor = '#2196F3'}
+              >
+                Go to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .start-ride-container {

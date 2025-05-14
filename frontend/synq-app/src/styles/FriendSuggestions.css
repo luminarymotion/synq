@@ -1,0 +1,57 @@
+.mutual-friends {
+  font-size: 0.85rem;
+  color: #6c757d;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.35em 0.65em;
+  font-weight: 500;
+}
+
+.text-success {
+  background-color: #d1e7dd !important;
+  color: #0f5132 !important;
+}
+
+.text-primary {
+  background-color: #cfe2ff !important;
+  color: #084298 !important;
+}
+
+.text-warning {
+  background-color: #fff3cd !important;
+  color: #664d03 !important;
+}
+
+.text-danger {
+  background-color: #f8d7da !important;
+  color: #842029 !important;
+}
+
+.list-group-item {
+  transition: background-color 0.2s ease;
+}
+
+.list-group-item:hover {
+  background-color: #f8f9fa;
+}
+
+.btn-primary {
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.spinner-border {
+  width: 1rem;
+  height: 1rem;
+  border-width: 0.15em;
+} 

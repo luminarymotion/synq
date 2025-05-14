@@ -7,6 +7,7 @@ import RouteOptimizer from './pages/RouteOptimizer';
 import ProfileSetup from './pages/ProfileSetup';
 import Dashboard from './pages/Dashboard';
 import Friends from './components/Friends';
+import Rides from './pages/Rides';
 import Header from './components/Header';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
 
@@ -80,6 +81,11 @@ function AppRoutes() {
         <Route path="/friends" element={
           <ProtectedRoute>
             {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Friends />}
+          </ProtectedRoute>
+        } />
+        <Route path="/rides" element={
+          <ProtectedRoute>
+            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Rides />}
           </ProtectedRoute>
         } />
         <Route path="/profile" element={

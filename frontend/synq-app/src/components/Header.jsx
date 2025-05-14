@@ -55,6 +55,10 @@ function Header() {
             Friends
           </Link>
           
+          <Link to="/rides" className="nav-tab">
+            Rides
+          </Link>
+          
           <div className="nav-tab dropdown" ref={groupDropdownRef}>
             <button onClick={() => setIsGroupDropdownOpen(!isGroupDropdownOpen)}>
               Make a Group

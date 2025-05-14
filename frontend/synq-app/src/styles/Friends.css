@@ -1,0 +1,143 @@
+.friend-item {
+  position: relative;
+  transition: background-color 0.2s ease;
+}
+
+.friend-item:hover {
+  background-color: #f8f9fa;
+}
+
+.friend-actions {
+  opacity: 0;
+  animation: fadeIn 0.2s ease forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.friend-item:hover .friend-actions {
+  opacity: 1;
+}
+
+.friend-actions button {
+  transition: all 0.2s ease;
+}
+
+.friend-actions button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.friend-details {
+  background-color: #f8f9fa;
+  border-radius: 0.25rem;
+  transition: all 0.3s ease;
+}
+
+.friend-details h6 {
+  color: #495057;
+  font-weight: 600;
+}
+
+.friend-stats {
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.friend-stats small {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+/* Badge styles */
+.badge {
+  font-size: 0.75rem;
+  padding: 0.35em 0.65em;
+  font-weight: 500;
+}
+
+.bg-success {
+  background-color: #d1e7dd !important;
+  color: #0f5132 !important;
+}
+
+.bg-secondary {
+  background-color: #e2e3e5 !important;
+  color: #41464b !important;
+}
+
+/* Trust score colors */
+.text-success {
+  background-color: #d1e7dd !important;
+  color: #0f5132 !important;
+}
+
+.text-primary {
+  background-color: #cfe2ff !important;
+  color: #084298 !important;
+}
+
+.text-warning {
+  background-color: #fff3cd !important;
+  color: #664d03 !important;
+}
+
+.text-danger {
+  background-color: #f8d7da !important;
+  color: #842029 !important;
+}
+
+/* List styles */
+.list-group-item {
+  border-left: none;
+  border-right: none;
+  padding: 1rem;
+}
+
+.list-group-item:first-child {
+  border-top: none;
+}
+
+.list-group-item:last-child {
+  border-bottom: none;
+}
+
+/* Loading spinner */
+.spinner-border {
+  width: 1rem;
+  height: 1rem;
+  border-width: 0.15em;
+}
+
+/* Friend details list */
+.friend-details ul li {
+  margin-bottom: 0.5rem;
+  color: #495057;
+}
+
+.friend-details ul li:last-child {
+  margin-bottom: 0;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .friend-details .row {
+    flex-direction: column;
+  }
+  
+  .friend-details .col-md-6 {
+    margin-bottom: 1rem;
+  }
+  
+  .friend-details .col-md-6:last-child {
+    margin-bottom: 0;
+  }
+} 
