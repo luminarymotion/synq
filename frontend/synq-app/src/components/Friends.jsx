@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
 import {
-  getFriendsList,
-  getFriendRequests,
+  subscribeToFriendRequests,
+  subscribeToFriendsList,
+  subscribeToUserStatus,
+  updateUserOnlineStatus,
   sendFriendRequest,
   updateFriendRequest,
-  searchUsers
+  searchUsers,
+  removeFriendship,
+  updateFriendshipMetadata
 } from '../services/firebaseOperations';
+import FriendSuggestions from './FriendSuggestions';
+import '../styles/Friends.css'; // We'll create this file next
 
 function Friends() {
   const { user } = useUserAuth();
@@ -16,37 +22,117 @@ function Friends() {
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [friendStatuses, setFriendStatuses] = useState({});
+  const [hoveredFriend, setHoveredFriend] = useState(null);
+  const [sendingRequest, setSendingRequest] = useState({});
+  const [showFriendDetails, setShowFriendDetails] = useState(null);
+  const [requestError, setRequestError] = useState(null);
 
-  // Load friends and friend requests
+  // Add the missing getTrustScoreColor function
+  const getTrustScoreColor = (score) => {
+    if (score >= 80) return 'text-success';
+    if (score >= 60) return 'text-primary';
+    if (score >= 40) return 'text-warning';
+    return 'text-danger';
+  };
+
+  // Set up real-time listeners for friends and friend requests
   useEffect(() => {
-    const loadFriendsData = async () => {
-      if (!user) return;
-      
+    if (!user) return;
+
+    let unsubscribeRequests;
+    let unsubscribeFriends;
+    const statusUnsubscribes = new Map();
+
+    const setupListeners = async () => {
       try {
         setLoading(true);
-        const [friendsResult, requestsResult] = await Promise.all([
-          getFriendsList(user.uid),
-          getFriendRequests(user.uid)
-        ]);
 
-        if (friendsResult.success) {
-          setFriends(friendsResult.friends);
-        }
-        if (requestsResult.success) {
-          setFriendRequests(requestsResult.requests);
-        }
+        // Subscribe to friend requests
+        unsubscribeRequests = subscribeToFriendRequests(user.uid, (result) => {
+          if (result.success) {
+            setFriendRequests(result.requests);
+          } else {
+            setError('Failed to load friend requests');
+            console.error(result.error);
+          }
+        });
+
+        // Subscribe to friends list
+        unsubscribeFriends = subscribeToFriendsList(user.uid, (result) => {
+          if (result.success) {
+            setFriends(result.friends);
+            
+            // Set up status listeners for each friend
+            result.friends.forEach(friend => {
+              // Clean up existing listener if any
+              if (statusUnsubscribes.has(friend.id)) {
+                statusUnsubscribes.get(friend.id)();
+              }
+
+              // Set up new listener
+              const unsubscribe = subscribeToUserStatus(friend.id, (statusResult) => {
+                if (statusResult.success) {
+                  setFriendStatuses(prev => ({
+                    ...prev,
+                    [friend.id]: statusResult.status
+                  }));
+                }
+              });
+              statusUnsubscribes.set(friend.id, unsubscribe);
+            });
+          } else {
+            setError('Failed to load friends list');
+            console.error(result.error);
+          }
+        });
+
+        // Set up online status for current user
+        const updateStatus = async () => {
+          await updateUserOnlineStatus(user.uid, true);
+        };
+        updateStatus();
+
+        // Handle window visibility change
+        const handleVisibilityChange = async () => {
+          if (document.visibilityState === 'visible') {
+            await updateUserOnlineStatus(user.uid, true);
+          } else {
+            await updateUserOnlineStatus(user.uid, false);
+          }
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        // Handle beforeunload
+        const handleBeforeUnload = async () => {
+          await updateUserOnlineStatus(user.uid, false);
+        };
+
+        window.addEventListener('beforeunload', handleBeforeUnload);
+
+        setLoading(false);
+
+        // Cleanup function
+        return () => {
+          if (unsubscribeRequests) unsubscribeRequests();
+          if (unsubscribeFriends) unsubscribeFriends();
+          statusUnsubscribes.forEach(unsubscribe => unsubscribe());
+          document.removeEventListener('visibilitychange', handleVisibilityChange);
+          window.removeEventListener('beforeunload', handleBeforeUnload);
+          updateUserOnlineStatus(user.uid, false);
+        };
       } catch (err) {
-        setError('Failed to load friends data');
+        setError('Failed to set up real-time listeners');
         console.error(err);
-      } finally {
         setLoading(false);
       }
     };
 
-    loadFriendsData();
+    setupListeners();
   }, [user]);
 
-  // Handle friend request search
+  // Fix the search filter to use the correct user reference
   const handleSearch = async (e) => {
     e.preventDefault();
     if (!searchTerm.trim()) {
@@ -55,16 +141,15 @@ function Friends() {
     }
 
     try {
-      setLoading(true);
       const result = await searchUsers(searchTerm);
       if (result.success) {
         // Filter out current user and existing friends
         const filteredResults = result.users.filter(
-          user => 
-            user.id !== user.uid && 
-            !friends.some(friend => friend.id === user.id) &&
+          u => 
+            u.id !== user.uid && 
+            !friends.some(friend => friend.id === u.id) &&
             !friendRequests.some(request => 
-              (request.senderId === user.id || request.receiverId === user.id) &&
+              (request.senderId === u.id || request.receiverId === u.id) &&
               request.status === 'pending'
             )
         );
@@ -73,348 +158,354 @@ function Friends() {
         setError('Failed to search users');
       }
     } catch (err) {
-      setError('Failed to search users');
+      setError('Error searching users');
       console.error(err);
-    } finally {
-      setLoading(false);
     }
   };
 
-  // Send friend request
+  // Handle sending friend request
   const handleSendRequest = async (receiverId) => {
     try {
+      setSendingRequest(prev => ({ ...prev, [receiverId]: true }));
       const result = await sendFriendRequest(user.uid, receiverId);
       if (result.success) {
-        setSearchResults(prev => 
-          prev.filter(user => user.id !== receiverId)
-        );
+        // Remove the user from search results after successful request
+        setSearchResults(prev => prev.filter(user => user.id !== receiverId));
+      } else {
+        setError('Failed to send friend request');
       }
     } catch (err) {
-      setError('Failed to send friend request');
+      setError('Error sending friend request');
+      console.error(err);
+    } finally {
+      setSendingRequest(prev => ({ ...prev, [receiverId]: false }));
+    }
+  };
+
+  // Handle accepting friend request
+  const handleAcceptRequest = async (requestId) => {
+    try {
+      setRequestError(null);
+      const result = await updateFriendRequest(requestId, 'accepted');
+      if (result.success) {
+        // Remove the request from the local state
+        setFriendRequests(prev => prev.filter(request => request.id !== requestId));
+      } else {
+        setRequestError('Failed to accept friend request');
+      }
+    } catch (err) {
+      setRequestError('Error accepting friend request');
       console.error(err);
     }
   };
 
-  // Handle friend request response
-  const handleRequestResponse = async (requestId, status) => {
+  // Handle rejecting friend request
+  const handleRejectRequest = async (requestId) => {
     try {
-      const result = await updateFriendRequest(requestId, status);
+      setRequestError(null);
+      const result = await updateFriendRequest(requestId, 'rejected');
       if (result.success) {
-        setFriendRequests(prev => 
-          prev.filter(request => request.id !== requestId)
-        );
-        if (status === 'accepted') {
-          // Reload friends list
-          const friendsResult = await getFriendsList(user.uid);
-          if (friendsResult.success) {
-            setFriends(friendsResult.friends);
-          }
-        }
+        // Remove the request from the local state
+        setFriendRequests(prev => prev.filter(request => request.id !== requestId));
+      } else {
+        setRequestError('Failed to reject friend request');
       }
     } catch (err) {
-      setError('Failed to update friend request');
+      setRequestError('Error rejecting friend request');
       console.error(err);
     }
+  };
+
+  // Handle unfriending
+  const handleUnfriend = async (friendId) => {
+    try {
+      const result = await removeFriendship(user.uid, friendId);
+      if (!result.success) {
+        setError('Failed to remove friend');
+      }
+      // The friends list will update automatically through the real-time listener
+    } catch (err) {
+      setError('Error removing friend');
+      console.error(err);
+    }
+  };
+
+  // Handle invite to ride (placeholder for now)
+  const handleInviteToRide = (friendId) => {
+    // TODO: Implement ride invitation
+    console.log('Inviting friend to ride:', friendId);
+  };
+
+  // Format last seen timestamp
+  const formatLastSeen = (timestamp) => {
+    if (!timestamp) return 'Unknown';
+    const date = timestamp.toDate();
+    const now = new Date();
+    const diff = now - date;
+    
+    if (diff < 60000) return 'Just now';
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return date.toLocaleDateString();
+  };
+
+  // Handle updating friend preferences
+  const handleUpdatePreferences = async (friendId, preferences) => {
+    try {
+      const result = await updateFriendshipMetadata(user.uid, friendId, {
+        'metadata.preferences': preferences
+      });
+      if (!result.success) {
+        setError('Failed to update preferences');
+      }
+    } catch (err) {
+      setError('Error updating preferences');
+      console.error(err);
+    }
+  };
+
+  // Calculate reliability score
+  const calculateReliabilityScore = (friend) => {
+    const stats = friend.metadata?.groupRideStats;
+    if (!stats) return 0;
+
+    const totalRides = stats.totalRides;
+    if (totalRides === 0) return 0;
+
+    // Weight different factors
+    const driverRatio = stats.asDriver / totalRides;
+    const passengerRatio = stats.asPassenger / totalRides;
+    const baseScore = 50;
+
+    // Adjust score based on participation balance
+    let score = baseScore;
+    score += (driverRatio * 25); // Up to 25 points for being a driver
+    score += (passengerRatio * 25); // Up to 25 points for being a passenger
+
+    return Math.min(Math.round(score), 100);
   };
 
   if (loading) {
-    return (
-      <div className="friends-container">
-        <div className="loading-spinner">
-          <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
-          </div>
-        </div>
-      </div>
-    );
+    return <div className="text-center mt-5">Loading...</div>;
   }
 
   return (
-    <div className="friends-container">
+    <div className="container mt-4">
       {error && (
-        <div className="alert alert-danger" role="alert">
+        <div className="alert alert-danger mb-4" role="alert">
           {error}
           <button 
-            type="button" 
-            className="btn-close float-end" 
+            className="btn btn-link"
             onClick={() => setError(null)}
-            aria-label="Close"
-          ></button>
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
-      {/* Friend Requests Section */}
-      {friendRequests.length > 0 && (
-        <div className="friend-requests-section mb-4">
-          <h3>Friend Requests</h3>
-          <div className="friend-requests-list">
-            {friendRequests.map(request => (
-              <div key={request.id} className="friend-request-card">
-                <div className="user-info">
-                  <img 
-                    src={request.senderPhotoURL || '/default-avatar.png'} 
-                    alt="Profile" 
-                    className="avatar"
-                  />
-                  <div className="user-details">
-                    <span className="user-name">{request.senderName || 'Unknown User'}</span>
-                    <span className="user-email">{request.senderEmail}</span>
-                  </div>
-                </div>
-                <div className="request-actions">
-                  <button
-                    className="btn btn-success btn-sm"
-                    onClick={() => handleRequestResponse(request.id, 'accepted')}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => handleRequestResponse(request.id, 'rejected')}
-                  >
-                    Decline
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Friend Suggestions Section */}
+      <div className="mb-4">
+        <FriendSuggestions />
+      </div>
 
       {/* Search Section */}
-      <div className="search-section mb-4">
-        <form onSubmit={handleSearch} className="search-form">
-          <div className="input-group">
+      <div className="card mb-4">
+        <div className="card-body">
+          <h5 className="card-title">Find Friends</h5>
+          <form onSubmit={handleSearch} className="d-flex gap-2">
             <input
               type="text"
               className="form-control"
-              placeholder="Search by name or email..."
+              placeholder="Search by name or email"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              disabled={loading}
             />
-            <button 
-              className="btn btn-primary" 
-              type="submit"
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                  Searching...
-                </>
-              ) : (
-                'Search'
-              )}
+            <button type="submit" className="btn btn-primary">
+              Search
             </button>
-          </div>
-        </form>
+          </form>
 
-        {searchResults.length > 0 && (
-          <div className="search-results mt-3">
-            {searchResults.map(user => (
-              <div key={user.id} className="search-result-card">
-                <div className="user-info">
-                  <img 
-                    src={user.photoURL || '/default-avatar.png'} 
-                    alt="Profile" 
-                    className="avatar"
-                  />
-                  <div className="user-details">
-                    <span className="user-name">{user.displayName || 'Unknown User'}</span>
-                    <span className="user-email">{user.email}</span>
+          {/* Search Results */}
+          {searchResults.length > 0 && (
+            <div className="mt-3">
+              <h6>Search Results</h6>
+              <div className="list-group">
+                {searchResults.map(user => (
+                  <div key={user.id} className="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                      <h6 className="mb-0">{user.displayName}</h6>
+                      <small className="text-muted">{user.email}</small>
+                    </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSendRequest(user.id)}
+                      disabled={sendingRequest[user.id]}
+                    >
+                      {sendingRequest[user.id] ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                          Sending...
+                        </>
+                      ) : (
+                        'Add Friend'
+                      )}
+                    </button>
                   </div>
-                </div>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleSendRequest(user.id)}
-                  disabled={loading}
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Friend Requests Section */}
+      {friendRequests.length > 0 && (
+        <div className="card mb-4">
+          <div className="card-body">
+            <h5 className="card-title">Friend Requests</h5>
+            {requestError && (
+              <div className="alert alert-danger mb-3" role="alert">
+                {requestError}
+                <button 
+                  className="btn btn-link"
+                  onClick={() => setRequestError(null)}
                 >
-                  Add Friend
+                  Dismiss
                 </button>
               </div>
-            ))}
+            )}
+            <div className="list-group">
+              {friendRequests.map(request => (
+                <div key={request.id} className="list-group-item">
+                  <div className="d-flex justify-content-between align-items-center">
+                    <div>
+                      <h6 className="mb-0">{request.senderName || 'Unknown User'}</h6>
+                      <small className="text-muted">{request.senderEmail}</small>
+                    </div>
+                    <div className="btn-group">
+                      <button
+                        className="btn btn-success btn-sm"
+                        onClick={() => handleAcceptRequest(request.id)}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => handleRejectRequest(request.id)}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Friends List Section */}
-      <div className="friends-list-section">
-        <h3>Friends</h3>
-        {friends.length === 0 ? (
-          <p className="text-muted">No friends yet. Start adding some!</p>
-        ) : (
-          <div className="friends-list">
-            {friends.map(friend => (
-              <div key={friend.id} className="friend-card">
-                <div className="user-info">
-                  <img 
-                    src={friend.photoURL || '/default-avatar.png'} 
-                    alt="Profile" 
-                    className="avatar"
-                  />
-                  <div className="user-details">
-                    <span className="user-name">{friend.displayName || 'Unknown User'}</span>
-                    <span className="user-email">{friend.email}</span>
-                    <span className="friend-status">
-                      {friend.isOnline ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  className="btn btn-outline-primary btn-sm"
-                  onClick={() => {/* TODO: Implement invite to ride */}}
+      <div className="card">
+        <div className="card-body">
+          <h5 className="card-title">Friends</h5>
+          {friends.length === 0 ? (
+            <p className="text-muted">No friends yet. Start by searching for users or check out the suggestions above!</p>
+          ) : (
+            <div className="list-group">
+              {friends.map(friend => (
+                <div 
+                  key={friend.id} 
+                  className="list-group-item friend-item"
+                  onMouseEnter={() => setHoveredFriend(friend.id)}
+                  onMouseLeave={() => {
+                    setHoveredFriend(null);
+                    setShowFriendDetails(null);
+                  }}
                 >
-                  Invite to Ride
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+                  <div className="d-flex justify-content-between align-items-center">
+                    <div className="flex-grow-1">
+                      <h6 className="mb-0">
+                        {friend.displayName}
+                        <span className={`ms-2 badge ${friendStatuses[friend.id]?.isOnline ? 'bg-success' : 'bg-secondary'}`}>
+                          {friendStatuses[friend.id]?.isOnline ? 'Online' : 'Offline'}
+                        </span>
+                        {friend.metadata && (
+                          <span className={`ms-2 badge ${getTrustScoreColor(calculateReliabilityScore(friend))}`}>
+                            Reliability: {calculateReliabilityScore(friend)}%
+                          </span>
+                        )}
+                      </h6>
+                      <small className="text-muted">
+                        {friend.email}
+                        {!friendStatuses[friend.id]?.isOnline && friendStatuses[friend.id]?.lastSeen && (
+                          <span className="ms-2">
+                            Last seen: {formatLastSeen(friendStatuses[friend.id].lastSeen)}
+                          </span>
+                        )}
+                      </small>
+                      {friend.metadata && (
+                        <div className="friend-stats mt-2">
+                          <small>
+                            Rides shared: {friend.metadata.ridesShared || 0} |
+                            Mutual friends: {friend.metadata.mutualFriends || 0}
+                          </small>
+                        </div>
+                      )}
+                    </div>
+                    <div className="d-flex align-items-center">
+                      {hoveredFriend === friend.id && (
+                        <div className="friend-actions">
+                          <button
+                            className="btn btn-outline-primary btn-sm me-2"
+                            onClick={() => setShowFriendDetails(showFriendDetails === friend.id ? null : friend.id)}
+                          >
+                            Details
+                          </button>
+                          <button
+                            className="btn btn-outline-danger btn-sm"
+                            onClick={() => {
+                              if (window.confirm('Are you sure you want to remove this friend?')) {
+                                handleUnfriend(friend.id);
+                              }
+                            }}
+                          >
+                            Unfriend
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Friend Details Section */}
+                  {showFriendDetails === friend.id && friend.metadata && (
+                    <div className="friend-details mt-3 p-3 border-top">
+                      <h6>Friend Details</h6>
+                      <div className="row">
+                        <div className="col-md-6">
+                          <h6 className="mb-2">Ride Statistics</h6>
+                          <ul className="list-unstyled">
+                            <li>Total Rides: {friend.metadata.groupRideStats?.totalRides || 0}</li>
+                            <li>As Driver: {friend.metadata.groupRideStats?.asDriver || 0}</li>
+                            <li>As Passenger: {friend.metadata.groupRideStats?.asPassenger || 0}</li>
+                          </ul>
+                        </div>
+                        <div className="col-md-6">
+                          <h6 className="mb-2">Preferences</h6>
+                          <ul className="list-unstyled">
+                            <li>Communication: {friend.metadata.preferences?.communicationPreference || 'app'}</li>
+                            <li>Music: {friend.metadata.preferences?.ridePreferences?.music ? 'Yes' : 'No'}</li>
+                            <li>Conversation: {friend.metadata.preferences?.ridePreferences?.conversation ? 'Yes' : 'No'}</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-
-      <style jsx>{`
-        .friends-container {
-          padding: 20px;
-          max-width: 800px;
-          margin: 0 auto;
-        }
-
-        .loading-spinner {
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 200px;
-        }
-
-        .friend-request-card,
-        .search-result-card,
-        .friend-card {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 16px;
-          margin-bottom: 12px;
-          background: white;
-          border-radius: 12px;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-          transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .friend-request-card:hover,
-        .search-result-card:hover,
-        .friend-card:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-        }
-
-        .user-info {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-
-        .avatar {
-          width: 48px;
-          height: 48px;
-          border-radius: 50%;
-          object-fit: cover;
-          border: 2px solid #e9ecef;
-        }
-
-        .user-details {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .user-name {
-          font-weight: 600;
-          color: #333;
-          font-size: 1.1em;
-        }
-
-        .user-email {
-          color: #666;
-          font-size: 0.9em;
-        }
-
-        .friend-status {
-          font-size: 0.8em;
-          padding: 2px 8px;
-          border-radius: 12px;
-          background: #e9ecef;
-          color: #495057;
-          display: inline-block;
-          margin-top: 4px;
-        }
-
-        .request-actions {
-          display: flex;
-          gap: 8px;
-        }
-
-        .search-form {
-          margin-bottom: 20px;
-        }
-
-        .search-form .input-group {
-          box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }
-
-        .search-form .form-control {
-          border-right: none;
-        }
-
-        .search-form .btn {
-          border-left: none;
-          padding-left: 20px;
-          padding-right: 20px;
-        }
-
-        .friends-list,
-        .friend-requests-list,
-        .search-results {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .btn-close {
-          padding: 0.5rem;
-          margin: -0.5rem -0.5rem -0.5rem auto;
-        }
-
-        @media (max-width: 576px) {
-          .friend-request-card,
-          .search-result-card,
-          .friend-card {
-            flex-direction: column;
-            gap: 12px;
-            text-align: center;
-            padding: 12px;
-          }
-
-          .user-info {
-            flex-direction: column;
-            gap: 8px;
-          }
-
-          .user-details {
-            align-items: center;
-          }
-
-          .request-actions {
-            width: 100%;
-            justify-content: center;
-          }
-
-          .avatar {
-            width: 64px;
-            height: 64px;
-          }
-        }
-      `}</style>
     </div>
   );
 }

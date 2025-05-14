@@ -14,6 +14,8 @@ import { boundingExtent } from 'ol/extent';
 import { LineString } from 'ol/geom';
 import 'ol/ol.css';
 import '../styles/Dashboard.css';
+import { Link } from 'react-router-dom';
+import RideHistory from '../components/RideHistory';
 
 function Dashboard() {
   const { user } = useUserAuth();
@@ -201,88 +203,85 @@ function Dashboard() {
   }
 
   return (
-    <div className="dashboard-container">
+    <div className="container mt-4">
       <div className="dashboard-header">
         <h1>Welcome, {user?.displayName || 'User'}</h1>
       </div>
       
       <div className="dashboard-content">
         <div className="card">
-          <div className="card-header">
+          <div className="card-header d-flex justify-content-between align-items-center">
             <h2>Your Active Rides</h2>
+            <Link to="/rides" className="btn btn-outline-primary btn-sm">
+              View All Rides
+            </Link>
           </div>
           <div className="card-body">
             {activeRides.length === 0 ? (
-              <p className="no-rides">No active rides at the moment</p>
+              <div className="text-center py-4">
+                <p className="text-muted mb-3">No active rides at the moment</p>
+                <Link to="/create-group" className="btn btn-primary">
+                  <i className="bi bi-plus-circle me-2"></i>
+                  Create New Ride
+                </Link>
+              </div>
             ) : (
-              <div className="rides-list">
+              <div className="rides-grid">
                 {activeRides.map((ride) => (
-                  <div key={ride.id} className="ride-card">
-                    <div className="ride-header">
-                      <div className="ride-title">
-                        <h3>Ride to {ride.destination?.address || 'Destination'}</h3>
-                        <span className="ride-time">
-                          Started {calculateETA(ride.createdAt)}
-                        </span>
-                      </div>
-                      <div className="ride-status">
-                        <span className={`status-badge ${ride.status}`}>
-                          {ride.status}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="ride-content">
-                      <div className="ride-map">
-                        <div 
-                          id={`map-${ride.id}`} 
-                          className="map-snapshot"
-                          style={{ minHeight: '250px', position: 'relative' }}
-                        >
-                          {!mapsInitialized[ride.id] && (
-                            <div className="map-loading">
-                              <div className="spinner-border text-primary" role="status">
-                                <span className="visually-hidden">Loading map...</span>
-                              </div>
-                            </div>
-                          )}
+                  <Link 
+                    to={`/rides?rideId=${ride.rideId}`} 
+                    key={ride.id} 
+                    className="ride-card text-decoration-none"
+                  >
+                    <div className="card h-100">
+                      <div className="card-body">
+                        <div className="d-flex justify-content-between align-items-start mb-3">
+                          <div>
+                            <h5 className="card-title mb-1">
+                              <span className="badge bg-primary me-2">{ride.rideId}</span>
+                              {ride.destination?.address}
+                            </h5>
+                            <p className="text-muted small mb-0">
+                              Started {calculateETA(ride.createdAt)}
+                            </p>
+                          </div>
+                          <span className={`badge ${
+                            ride.status === 'active' ? 'bg-success' : 'bg-secondary'
+                          }`}>
+                            {ride.status}
+                          </span>
                         </div>
-                      </div>
 
-                      <div className="ride-info">
-                        <div className="info-section">
-                          <h4>Passengers</h4>
-                          <div className="passengers-list">
-                            {ride.passengers.map((passenger, index) => (
-                              <div key={index} className={`passenger-item ${passenger.status}`}>
-                                <span className="passenger-name">{passenger.name}</span>
-                                <span className="passenger-status">{passenger.status}</span>
-                                <span className="passenger-address">{passenger.address}</span>
-                              </div>
-                            ))}
+                        <div className="ride-info">
+                          <div className="info-item">
+                            <i className="bi bi-person-fill me-2"></i>
+                            <span>{ride.driver?.name}</span>
+                          </div>
+                          <div className="info-item">
+                            <i className="bi bi-people-fill me-2"></i>
+                            <span>{ride.passengers?.length || 0} passengers</span>
+                          </div>
+                          <div className="info-item">
+                            <i className="bi bi-clock-fill me-2"></i>
+                            <span>{formatTime(ride.createdAt)}</span>
                           </div>
                         </div>
 
-                        <div className="info-section">
-                          <h4>Route Details</h4>
-                          <div className="route-details">
-                            <div className="detail-item">
-                              <span className="detail-label">Destination:</span>
-                              <span className="detail-value">{ride.destination?.address}</span>
-                            </div>
-                            <div className="detail-item">
-                              <span className="detail-label">Started:</span>
-                              <span className="detail-value">{formatTime(ride.createdAt)}</span>
-                            </div>
-                            <div className="detail-item">
-                              <span className="detail-label">Duration:</span>
-                              <span className="detail-value">{calculateETA(ride.createdAt)}</span>
-                            </div>
+                        <div className="mt-3">
+                          <div className="progress" style={{ height: '4px' }}>
+                            <div 
+                              className="progress-bar bg-success" 
+                              role="progressbar" 
+                              style={{ width: '25%' }}
+                            ></div>
                           </div>
+                          <small className="text-muted mt-2 d-block">
+                            Ride in progress
+                          </small>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}
@@ -295,6 +294,13 @@ function Dashboard() {
           </div>
           <div className="card-body">
             <p className="no-groups">No groups yet</p>
+          </div>
+        </div>
+
+        {/* Ride History Section */}
+        <div className="row mt-4">
+          <div className="col-12">
+            <RideHistory limit={5} />
           </div>
         </div>
       </div>
@@ -326,11 +332,13 @@ function Dashboard() {
           border-radius: 12px;
           box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
           overflow: hidden;
+          border: none;
         }
 
         .card-header {
           padding: 1.5rem;
           border-bottom: 1px solid #eee;
+          background: white;
         }
 
         .card-header h2 {
@@ -344,170 +352,56 @@ function Dashboard() {
           padding: 1.5rem;
         }
 
-        .rides-list {
+        .rides-grid {
           display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
           gap: 1.5rem;
         }
 
         .ride-card {
-          background: #f8f9fa;
-          border-radius: 12px;
-          padding: 1.5rem;
-          border: 1px solid #eee;
+          color: inherit;
+          transition: transform 0.2s;
         }
 
-        .ride-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          margin-bottom: 1.5rem;
+        .ride-card:hover {
+          transform: translateY(-2px);
         }
 
-        .ride-title h3 {
-          margin: 0;
+        .ride-card .card {
+          transition: box-shadow 0.2s;
+        }
+
+        .ride-card:hover .card {
+          box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-title {
           color: #2196F3;
-          font-size: 1.3rem;
-        }
-
-        .ride-time {
-          color: #666;
-          font-size: 0.9rem;
-          display: block;
-          margin-top: 0.5rem;
-        }
-
-        .status-badge {
-          padding: 0.5rem 1rem;
-          border-radius: 20px;
-          font-size: 0.9rem;
-          font-weight: 500;
-          text-transform: capitalize;
-        }
-
-        .status-badge.active {
-          background: #e3f2fd;
-          color: #1976D2;
-        }
-
-        .ride-content {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 1.5rem;
-        }
-
-        .map-snapshot {
-          width: 100%;
-          height: 250px;
-          border-radius: 8px;
-          overflow: hidden;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          background: #f8f9fa;
-          position: relative;
-        }
-
-        .map-loading {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(255, 255, 255, 0.8);
-          z-index: 1;
+          font-size: 1.1rem;
+          font-weight: 600;
+          margin: 0;
         }
 
         .ride-info {
-          display: flex;
-          flex-direction: column;
-          gap: 1.5rem;
-        }
-
-        .info-section {
-          background: white;
-          padding: 1rem;
-          border-radius: 8px;
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-
-        .info-section h4 {
-          margin: 0 0 1rem 0;
-          color: #333;
-          font-size: 1.1rem;
-          font-weight: 600;
-        }
-
-        .passengers-list {
-          display: flex;
-          flex-direction: column;
-          gap: 0.75rem;
-        }
-
-        .passenger-item {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 1rem;
-          padding: 0.75rem;
-          border-radius: 6px;
-          background: #f8f9fa;
-          font-size: 0.9rem;
-        }
-
-        .passenger-name {
-          font-weight: 500;
-          color: #333;
-        }
-
-        .passenger-status {
-          padding: 0.25rem 0.75rem;
-          border-radius: 12px;
-          font-size: 0.8rem;
-          font-weight: 500;
-        }
-
-        .passenger-status.pending {
-          background: #fff3cd;
-          color: #856404;
-        }
-
-        .passenger-status.picked-up {
-          background: #d4edda;
-          color: #155724;
-        }
-
-        .passenger-status.completed {
-          background: #cce5ff;
-          color: #004085;
-        }
-
-        .passenger-address {
-          grid-column: 1 / -1;
-          color: #666;
-          font-size: 0.85rem;
-        }
-
-        .route-details {
           display: grid;
           gap: 0.75rem;
+          margin-top: 1rem;
         }
 
-        .detail-item {
-          display: grid;
-          grid-template-columns: auto 1fr;
-          gap: 1rem;
+        .info-item {
+          display: flex;
           align-items: center;
-        }
-
-        .detail-label {
           color: #666;
           font-size: 0.9rem;
-          font-weight: 500;
         }
 
-        .detail-value {
-          color: #333;
-          font-size: 0.9rem;
+        .info-item i {
+          color: #2196F3;
+        }
+
+        .badge {
+          font-size: 0.8em;
+          padding: 0.5em 1em;
         }
 
         .no-rides, .no-groups {
@@ -535,12 +429,20 @@ function Dashboard() {
         }
 
         @media (max-width: 768px) {
-          .ride-content {
+          .rides-grid {
             grid-template-columns: 1fr;
           }
 
-          .map-snapshot {
-            height: 200px;
+          .dashboard-container {
+            padding: 1rem;
+          }
+
+          .card-header {
+            padding: 1rem;
+          }
+
+          .card-body {
+            padding: 1rem;
           }
         }
       `}</style>
