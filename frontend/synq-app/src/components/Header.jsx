@@ -10,22 +10,29 @@ function Header() {
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isGroupDropdownOpen, setIsGroupDropdownOpen] = useState(false);
-  const dropdownRef = useRef(null);
+  const userDropdownRef = useRef(null);
   const groupDropdownRef = useRef(null);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+      // Handle user settings dropdown
+      if (userDropdownRef.current && !userDropdownRef.current.contains(event.target)) {
         setIsDropdownOpen(false);
       }
+      // Handle group dropdown
       if (groupDropdownRef.current && !groupDropdownRef.current.contains(event.target)) {
         setIsGroupDropdownOpen(false);
       }
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    // Add click listener to document
+    document.addEventListener('click', handleClickOutside, true);
+    
+    // Cleanup
+    return () => {
+      document.removeEventListener('click', handleClickOutside, true);
+    };
   }, []);
 
   const handleLogout = async () => {
@@ -37,71 +44,114 @@ function Header() {
     }
   };
 
+  // Toggle group dropdown handler
+  const toggleGroupDropdown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsGroupDropdownOpen(prev => !prev);
+  };
+
+  // Handle dropdown item click
+  const handleDropdownItemClick = (e) => {
+    e.stopPropagation();
+    setIsGroupDropdownOpen(false);
+  };
+
+  // Toggle user dropdown handler
+  const toggleUserDropdown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropdownOpen(!isDropdownOpen);
+  };
+
   return (
     <header className="header">
       <div className="header-content">
         {/* Logo */}
-        <Link to="/dashboard" className="logo">
+        <Link to={user ? "/dashboard" : "/"} className="logo">
           <span className="logo-text">SYNQ</span>
         </Link>
 
-        {/* Navigation Tabs */}
-        <nav className="nav-tabs">
-          <Link to="/dashboard" className="nav-tab">
-            Dashboard
-          </Link>
-          
-          <Link to="/friends" className="nav-tab">
-            Friends
-          </Link>
-          
-          <Link to="/rides" className="nav-tab">
-            Rides
-          </Link>
-          
-          <div className="nav-tab dropdown" ref={groupDropdownRef}>
-            <button onClick={() => setIsGroupDropdownOpen(!isGroupDropdownOpen)}>
-              Make a Group
-              <i className="bi bi-chevron-down ms-1"></i>
-            </button>
-            <div className={`dropdown-menu ${isGroupDropdownOpen ? 'show' : ''}`}>
-              <Link to="/create-group" className="dropdown-item">
-                Create New Group
+        {/* Navigation Tabs - Only show when user is authenticated */}
+        {user && (
+          <>
+            <nav className="nav-tabs">
+              <Link to="/dashboard" className="nav-tab">
+                Dashboard
               </Link>
-              <Link to="/join-group" className="dropdown-item">
-                Join Existing Group
+              
+              <Link to="/friends" className="nav-tab">
+                Friends
               </Link>
-            </div>
-          </div>
+              
+              <Link to="/rides" className="nav-tab">
+                Rides
+              </Link>
+              
+              <div className="nav-tab dropdown" ref={groupDropdownRef}>
+                <button 
+                  type="button"
+                  onClick={toggleGroupDropdown}
+                  className={isGroupDropdownOpen ? 'active' : ''}
+                  aria-expanded={isGroupDropdownOpen}
+                  aria-haspopup="true"
+                >
+                  Make a Group
+                  <i className={`fas fa-chevron-${isGroupDropdownOpen ? 'up' : 'down'}`}></i>
+                </button>
+                <div 
+                  className={`dropdown-menu ${isGroupDropdownOpen ? 'show' : ''}`}
+                  onClick={handleDropdownItemClick}
+                >
+                  <Link 
+                    to="/create-group" 
+                    className="dropdown-item"
+                    onClick={handleDropdownItemClick}
+                  >
+                    <i className="fas fa-plus-circle"></i> Create New Group
+                  </Link>
+                  <Link 
+                    to="/join-group" 
+                    className="dropdown-item"
+                    onClick={handleDropdownItemClick}
+                  >
+                    <i className="fas fa-sign-in-alt"></i> Join Existing Group
+                  </Link>
+                </div>
+              </div>
+            </nav>
 
-        </nav>
-
-        {/* User Settings */}
-        <div className="user-settings" ref={dropdownRef}>
-          <button 
-            className="user-button"
-            onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-          >
-            {user?.displayName || user?.email}
-          </button>
-          
-          {isDropdownOpen && (
-            <div className="settings-dropdown">
-              <Link to="/profile" className="dropdown-item">
-                Profile Settings
-              </Link>
-              <Link to="/account" className="dropdown-item">
-                Account Settings
-              </Link>
+            {/* User Settings - Only show when user is authenticated */}
+            <div className="user-settings" ref={userDropdownRef}>
               <button 
-                className="dropdown-item logout"
-                onClick={handleLogout}
+                className="user-button"
+                onClick={toggleUserDropdown}
+                aria-expanded={isDropdownOpen}
+                aria-haspopup="true"
               >
-                Logout
+                {user?.displayName || user?.email}
+                <i className={`fas fa-chevron-${isDropdownOpen ? 'up' : 'down'}`}></i>
               </button>
+              
+              {isDropdownOpen && (
+                <div className="settings-dropdown">
+                  <Link to="/profile" className="dropdown-item" onClick={() => setIsDropdownOpen(false)}>
+                    <i className="fas fa-user"></i> Profile Settings
+                  </Link>
+                  <Link to="/account" className="dropdown-item" onClick={() => setIsDropdownOpen(false)}>
+                    <i className="fas fa-cog"></i> Account Settings
+                  </Link>
+                  <button 
+                    className="dropdown-item logout"
+                    onClick={handleLogout}
+                  >
+                    <i className="fas fa-sign-out-alt"></i> Logout
+                  </button>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
     </header>
   );

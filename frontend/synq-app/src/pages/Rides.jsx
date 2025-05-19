@@ -241,206 +241,214 @@ function Rides() {
   }
 
   return (
-    <div className="container mt-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2>Your Rides</h2>
-        <Link to="/create-group" className="btn btn-primary">
-          <i className="bi bi-plus-circle me-2"></i>
-          Create New Ride
-        </Link>
-      </div>
-
-      {/* Active Rides Section */}
-      <div className="card mb-4">
-        <div className="card-header">
-          <h3 className="card-title mb-0">Active Rides</h3>
+    <div className="container mt-4" style={{ 
+      minHeight: 'calc(100vh - 200px)', 
+      display: 'flex', 
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }}>
+      <div style={{ width: '100%', maxWidth: '800px' }}>
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <h2>Your Rides</h2>
+          <Link to="/create-group" className="btn btn-primary">
+            <i className="bi bi-plus-circle me-2"></i>
+            Create New Ride
+          </Link>
         </div>
-        <div className="card-body">
-          {activeRides.length === 0 ? (
-            <div className="text-center py-5">
-              <div className="mb-4">
-                <i className="bi bi-car-front" style={{ fontSize: '3rem', color: '#6c757d' }}></i>
-              </div>
-              <h4 className="text-muted mb-3">No Active Rides</h4>
-              <p className="text-muted mb-4">You don't have any active rides at the moment.</p>
-              <Link to="/create-group" className="btn btn-primary">
-                <i className="bi bi-plus-circle me-2"></i>
-                Create Your First Ride
-              </Link>
-            </div>
-          ) : (
-            <div className="rides-list">
-              {activeRides.map((ride) => (
-                <div key={ride.id} id={`ride-${ride.id}`} className="ride-container mb-4">
-                  <div className="card">
-                    <div className="card-header bg-light">
-                      <div className="d-flex justify-content-between align-items-center">
-                        <h4 className="mb-0">
-                          <span className="badge bg-primary me-2">{ride.id}</span>
-                          {ride.destination?.address}
-                        </h4>
-                        <div className="d-flex align-items-center gap-2">
-                          <span className={`badge ${ride.status === 'active' ? 'bg-success' : 'bg-secondary'}`}>
-                            {ride.status}
-                          </span>
-                          {ride.status === 'active' && (
-                            <button
-                              className={`btn btn-outline-danger btn-sm ${leavingRideId === ride.id ? 'disabled' : ''}`}
-                              onClick={() => {
-                                if (window.confirm(`Are you sure you want to leave ride ${ride.id}?`)) {
-                                  handleLeaveRide(ride.id);
-                                }
-                              }}
-                              disabled={leavingRideId === ride.id}
-                            >
-                              {leavingRideId === ride.id ? (
-                                <>
-                                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                  Leaving...
-                                </>
-                              ) : (
-                                <>
-                                  <i className="bi bi-x-circle me-2"></i>
-                                  Leave Ride
-                                </>
-                              )}
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="card-body">
-                      <div className="row">
-                        <div className="col-md-6">
-                          <h5>Driver Information</h5>
-                          <div className="mb-3">
-                            <strong>Name:</strong> {ride.driver?.name}
-                            <br />
-                            <strong>Location:</strong> {ride.driver?.address}
-                          </div>
-                        </div>
-                        <div className="col-md-6">
-                          <h5>Ride Details</h5>
-                          <div className="mb-3">
-                            <strong>Ride ID:</strong> {ride.id}
-                            <br />
-                            <strong>Started:</strong> {formatTime(ride.createdAt)}
-                            <br />
-                            <strong>Duration:</strong> {calculateETA(ride.createdAt)}
-                            <br />
-                            <strong>Passengers:</strong> {ride.passengers?.length || 0}
-                          </div>
-                        </div>
-                      </div>
 
-                      <div className="mt-4">
-                        <h5>Passengers</h5>
-                        <div className="list-group">
-                          {ride.passengers?.map((passenger, index) => (
-                            <div key={index} className="list-group-item">
-                              <div className="d-flex justify-content-between align-items-center">
-                                <div>
-                                  <strong>{passenger.name}</strong>
-                                  <br />
-                                  <small className="text-muted">{passenger.address}</small>
-                                </div>
-                                <span className={`badge ${
-                                  passenger.status === 'pending' ? 'bg-warning' :
-                                  passenger.status === 'picked-up' ? 'bg-success' :
-                                  'bg-secondary'
-                                }`}>
-                                  {passenger.status}
-                                </span>
-                              </div>
+        {/* Active Rides Section */}
+        <div className="card mb-4">
+          <div className="card-header">
+            <h3 className="card-title mb-0">Active Rides</h3>
+          </div>
+          <div className="card-body">
+            {activeRides.length === 0 ? (
+              <div className="text-center py-5">
+                <div className="mb-4">
+                  <i className="bi bi-car-front" style={{ fontSize: '3rem', color: '#6c757d' }}></i>
+                </div>
+                <h4 className="text-muted mb-3">No Active Rides</h4>
+                <p className="text-muted mb-4">You don't have any active rides at the moment.</p>
+                <Link to="/create-group" className="btn btn-primary">
+                  <i className="bi bi-plus-circle me-2"></i>
+                  Create Your First Ride
+                </Link>
+              </div>
+            ) : (
+              <div className="rides-list">
+                {activeRides.map((ride) => (
+                  <div key={ride.id} id={`ride-${ride.id}`} className="ride-container mb-4">
+                    <div className="card">
+                      <div className="card-header bg-light">
+                        <div className="d-flex justify-content-between align-items-center">
+                          <h4 className="mb-0">
+                            <span className="badge bg-primary me-2">{ride.id}</span>
+                            {ride.destination?.address}
+                          </h4>
+                          <div className="d-flex align-items-center gap-2">
+                            <span className={`badge ${ride.status === 'active' ? 'bg-success' : 'bg-secondary'}`}>
+                              {ride.status}
+                            </span>
+                            {ride.status === 'active' && (
+                              <button
+                                className={`btn btn-outline-danger btn-sm ${leavingRideId === ride.id ? 'disabled' : ''}`}
+                                onClick={() => {
+                                  if (window.confirm(`Are you sure you want to leave ride ${ride.id}?`)) {
+                                    handleLeaveRide(ride.id);
+                                  }
+                                }}
+                                disabled={leavingRideId === ride.id}
+                              >
+                                {leavingRideId === ride.id ? (
+                                  <>
+                                    <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                    Leaving...
+                                  </>
+                                ) : (
+                                  <>
+                                    <i className="bi bi-x-circle me-2"></i>
+                                    Leave Ride
+                                  </>
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="card-body">
+                        <div className="row">
+                          <div className="col-md-6">
+                            <h5>Driver Information</h5>
+                            <div className="mb-3">
+                              <strong>Name:</strong> {ride.driver?.name}
+                              <br />
+                              <strong>Location:</strong> {ride.driver?.address}
                             </div>
-                          ))}
+                          </div>
+                          <div className="col-md-6">
+                            <h5>Ride Details</h5>
+                            <div className="mb-3">
+                              <strong>Ride ID:</strong> {ride.id}
+                              <br />
+                              <strong>Started:</strong> {formatTime(ride.createdAt)}
+                              <br />
+                              <strong>Duration:</strong> {calculateETA(ride.createdAt)}
+                              <br />
+                              <strong>Passengers:</strong> {ride.passengers?.length || 0}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4">
+                          <h5>Passengers</h5>
+                          <div className="list-group">
+                            {ride.passengers?.map((passenger, index) => (
+                              <div key={index} className="list-group-item">
+                                <div className="d-flex justify-content-between align-items-center">
+                                  <div>
+                                    <strong>{passenger.name}</strong>
+                                    <br />
+                                    <small className="text-muted">{passenger.address}</small>
+                                  </div>
+                                  <span className={`badge ${
+                                    passenger.status === 'pending' ? 'bg-warning' :
+                                    passenger.status === 'picked-up' ? 'bg-success' :
+                                    'bg-secondary'
+                                  }`}>
+                                    {passenger.status}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
         </div>
+
+        <style jsx>{`
+          .rides-list {
+            display: grid;
+            gap: 1rem;
+          }
+
+          .ride-container {
+            transition: transform 0.2s, box-shadow 0.2s;
+          }
+
+          .ride-container:hover {
+            transform: translateY(-2px);
+          }
+
+          .highlight-ride {
+            animation: highlight 2s ease-out;
+          }
+
+          @keyframes highlight {
+            0% {
+              box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4);
+            }
+            70% {
+              box-shadow: 0 0 0 10px rgba(33, 150, 243, 0);
+            }
+            100% {
+              box-shadow: 0 0 0 0 rgba(33, 150, 243, 0);
+            }
+          }
+
+          .card {
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          }
+
+          .card-header {
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+          }
+
+          .badge {
+            font-size: 0.9em;
+            padding: 0.5em 1em;
+          }
+
+          .list-group-item {
+            border: 1px solid rgba(0,0,0,0.1);
+            margin-bottom: 0.5rem;
+            border-radius: 4px;
+          }
+
+          @media (max-width: 768px) {
+            .card-header h4 {
+              font-size: 1.1rem;
+            }
+          }
+
+          .btn-outline-danger {
+            border-color: #dc3545;
+            color: #dc3545;
+            transition: all 0.2s ease-in-out;
+          }
+
+          .btn-outline-danger:hover:not(:disabled) {
+            background-color: #dc3545;
+            color: white;
+          }
+
+          .btn-outline-danger:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+          }
+
+          .gap-2 {
+            gap: 0.5rem;
+          }
+        `}</style>
       </div>
-
-      <style jsx>{`
-        .rides-list {
-          display: grid;
-          gap: 1rem;
-        }
-
-        .ride-container {
-          transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .ride-container:hover {
-          transform: translateY(-2px);
-        }
-
-        .highlight-ride {
-          animation: highlight 2s ease-out;
-        }
-
-        @keyframes highlight {
-          0% {
-            box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4);
-          }
-          70% {
-            box-shadow: 0 0 0 10px rgba(33, 150, 243, 0);
-          }
-          100% {
-            box-shadow: 0 0 0 0 rgba(33, 150, 243, 0);
-          }
-        }
-
-        .card {
-          border: none;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .card-header {
-          border-bottom: 1px solid rgba(0,0,0,0.1);
-        }
-
-        .badge {
-          font-size: 0.9em;
-          padding: 0.5em 1em;
-        }
-
-        .list-group-item {
-          border: 1px solid rgba(0,0,0,0.1);
-          margin-bottom: 0.5rem;
-          border-radius: 4px;
-        }
-
-        @media (max-width: 768px) {
-          .card-header h4 {
-            font-size: 1.1rem;
-          }
-        }
-
-        .btn-outline-danger {
-          border-color: #dc3545;
-          color: #dc3545;
-          transition: all 0.2s ease-in-out;
-        }
-
-        .btn-outline-danger:hover:not(:disabled) {
-          background-color: #dc3545;
-          color: white;
-        }
-
-        .btn-outline-danger:disabled {
-          opacity: 0.65;
-          cursor: not-allowed;
-        }
-
-        .gap-2 {
-          gap: 0.5rem;
-        }
-      `}</style>
     </div>
   );
 }

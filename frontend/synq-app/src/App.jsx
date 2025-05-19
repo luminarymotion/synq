@@ -10,6 +10,7 @@ import Friends from './components/Friends';
 import Rides from './pages/Rides';
 import Header from './components/Header';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
+import './styles/theme.css';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -19,12 +20,7 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/login" />;
   }
 
-  return (
-    <>
-      <Header />
-      {children}
-    </>
-  );
+  return children;
 };
 
 // Separate component that uses the auth context
@@ -33,6 +29,7 @@ function AppRoutes() {
 
   return (
     <div className="App">
+      {/* Always render Header, but its content will be controlled by the Header component */}
       <Header />
       <Routes>
         <Route path="/" element={
@@ -47,10 +44,22 @@ function AppRoutes() {
           )
         } />
         <Route path="/login" element={
-          user ? <Navigate to={needsProfileSetup ? "/profile-setup" : "/dashboard"} /> : <Login />
+          user ? (
+            needsProfileSetup ? (
+              <Navigate to="/profile-setup" />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
+          ) : <Login />
         } />
         <Route path="/signup" element={
-          user ? <Navigate to={needsProfileSetup ? "/profile-setup" : "/dashboard"} /> : <SignUp />
+          user ? (
+            needsProfileSetup ? (
+              <Navigate to="/profile-setup" />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
+          ) : <SignUp />
         } />
         <Route path="/profile-setup" element={
           user ? (
