@@ -499,6 +499,7 @@ export const searchUsers = async (searchTerm) => {
 // Real-time Friend Operations
 export const subscribeToFriendRequests = (userId, callback) => {
   try {
+    // First try the optimized query with ordering
     const requestsQuery = query(
       collection(db, 'friendRequests'),
       where('receiverId', '==', userId),
@@ -507,7 +508,7 @@ export const subscribeToFriendRequests = (userId, callback) => {
     );
 
     // Return the unsubscribe function
-    return onSnapshot(requestsQuery, 
+    const unsubscribe = onSnapshot(requestsQuery, 
       (snapshot) => {
         const requests = snapshot.docs.map(doc => ({
           id: doc.id,
@@ -516,10 +517,48 @@ export const subscribeToFriendRequests = (userId, callback) => {
         callback({ success: true, requests });
       },
       (error) => {
+        // If we get an index error, fall back to a simpler query
+        if (error.code === 'failed-precondition' && error.message.includes('index')) {
+          console.log('Index not ready, falling back to simple query');
+          // Use a simpler query without ordering
+          const simpleQuery = query(
+            collection(db, 'friendRequests'),
+            where('receiverId', '==', userId),
+            where('status', '==', 'pending')
+          );
+
+          // Set up a new listener with the simple query
+          const simpleUnsubscribe = onSnapshot(simpleQuery,
+            (snapshot) => {
+              const requests = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+              }));
+              // Sort the requests client-side
+              requests.sort((a, b) => {
+                const dateA = a.createdAt?.toDate?.() || new Date(0);
+                const dateB = b.createdAt?.toDate?.() || new Date(0);
+                return dateB - dateA;
+              });
+              callback({ success: true, requests });
+            },
+            (fallbackError) => {
+              console.error('Error in fallback friend requests subscription:', fallbackError);
+              callback({ success: false, error: fallbackError });
+            }
+          );
+
+          // Return the new unsubscribe function
+          return simpleUnsubscribe;
+        }
+
+        // For other errors, just pass them through
         console.error('Error in friend requests subscription:', error);
         callback({ success: false, error });
       }
     );
+
+    return unsubscribe;
   } catch (error) {
     console.error('Error setting up friend requests subscription:', error);
     callback({ success: false, error });
@@ -821,47 +860,96 @@ export const getRideHistory = async (rideId) => {
 };
 
 // Add function to get user's ride history
-export const getUserRideHistory = async (userId, limit = 10) => {
+export const getUserRideHistory = async (userId, limitCount = 10) => {
   try {
     // Query for rides where user was either driver or passenger
     const driverRidesQuery = query(
       collection(db, 'rides'),
       where('driver.uid', '==', userId),
       where('status', '==', 'ended'),
+      where(`hiddenForUsers.${userId}`, '!=', true), // Exclude hidden rides
       orderBy('endedAt', 'desc'),
-      limit(limit)
+      limit(limitCount)
     );
 
     const passengerRidesQuery = query(
       collection(db, 'rides'),
       where('passengerUids', 'array-contains', userId),
       where('status', '==', 'ended'),
+      where(`hiddenForUsers.${userId}`, '!=', true), // Exclude hidden rides
       orderBy('endedAt', 'desc'),
-      limit(limit)
+      limit(limitCount)
     );
 
-    const [driverSnapshot, passengerSnapshot] = await Promise.all([
-      getDocs(driverRidesQuery),
-      getDocs(passengerRidesQuery)
-    ]);
+    try {
+      const [driverSnapshot, passengerSnapshot] = await Promise.all([
+        getDocs(driverRidesQuery),
+        getDocs(passengerRidesQuery)
+      ]);
 
-    // Combine and deduplicate rides
-    const allRides = [
-      ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'driver' })),
-      ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'passenger' }))
-    ];
+      // Combine and deduplicate rides
+      const allRides = [
+        ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'driver' })),
+        ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'passenger' }))
+      ];
 
-    const uniqueRides = Array.from(
-      new Map(allRides.map(ride => [ride.id, ride])).values()
-    ).sort((a, b) => b.endedAt.toDate() - a.endedAt.toDate());
+      const uniqueRides = Array.from(
+        new Map(allRides.map(ride => [ride.id, ride])).values()
+      ).sort((a, b) => b.endedAt.toDate() - a.endedAt.toDate());
 
-    return {
-      success: true,
-      rides: uniqueRides.slice(0, limit)
-    };
+      return {
+        success: true,
+        rides: uniqueRides.slice(0, limitCount)
+      };
+    } catch (error) {
+      // If we get an index error, fall back to a simpler query without ordering
+      if (error.code === 'failed-precondition') {
+        console.log('Index not available, fetching without orderBy');
+        
+        const simpleDriverQuery = query(
+          collection(db, 'rides'),
+          where('driver.uid', '==', userId),
+          where('status', '==', 'ended'),
+          limit(limitCount)
+        );
+
+        const simplePassengerQuery = query(
+          collection(db, 'rides'),
+          where('passengerUids', 'array-contains', userId),
+          where('status', '==', 'ended'),
+          limit(limitCount)
+        );
+
+        const [driverSnapshot, passengerSnapshot] = await Promise.all([
+          getDocs(simpleDriverQuery),
+          getDocs(simplePassengerQuery)
+        ]);
+
+        const allRides = [
+          ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'driver' })),
+          ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'passenger' }))
+        ];
+
+        const uniqueRides = Array.from(
+          new Map(allRides.map(ride => [ride.id, ride])).values()
+        );
+
+        // Sort in memory since we can't use orderBy
+        uniqueRides.sort((a, b) => {
+          if (!a.endedAt || !b.endedAt) return 0;
+          return b.endedAt.toDate() - a.endedAt.toDate();
+        });
+
+        return {
+          success: true,
+          rides: uniqueRides.slice(0, limitCount)
+        };
+      }
+      throw error;
+    }
   } catch (error) {
     console.error('Error getting user ride history:', error);
-    return { success: false, error };
+    return { success: false, error: error.message || 'Failed to load ride history' };
   }
 };
 
@@ -908,5 +996,62 @@ export const migrateRidesToFriendlyIds = async () => {
   } catch (error) {
     console.error('Error migrating rides:', error);
     return { success: false, error };
+  }
+};
+
+// Add function to clear user's ride history
+export const clearUserRideHistory = async (userId) => {
+  try {
+    // Get all rides where user was either driver or passenger
+    const driverRidesQuery = query(
+      collection(db, 'rides'),
+      where('driver.uid', '==', userId),
+      where('status', '==', 'ended')
+    );
+
+    const passengerRidesQuery = query(
+      collection(db, 'rides'),
+      where('passengerUids', 'array-contains', userId),
+      where('status', '==', 'ended')
+    );
+
+    const [driverSnapshot, passengerSnapshot] = await Promise.all([
+      getDocs(driverRidesQuery),
+      getDocs(passengerRidesQuery)
+    ]);
+
+    // Combine and deduplicate rides
+    const allRides = [
+      ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+      ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+    ];
+
+    const uniqueRides = Array.from(
+      new Map(allRides.map(ride => [ride.id, ride])).values()
+    );
+
+    // Use a batch write to update all rides
+    const batch = writeBatch(db);
+    
+    for (const ride of uniqueRides) {
+      const rideRef = doc(db, 'rides', ride.id);
+      // Instead of deleting, we'll mark the ride as hidden for this user
+      batch.update(rideRef, {
+        [`hiddenForUsers.${userId}`]: true,
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    await batch.commit();
+    return { 
+      success: true, 
+      message: `Successfully cleared ${uniqueRides.length} rides from history` 
+    };
+  } catch (error) {
+    console.error('Error clearing ride history:', error);
+    return { 
+      success: false, 
+      error: error.message || 'Failed to clear ride history' 
+    };
   }
 }; 

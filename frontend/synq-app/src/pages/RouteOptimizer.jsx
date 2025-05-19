@@ -201,242 +201,254 @@ function RouteOptimizer() {
   };
 
   return (
-    <div className="container my-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h1>Synq Route Optimizer</h1>
-      </div>
-      <UserForm 
-        form={form} 
-        onChange={handleChange} 
-        onSubmit={addUser} 
-        onDestinationChange={handleDestinationChange}
-        onUserLocationChange={handleUserLocationChange}
-      />
-      <UserTable users={users} onDelete={handleDelete} />
-      <MapView 
-        users={users} 
-        destination={destination}
-        userLocation={userLocation}
-        onSetDestinationFromMap={(coords) => setDestination(coords)}
-      />
-      
-      <div className="start-ride-container">
-        <button
-          className="start-ride-button"
-          onClick={handleStartRide}
-          disabled={isStartingRide || !userLocation || !destination || users.length === 0}
-        >
-          {isStartingRide ? (
-            <>
-              <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-              Starting Ride...
-            </>
-          ) : (
-            <>
-              <i className="bi bi-car-front me-2"></i>
-              Start Ride
-            </>
+    <div className="container mt-4" style={{ 
+      minHeight: 'calc(100vh - 200px)', 
+      display: 'flex', 
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }}>
+      <div style={{ width: '100%', maxWidth: '800px' }}>
+        <UserForm 
+          form={form} 
+          onChange={handleChange} 
+          onSubmit={addUser} 
+          onDestinationChange={handleDestinationChange}
+          onUserLocationChange={handleUserLocationChange}
+        />
+        <UserTable users={users} onDelete={handleDelete} />
+        <MapView 
+          users={users} 
+          destination={destination}
+          userLocation={userLocation}
+          onSetDestinationFromMap={(coords) => setDestination(coords)}
+        />
+        
+        <div className="start-ride-container">
+          <button
+            className="start-ride-button"
+            onClick={handleStartRide}
+            disabled={isStartingRide || !userLocation || !destination || users.length === 0}
+          >
+            {isStartingRide ? (
+              <>
+                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                Starting Ride...
+              </>
+            ) : (
+              <>
+                <i className="bi bi-car-front me-2"></i>
+                Start Ride
+              </>
+            )}
+          </button>
+          {(!userLocation || !destination || users.length === 0) && (
+            <div className="start-ride-requirements">
+              {!userLocation && <span>• Set your starting location</span>}
+              {!destination && <span>• Set your destination</span>}
+              {users.length === 0 && <span>• Add at least one passenger</span>}
+            </div>
           )}
-        </button>
-        {(!userLocation || !destination || users.length === 0) && (
-          <div className="start-ride-requirements">
-            {!userLocation && <span>• Set your starting location</span>}
-            {!destination && <span>• Set your destination</span>}
-            {users.length === 0 && <span>• Add at least one passenger</span>}
+        </div>
+
+        {/* Success Modal */}
+        {showSuccessModal && (
+          <div className="modal-backdrop" style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1050
+          }}>
+            <div className="modal-content" style={{
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              padding: '20px',
+              maxWidth: '500px',
+              width: '90%',
+              position: 'relative',
+              zIndex: 1051,
+              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+            }}>
+              <div className="modal-header" style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '20px'
+              }}>
+                <h5 className="modal-title" style={{ margin: 0 }}>Ride Created Successfully!</h5>
+                <button 
+                  type="button" 
+                  className="btn-close" 
+                  onClick={() => {
+                    setShowSuccessModal(false);
+                    navigate('/dashboard');
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '1.5rem',
+                    cursor: 'pointer',
+                    padding: '0.5rem'
+                  }}
+                >×</button>
+              </div>
+              <div className="modal-body" style={{ marginBottom: '20px' }}>
+                <div className="text-center mb-4">
+                  <i className="bi bi-check-circle-fill text-success" style={{ fontSize: '3rem', color: '#28a745' }}></i>
+                </div>
+                <p className="text-center mb-3">Your ride has been created successfully!</p>
+                <div className="alert alert-info" style={{
+                  backgroundColor: '#e3f2fd',
+                  border: '1px solid #90caf9',
+                  borderRadius: '4px',
+                  padding: '15px',
+                  marginBottom: '15px'
+                }}>
+                  <strong>Ride ID:</strong> {createdRideId}
+                </div>
+                <p className="text-muted small text-center">
+                  You can use this ID to reference your ride. It will also be visible in your rides list.
+                </p>
+              </div>
+              <div className="modal-footer" style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '10px'
+              }}>
+                <button 
+                  type="button" 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    setShowSuccessModal(false);
+                    navigate('/dashboard');
+                  }}
+                  style={{
+                    backgroundColor: '#2196F3',
+                    color: 'white',
+                    border: 'none',
+                    padding: '8px 16px',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    transition: 'background-color 0.2s'
+                  }}
+                  onMouseOver={(e) => e.target.style.backgroundColor = '#1976D2'}
+                  onMouseOut={(e) => e.target.style.backgroundColor = '#2196F3'}
+                >
+                  Go to Dashboard
+                </button>
+              </div>
+            </div>
           </div>
         )}
-      </div>
 
-      {/* Success Modal */}
-      {showSuccessModal && (
-        <div className="modal-backdrop" style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1050
-        }}>
-          <div className="modal-content" style={{
-            backgroundColor: 'white',
-            borderRadius: '8px',
-            padding: '20px',
-            maxWidth: '500px',
-            width: '90%',
-            position: 'relative',
-            zIndex: 1051,
-            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
-          }}>
-            <div className="modal-header" style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '20px'
-            }}>
-              <h5 className="modal-title" style={{ margin: 0 }}>Ride Created Successfully!</h5>
-              <button 
-                type="button" 
-                className="btn-close" 
-                onClick={() => {
-                  setShowSuccessModal(false);
-                  navigate('/dashboard');
-                }}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  fontSize: '1.5rem',
-                  cursor: 'pointer',
-                  padding: '0.5rem'
-                }}
-              >×</button>
-            </div>
-            <div className="modal-body" style={{ marginBottom: '20px' }}>
-              <div className="text-center mb-4">
-                <i className="bi bi-check-circle-fill text-success" style={{ fontSize: '3rem', color: '#28a745' }}></i>
-              </div>
-              <p className="text-center mb-3">Your ride has been created successfully!</p>
-              <div className="alert alert-info" style={{
-                backgroundColor: '#e3f2fd',
-                border: '1px solid #90caf9',
-                borderRadius: '4px',
-                padding: '15px',
-                marginBottom: '15px'
-              }}>
-                <strong>Ride ID:</strong> {createdRideId}
-              </div>
-              <p className="text-muted small text-center">
-                You can use this ID to reference your ride. It will also be visible in your rides list.
-              </p>
-            </div>
-            <div className="modal-footer" style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              gap: '10px'
-            }}>
-              <button 
-                type="button" 
-                className="btn btn-primary" 
-                onClick={() => {
-                  setShowSuccessModal(false);
-                  navigate('/dashboard');
-                }}
-                style={{
-                  backgroundColor: '#2196F3',
-                  color: 'white',
-                  border: 'none',
-                  padding: '8px 16px',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseOver={(e) => e.target.style.backgroundColor = '#1976D2'}
-                onMouseOut={(e) => e.target.style.backgroundColor = '#2196F3'}
-              >
-                Go to Dashboard
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style jsx>{`
-        .start-ride-container {
-          margin-top: 2rem;
-          text-align: center;
-          padding: 1rem;
-          background: linear-gradient(135deg, rgba(33, 150, 243, 0.1), rgba(0, 188, 212, 0.1));
-          border-radius: 16px;
-          border: 1px solid rgba(33, 150, 243, 0.2);
-        }
-
-        .start-ride-button {
-          background: linear-gradient(45deg, #2196F3, #00BCD4);
-          color: white;
-          border: none;
-          padding: 16px 32px;
-          border-radius: 30px;
-          font-weight: 700;
-          font-size: 1.3em;
-          cursor: pointer;
-          transition: all 0.3s ease;
-          box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-width: 200px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .start-ride-button::before {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: -100%;
-          width: 100%;
-          height: 100%;
-          background: linear-gradient(
-            120deg,
-            transparent,
-            rgba(255, 255, 255, 0.2),
-            transparent
-          );
-          transition: 0.5s;
-        }
-
-        .start-ride-button:hover:not(:disabled) {
-          transform: translateY(-3px);
-          box-shadow: 0 8px 25px rgba(33, 150, 243, 0.4);
-          background: linear-gradient(45deg, #1976D2, #0097A7);
-        }
-
-        .start-ride-button:hover:not(:disabled)::before {
-          left: 100%;
-        }
-
-        .start-ride-button:disabled {
-          background: #ccc;
-          cursor: not-allowed;
-          transform: none;
-          box-shadow: none;
-        }
-
-        .start-ride-button:active:not(:disabled) {
-          transform: translateY(1px);
-          box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
-        }
-
-        .start-ride-requirements {
-          margin-top: 1rem;
-          color: #666;
-          font-size: 0.9rem;
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-          align-items: center;
-        }
-
-        .start-ride-requirements span {
-          background: rgba(255, 255, 255, 0.8);
-          padding: 0.25rem 1rem;
-          border-radius: 12px;
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-
-        @media (max-width: 768px) {
-          .start-ride-button {
-            width: 100%;
-            padding: 14px 28px;
-            font-size: 1.2em;
+        <style jsx>{`
+          .start-ride-container {
+            margin-top: 2rem;
+            text-align: center;
+            padding: 1rem;
+            background: linear-gradient(135deg, rgba(33, 150, 243, 0.1), rgba(0, 188, 212, 0.1));
+            border-radius: 16px;
+            border: 1px solid rgba(33, 150, 243, 0.2);
           }
-        }
-      `}</style>
+
+          .start-ride-button {
+            background: linear-gradient(45deg, #2196F3, #00BCD4);
+            color: white;
+            border: none;
+            padding: 16px 32px;
+            border-radius: 30px;
+            font-weight: 700;
+            font-size: 1.3em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 200px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+            max-width: 400px;
+          }
+
+          .start-ride-button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+              120deg,
+              transparent,
+              rgba(255, 255, 255, 0.2),
+              transparent
+            );
+            transition: 0.5s;
+          }
+
+          .start-ride-button:hover:not(:disabled) {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(33, 150, 243, 0.4);
+            background: linear-gradient(45deg, #1976D2, #0097A7);
+          }
+
+          .start-ride-button:hover:not(:disabled)::before {
+            left: 100%;
+          }
+
+          .start-ride-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+          }
+
+          .start-ride-button:active:not(:disabled) {
+            transform: translateY(1px);
+            box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+          }
+
+          .start-ride-requirements {
+            margin-top: 1rem;
+            color: #666;
+            font-size: 0.9rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            align-items: center;
+          }
+
+          .start-ride-requirements span {
+            background: rgba(255, 255, 255, 0.8);
+            padding: 0.25rem 1rem;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+          }
+
+          @media (max-width: 768px) {
+            .start-ride-button {
+              width: 100%;
+              padding: 14px 28px;
+              font-size: 1.2em;
+              max-width: none;
+            }
+
+            .container {
+              padding: 1rem;
+            }
+          }
+        `}</style>
+      </div>
     </div>
   );
 }

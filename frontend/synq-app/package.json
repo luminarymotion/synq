@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && firebase deploy --only hosting",
+    "deploy:preview": "npm run build && firebase hosting:channel:deploy preview"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.17.0",
@@ -17,7 +19,7 @@
     "@fontsource/space-grotesk": "^5.2.7",
     "autoprefixer": "^10.4.21",
     "bootstrap": "^5.3.5",
-    "firebase": "^11.6.1",
+    "firebase": "^10.7.0",
     "framer-motion": "^12.10.4",
     "ol": "^10.5.0",
     "postcss": "^8.5.3",
