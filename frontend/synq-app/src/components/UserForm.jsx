@@ -1,46 +1,114 @@
 import { useEffect, useState, useRef } from 'react';
+import '../styles/UserForm.css';
+import FriendSelectionModal from './FriendSelectionModal';
 
-function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocationChange }) {
+function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocationChange, creatorRole, existingParticipants = [] }) {
   const [suggestions, setSuggestions] = useState([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState([]);
   const [userLocationSuggestions, setUserLocationSuggestions] = useState([]);
   const [showModal, setShowModal] = useState(false);
-  const [lastSelectedAddress, setLastSelectedAddress] = useState('');
   const [lastSelectedDestination, setLastSelectedDestination] = useState('');
   const [lastSelectedUserLocation, setLastSelectedUserLocation] = useState('');
-  const typingTimeout = useRef(null);
+  const [userCoordinates, setUserCoordinates] = useState(null);
   const destinationTimeout = useRef(null);
   const userLocationTimeout = useRef(null);
-  const addressTimeout = useRef(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedFriend, setSelectedFriend] = useState(null);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
-    if (!form.address || form.address.length < 3 || form.address === lastSelectedAddress) {
-      setSuggestions([]);
-      return;
+  // Function to get user's current location
+  const getUserLocation = () => {
+    if ("geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserCoordinates({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => {
+          console.error("Error getting location:", error);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 5000,
+          maximumAge: 0
+        }
+      );
     }
+  };
 
-    if (typingTimeout.current) {
-      clearTimeout(typingTimeout.current);
-    }
+  // Function to calculate distance between two points
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c; // Distance in km
+  };
 
-    typingTimeout.current = setTimeout(async () => {
-      try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(form.address)}&countrycodes=us&limit=5`
-        );
-        const data = await res.json();
-        setSuggestions(data);
-      } catch (error) {
-        console.error("Error fetching suggestions:", error);
-        setSuggestions([]);
-      }
-    }, 300); // debounce
+  // Function to sort and filter suggestions based on relevance and distance
+  const processSuggestions = (suggestions, userCoords, searchTerm) => {
+    if (!suggestions || !suggestions.length) return [];
 
-    return () => clearTimeout(typingTimeout.current);
-  }, [form.address, lastSelectedAddress]);
+    // Add distance to each suggestion if we have user coordinates
+    const suggestionsWithDistance = suggestions.map(sug => ({
+      ...sug,
+      distance: userCoords ? calculateDistance(
+        userCoords.lat,
+        userCoords.lng,
+        parseFloat(sug.lat),
+        parseFloat(sug.lon)
+      ) : null
+    }));
 
+    // Sort suggestions based on relevance and distance
+    return suggestionsWithDistance
+      .sort((a, b) => {
+        // If we have user coordinates, prioritize by distance
+        if (userCoords) {
+          // If distances are significantly different (more than 1km), sort by distance
+          if (Math.abs(a.distance - b.distance) > 1) {
+            return a.distance - b.distance;
+          }
+        }
+        
+        // Otherwise, sort by how well the suggestion matches the search term
+        const aMatch = a.display_name.toLowerCase().includes(searchTerm.toLowerCase());
+        const bMatch = b.display_name.toLowerCase().includes(searchTerm.toLowerCase());
+        
+        if (aMatch && !bMatch) return -1;
+        if (!aMatch && bMatch) return 1;
+        
+        // If both match or neither match, sort by distance
+        return (a.distance || Infinity) - (b.distance || Infinity);
+      })
+      .slice(0, 5); // Limit to top 5 suggestions
+  };
+
+  // Watch for changes in user coordinates
   useEffect(() => {
-    if (!form.destination || form.destination.length < 3 || form.destination === lastSelectedDestination) {
+    getUserLocation();
+    // Set up periodic location updates
+    const locationInterval = setInterval(getUserLocation, 30000); // Update every 30 seconds
+    return () => clearInterval(locationInterval);
+  }, []);
+
+  // Update suggestions for destination
+  useEffect(() => {
+    // Only show suggestions if:
+    // 1. There is input
+    // 2. The input is different from the last selected value
+    // 3. The input is at least 3 characters
+    // 4. The input is not exactly matching the last selected value
+    if (!form.destination || 
+        form.destination === lastSelectedDestination || 
+        form.destination.length < 3 ||
+        form.destination.trim() === lastSelectedDestination.trim()) {
       setDestinationSuggestions([]);
       return;
     }
@@ -51,22 +119,33 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
 
     destinationTimeout.current = setTimeout(async () => {
       try {
+        const searchTerm = form.destination;
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(form.destination)}&countrycodes=us&limit=5`
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTerm)}&countrycodes=us&limit=10`
         );
         const data = await res.json();
-        setDestinationSuggestions(data);
+        const processedSuggestions = processSuggestions(data, userCoordinates, searchTerm);
+        setDestinationSuggestions(processedSuggestions);
       } catch (error) {
         console.error("Error fetching destination suggestions:", error);
         setDestinationSuggestions([]);
       }
-    }, 300); // debounce
+    }, 300);
 
     return () => clearTimeout(destinationTimeout.current);
-  }, [form.destination, lastSelectedDestination]);
+  }, [form.destination, lastSelectedDestination, userCoordinates]);
 
+  // Update suggestions for user location
   useEffect(() => {
-    if (!form.userLocation || form.userLocation.length < 3 || form.userLocation === lastSelectedUserLocation) {
+    // Only show suggestions if:
+    // 1. There is input
+    // 2. The input is different from the last selected value
+    // 3. The input is at least 3 characters
+    // 4. The input is not exactly matching the last selected value
+    if (!form.userLocation || 
+        form.userLocation === lastSelectedUserLocation || 
+        form.userLocation.length < 3 ||
+        form.userLocation.trim() === lastSelectedUserLocation.trim()) {
       setUserLocationSuggestions([]);
       return;
     }
@@ -77,35 +156,27 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
 
     userLocationTimeout.current = setTimeout(async () => {
       try {
+        const searchTerm = form.userLocation;
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(form.userLocation)}&countrycodes=us&limit=5`
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTerm)}&countrycodes=us&limit=10`
         );
         const data = await res.json();
-        setUserLocationSuggestions(data);
+        const processedSuggestions = processSuggestions(data, userCoordinates, searchTerm);
+        setUserLocationSuggestions(processedSuggestions);
       } catch (error) {
         console.error("Error fetching user location suggestions:", error);
         setUserLocationSuggestions([]);
       }
-    }, 300); // debounce
+    }, 300);
 
     return () => clearTimeout(userLocationTimeout.current);
-  }, [form.userLocation, lastSelectedUserLocation]);
-
-  const handleSelect = (place) => {
-    const selectedAddress = place.display_name;
-    setLastSelectedAddress(selectedAddress);
-    onChange({ target: { name: 'address', value: selectedAddress } });
-    setSuggestions([]);
-    if (typingTimeout.current) {
-      clearTimeout(typingTimeout.current);
-    }
-  };
+  }, [form.userLocation, lastSelectedUserLocation, userCoordinates]);
 
   const handleDestinationSelect = (place) => {
     const selectedDestination = place.display_name;
     setLastSelectedDestination(selectedDestination);
     onChange({ target: { name: 'destination', value: selectedDestination } });
-    setDestinationSuggestions([]);
+    setDestinationSuggestions([]); // Clear suggestions immediately
     if (destinationTimeout.current) {
       clearTimeout(destinationTimeout.current);
     }
@@ -118,7 +189,7 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     const selectedLocation = place.display_name;
     setLastSelectedUserLocation(selectedLocation);
     onChange({ target: { name: 'userLocation', value: selectedLocation } });
-    setUserLocationSuggestions([]);
+    setUserLocationSuggestions([]); // Clear suggestions immediately
     if (userLocationTimeout.current) {
       clearTimeout(userLocationTimeout.current);
     }
@@ -127,215 +198,227 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }
   };
 
-  const handleAddressSelect = (place) => {
-    const selectedAddress = place.display_name;
-    setLastSelectedAddress(selectedAddress);
-    onChange({ target: { name: 'address', value: selectedAddress } });
-    setSuggestions([]);
-    if (addressTimeout.current) {
-      clearTimeout(addressTimeout.current);
-    }
+  const handleAddFriend = (friend) => {
+    setSelectedFriend(friend);
+    // Pre-fill the form with friend's information
+    setForm(prev => ({
+      ...prev,
+      name: friend.displayName,
+      userLocation: '',
+      destination: ''
+    }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    onSubmit(e);
-    setShowModal(false);
-    // Clear all suggestions and last selected values
+    
+    // Store current values before clearing suggestions
+    const currentDestination = form.destination;
+    const currentUserLocation = form.userLocation;
+    
+    // Clear suggestions first
     setDestinationSuggestions([]);
     setUserLocationSuggestions([]);
-    setSuggestions([]);
-    setLastSelectedAddress('');
-    setLastSelectedDestination('');
-    setLastSelectedUserLocation('');
+    
+    // Update last selected values
+    setLastSelectedDestination(currentDestination);
+    setLastSelectedUserLocation(currentUserLocation);
+
+    if (!form.destination) {
+      setError('Please enter a destination');
+      return;
+    }
+
+    if (form.isCreator && form.role === 'passenger' && !form.userLocation) {
+      setError('Please enter your pickup location');
+      return;
+    }
+
+    try {
+      // If a friend was selected, include their information
+      const userData = {
+        ...form,
+        ...(selectedFriend && {
+          id: selectedFriend.id,
+          photoURL: selectedFriend.photoURL,
+          email: selectedFriend.email
+        })
+      };
+
+      await onSubmit(userData);
+      
+      // Reset form but keep destination
+      setForm(prev => ({
+        ...prev,
+        name: '',
+        userLocation: '',
+        destination: prev.destination // Keep the destination
+      }));
+      
+      setError(null);
+      setSelectedFriend(null); // Clear selected friend
+    } catch (err) {
+      console.error('Error submitting form:', err);
+      setError(err.message || 'Failed to add participant');
+    }
   };
 
   // Handle input focus to clear last selected values
   const handleInputFocus = (field) => {
     switch (field) {
-      case 'address':
-        setLastSelectedAddress('');
-        break;
       case 'destination':
         setLastSelectedDestination('');
+        setDestinationSuggestions([]);
         break;
       case 'userLocation':
         setLastSelectedUserLocation('');
+        setUserLocationSuggestions([]);
         break;
       default:
         break;
     }
   };
 
+  // Update the suggestion item rendering to show distance
+  const renderSuggestionItem = (suggestion, onClick) => (
+    <li
+      key={suggestion.place_id}
+      className="suggestion-item"
+      onClick={() => onClick(suggestion)}
+      role="button"
+    >
+      <div className="suggestion-content">
+        <div className="suggestion-name">{suggestion.display_name}</div>
+        {suggestion.distance !== null && (
+          <div className="suggestion-distance">
+            {suggestion.distance < 1 
+              ? `${Math.round(suggestion.distance * 1000)}m away`
+              : `${suggestion.distance.toFixed(1)}km away`}
+          </div>
+        )}
+      </div>
+    </li>
+  );
+
   return (
-    <>
-      {/* User Location Row */}
-      <div className="row g-3 mb-4 p-3 bg-light rounded shadow-sm">
-        <div className="col-12">
-          <label htmlFor="userLocation" className="form-label">Your Location</label>
-          <div className="input-group">
+    <div className="user-form-container">
+      {form.isCreator && (
+        <div className="role-toggle-container">
+          <div className="role-toggle">
             <input
-              type="text"
-              className="form-control"
-              id="userLocation"
-              placeholder="Enter your current location (US addresses only)"
-              name="userLocation"
-              value={form.userLocation || ''}
+              type="radio"
+              id="driver-role"
+              name="creatorRole"
+              value="driver"
+              checked={creatorRole === 'driver'}
               onChange={onChange}
-              onFocus={() => handleInputFocus('userLocation')}
-              autoComplete="off"
+              className="role-input"
             />
-          </div>
-          {userLocationSuggestions.length > 0 && (
-            <ul className="list-group position-absolute w-100 shadow-sm" style={{ zIndex: 1000, maxHeight: '200px', overflowY: 'auto' }}>
-              {userLocationSuggestions.map((sug, idx) => (
-                <li
-                  key={idx}
-                  className="list-group-item list-group-item-action hover-bg-light"
-                  onClick={() => handleUserLocationSelect(sug)}
-                  role="button"
-                >
-                  {sug.display_name}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
+            <label htmlFor="driver-role" className="role-label">
+              <i className="fas fa-car-side"></i>
+            </label>
 
-      {/* Destination Row */}
-      <div className="row g-3 mb-4 p-3 bg-light rounded shadow-sm">
-        <div className="col-12">
-          <label htmlFor="destination" className="form-label">Destination</label>
-          <div className="input-group">
             <input
-              type="text"
-              className="form-control"
-              id="destination"
-              placeholder="Enter destination (US addresses only)"
-              name="destination"
-              value={form.destination || ''}
+              type="radio"
+              id="passenger-role"
+              name="creatorRole"
+              value="passenger"
+              checked={creatorRole === 'passenger'}
               onChange={onChange}
-              onFocus={() => handleInputFocus('destination')}
-              autoComplete="off"
+              className="role-input"
             />
-          </div>
-          {destinationSuggestions.length > 0 && (
-            <ul className="list-group position-absolute w-100 shadow-sm" style={{ zIndex: 1000, maxHeight: '200px', overflowY: 'auto' }}>
-              {destinationSuggestions.map((sug, idx) => (
-                <li
-                  key={idx}
-                  className="list-group-item list-group-item-action hover-bg-light"
-                  onClick={() => handleDestinationSelect(sug)}
-                  role="button"
-                >
-                  {sug.display_name}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
-
-      {/* Add User */}
-      <div className="row g-3 mb-4 p-3 bg-light rounded shadow-sm">
-        <div className="mt-3">
-              <button 
-                className="btn btn-primary w-100" 
-                type="button"
-                onClick={() => setShowModal(true)}
-              >
-                Create A Group Ride
-              </button>
-            </div>
-      </div>
-
-      {/* Add User Modal */}
-      {showModal && (
-        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-          <div className="modal-dialog">
-            <div className="modal-content">
-              <div className="modal-header">
-                <h5 className="modal-title">Add New User</h5>
-                <button 
-                  type="button" 
-                  className="btn-close" 
-                  onClick={() => setShowModal(false)}
-                ></button>
-              </div>
-              <form onSubmit={handleSubmit}>
-                <div className="modal-body">
-                  <div className="mb-3">
-                    <label htmlFor="name" className="form-label">Name</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      id="name"
-                      placeholder="Enter user name"
-                      name="name"
-                      value={form.name}
-                      onChange={onChange}
-                      required
-                    />
-                  </div>
-                  <div className="mb-3">
-                    <label htmlFor="role" className="form-label">Role</label>
-                    <select
-                      className="form-select"
-                      id="role"
-                      name="role"
-                      value={form.role || 'passenger'}
-                      onChange={onChange}
-                      required
-                    >
-                      <option value="passenger">Passenger</option>
-                      <option value="driver">Driver</option>
-                    </select>
-                  </div>
-                  <div className="mb-3 position-relative">
-                    <label htmlFor="address" className="form-label">Address</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      id="address"
-                      placeholder="Enter address (US addresses only)"
-                      name="address"
-                      value={form.address}
-                      onChange={onChange}
-                      onFocus={() => handleInputFocus('address')}
-                      autoComplete="off"
-                      required
-                    />
-                    {suggestions.length > 0 && (
-                      <ul className="list-group position-absolute w-100 shadow-sm" style={{ zIndex: 1000, maxHeight: '200px', overflowY: 'auto' }}>
-                        {suggestions.map((sug, idx) => (
-                          <li
-                            key={idx}
-                            className="list-group-item list-group-item-action hover-bg-light"
-                            onClick={() => handleSelect(sug)}
-                            role="button"
-                          >
-                            {sug.display_name}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-                <div className="modal-footer">
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    Add User
-                  </button>
-                </div>
-              </form>
-            </div>
+            <label htmlFor="passenger-role" className="role-label">
+              <i className="fas fa-user-friends"></i>
+            </label>
           </div>
         </div>
       )}
-    </>
+
+      <form onSubmit={handleSubmit} className="user-form">
+        {form.isCreator && creatorRole === 'passenger' && (
+          <div className="form-group">
+            <label htmlFor="userLocation">Pickup Location</label>
+            <input
+              type="text"
+              id="userLocation"
+              name="userLocation"
+              value={form.userLocation}
+              onChange={onChange}
+              onFocus={() => handleInputFocus('userLocation')}
+              className="form-control"
+              placeholder="Enter your pickup location"
+              required
+            />
+            {userLocationSuggestions.length > 0 && (
+              <ul className="suggestions-list">
+                {userLocationSuggestions.map(suggestion => 
+                  renderSuggestionItem(suggestion, handleUserLocationSelect)
+                )}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className="form-group">
+          <label htmlFor="destination">Destination</label>
+          <input
+            type="text"
+            id="destination"
+            name="destination"
+            value={form.destination}
+            onChange={onChange}
+            onFocus={() => handleInputFocus('destination')}
+            className="form-control"
+            placeholder="Enter destination"
+            required
+          />
+          {destinationSuggestions.length > 0 && (
+            <ul className="suggestions-list">
+              {destinationSuggestions.map(suggestion => 
+                renderSuggestionItem(suggestion, handleDestinationSelect)
+              )}
+            </ul>
+          )}
+        </div>
+
+        {form.isCreator && (
+          <div className="form-group">
+            <button 
+              type="submit"
+              className="add-friend-button primary"
+              onClick={() => setIsModalOpen(true)}
+            >
+              <i className="fas fa-user-plus"></i>
+              Add from Friends
+            </button>
+          </div>
+        )}
+      </form>
+
+      <div className="form-info">
+        {form.isCreator && (
+          <div className="alert alert-info">
+            <i className="fas fa-info-circle"></i>
+            {creatorRole === 'passenger' 
+              ? "As a passenger, please provide your pickup location."
+              : "As a driver, you'll be picking up passengers."}
+          </div>
+        )}
+        {!form.isCreator && (
+          <div className="alert alert-info">
+            <i className="fas fa-info-circle"></i>
+            Adding a new participant. You can change their role later.
+          </div>
+        )}
+      </div>
+
+      <FriendSelectionModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onAddFriend={handleAddFriend}
+        existingParticipants={existingParticipants}
+      />
+    </div>
   );
 }
 
