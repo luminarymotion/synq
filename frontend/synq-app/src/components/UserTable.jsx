@@ -2,14 +2,13 @@ import React from 'react';
 
 function UserTable({ users, onDelete }) {
   return (
-    <div className="table-responsive">
-      <table className="table table-striped">
+    <div className="users-table-container">
+      <table className="users-table">
         <thead>
           <tr>
-            <th>Color</th>
             <th>Name</th>
             <th>Role</th>
-            <th>Place</th>
+            <th>Location</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -17,33 +16,50 @@ function UserTable({ users, onDelete }) {
           {users.map((user, index) => (
             <tr key={index}>
               <td>
-                <div
-                  style={{
-                    width: '20px',
-                    height: '20px',
-                    backgroundColor: user.color,
-                    borderRadius: '50%',
-                    border: '1px solid #ccc',
-                    margin: 'auto',
-                  }}
-                />
+                <div className="user-info">
+                  <div
+                    className="user-color-indicator"
+                    style={{ backgroundColor: user.color }}
+                  />
+                  <span className="user-name">{user.name}</span>
+                </div>
               </td>
-              <td>{user.name}</td>
               <td>
-                <span className={`badge ${user.role === 'driver' ? 'bg-primary' : 'bg-secondary'}`}>
+                <span className={`user-role ${user.role}`}>
+                  {user.role === 'driver' ? (
+                    <i className="fas fa-car me-1"></i>
+                  ) : (
+                    <i className="fas fa-user me-1"></i>
+                  )}
                   {user.role}
                 </span>
               </td>
-              <td>{user.address}</td>
               <td>
-                <button className="btn btn-danger btn-sm" onClick={() => onDelete(index)}>
-                  Delete
+                <div className="user-location">
+                  <i className="fas fa-map-marker-alt me-1"></i>
+                  {user.address}
+                </div>
+              </td>
+              <td>
+                <button 
+                  className="delete-user-btn"
+                  onClick={() => onDelete(index)}
+                  title="Remove friend"
+                >
+                  <i className="fas fa-trash-alt"></i>
                 </button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {users.length === 0 && (
+        <div className="empty-state">
+          <i className="fas fa-users"></i>
+          <p>No friends added yet</p>
+          <span>Add friends to start planning your ride</span>
+        </div>
+      )}
     </div>
   );
 }

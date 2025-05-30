@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint .",
+    "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "deploy": "npm run build && firebase deploy --only hosting",
-    "deploy:preview": "npm run build && firebase hosting:channel:deploy preview"
+    "deploy:preview": "npm run build && firebase hosting:channel:deploy preview",
+    "deploy:indexes": "node deploy-indexes.js"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.17.0",
@@ -20,6 +21,7 @@
     "autoprefixer": "^10.4.21",
     "bootstrap": "^5.3.5",
     "firebase": "^10.7.0",
+    "firebase-admin": "^11.11.0",
     "framer-motion": "^12.10.4",
     "ol": "^10.5.0",
     "postcss": "^8.5.3",

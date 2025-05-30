@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Firebase
+serviceAccountKey.json
+**/serviceAccountKey.json
+firebase-debug.log
+.firebase/
+firebase-debug.*.log

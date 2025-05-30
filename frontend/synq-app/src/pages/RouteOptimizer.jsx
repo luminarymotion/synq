@@ -9,27 +9,47 @@ import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { createRide } from '../services/firebaseOperations';
+import '../styles/RouteOptimizer.css';
 
 function RouteOptimizer() {
   const navigate = useNavigate();
   const { user } = useUserAuth();
   const [users, setUsers] = useState([]);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [form, setForm] = useState({ 
     name: '', 
     address: '', 
     destination: '', 
     role: 'passenger',
-    userLocation: '' 
+    userLocation: '',
+    isCreator: true // Add this to track if this is the creator's entry
   });
   const [destination, setDestination] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [isStartingRide, setIsStartingRide] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [createdRideId, setCreatedRideId] = useState(null);
+  const [creatorRole, setCreatorRole] = useState('driver'); // Add this to track creator's role
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+    if (name === 'creatorRole') {
+      setCreatorRole(value);
+      // If creator is driver, update their entry in users list
+      if (value === 'driver' && userLocation) {
+        setUsers(prevUsers => {
+          const creatorEntry = prevUsers.find(u => u.isCreator);
+          if (creatorEntry) {
+            return prevUsers.map(u => 
+              u.isCreator ? { ...u, role: 'driver' } : u
+            );
+          }
+          return prevUsers;
+        });
+      }
+    } else {
+      setForm((prev) => ({ ...prev, [name]: value }));
+    }
   };
 
   const geocodeAddress = async (address) => {
@@ -45,34 +65,68 @@ function RouteOptimizer() {
     return null;
   };
 
-  const addUser = async (e) => {
-    e.preventDefault();
-    const { name, address, role } = form;
-    if (!name || !address) return;
+  const addUser = async (userData) => {
+    try {
+      // Validate required fields
+      if (!userData.destination) {
+        throw new Error('Destination is required');
+      }
 
-    const coords = await geocodeAddress(address);
-    if (coords) {
-      const color = `#${Math.floor(Math.random() * 16777215).toString(16)}`;
-      // Generate a temporary ID for the passenger
-      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      setUsers((prevUsers) => [...prevUsers, { 
-        name, 
-        address: coords.address, 
-        lat: coords.lat, 
-        lng: coords.lng, 
+      if (userData.isCreator && userData.role === 'passenger' && !userData.userLocation) {
+        throw new Error('Pickup location is required for passengers');
+      }
+
+      // Geocode the destination
+      const destinationCoords = await geocodeAddress(userData.destination);
+      if (!destinationCoords) {
+        throw new Error('Could not find the destination address');
+      }
+
+      // If user is a passenger, geocode their location too
+      let userLocationCoords = null;
+      if (userData.isCreator && userData.role === 'passenger') {
+        userLocationCoords = await geocodeAddress(userData.userLocation);
+        if (!userLocationCoords) {
+          throw new Error('Could not find the pickup location address');
+        }
+      }
+
+      // Generate a random color for the user
+      const color = `#${Math.floor(Math.random()*16777215).toString(16)}`;
+
+      // Create the new user entry
+      const newUser = {
+        id: userData.id || `temp-${Date.now()}`, // Use friend's ID if available
+        name: userData.name,
+        role: userData.role || 'passenger',
+        destination: userData.destination,
+        destinationCoords,
         color,
-        role,
-        tempId // Add temporary ID for tracking
-      }]);
-      setForm({ 
-        name: '', 
-        address: '', 
-        destination: form.destination, 
-        role: 'passenger',
-        userLocation: form.userLocation 
-      });
-    } else {
-      alert('Address not found!');
+        photoURL: userData.photoURL, // Include friend's photo if available
+        email: userData.email, // Include friend's email if available
+        ...(userLocationCoords && {
+          userLocation: userData.userLocation,
+          userLocationCoords
+        })
+      };
+
+      // Update users state
+      setUsers(prevUsers => [...prevUsers, newUser]);
+
+      // If this is the first user (creator), update the destination in state
+      if (users.length === 0) {
+        setDestination(userData.destination);
+      }
+
+      // If this is a friend being added, you might want to send them a notification here
+      if (userData.id) {
+        // TODO: Implement notification sending
+        console.log('Friend added:', userData);
+      }
+
+    } catch (error) {
+      console.error('Error adding user:', error);
+      throw error;
     }
   };
 
@@ -94,9 +148,27 @@ function RouteOptimizer() {
     }
   };
 
+  // Add this function to handle role changes
+  const handleRoleChange = (tempId, newRole) => {
+    setUsers(prevUsers => 
+      prevUsers.map(user => 
+        user.tempId === tempId 
+          ? { ...user, role: newRole }
+          : user
+      )
+    );
+  };
+
   const handleStartRide = async () => {
-    if (!userLocation || !destination || users.length === 0) {
-      alert('Please add at least one passenger and set both start and destination locations');
+    if (!destination || users.length === 0) {
+      alert('Please add at least one passenger and set the destination location');
+      return;
+    }
+
+    // Find the driver (either creator or assigned driver)
+    const driver = users.find(u => u.role === 'driver');
+    if (!driver) {
+      alert('Please assign a driver for the ride');
       return;
     }
 
@@ -107,8 +179,7 @@ function RouteOptimizer() {
       // Get full addresses for all locations
       console.log('Fetching addresses...');
       const [driverAddress, destinationAddress] = await Promise.all([
-        // Get full address for driver location
-        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${userLocation.lat}&lon=${userLocation.lng}&addressdetails=1`)
+        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${driver.lat}&lon=${driver.lng}&addressdetails=1`)
           .then(res => res.json())
           .then(data => data.display_name)
           .catch((error) => {
@@ -116,7 +187,6 @@ function RouteOptimizer() {
             return 'Location not found';
           }),
         
-        // Get full address for destination
         fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${destination.lat}&lon=${destination.lng}&addressdetails=1`)
           .then(res => res.json())
           .then(data => data.display_name)
@@ -126,13 +196,10 @@ function RouteOptimizer() {
           })
       ]);
 
-      console.log('Driver address:', driverAddress);
-      console.log('Destination address:', destinationAddress);
-
       // Get full addresses for all passengers
       console.log('Fetching passenger addresses...');
       const passengerAddresses = await Promise.all(
-        users.map(async (user) => {
+        users.filter(u => u.role === 'passenger').map(async (user) => {
           try {
             const fullAddress = await fetch(
               `https://nominatim.openstreetmap.org/reverse?format=json&lat=${user.lat}&lon=${user.lng}&addressdetails=1`
@@ -141,7 +208,6 @@ function RouteOptimizer() {
               .then(data => data.display_name)
               .catch(() => 'Location not found');
             
-            console.log(`Passenger ${user.name} address:`, fullAddress);
             return {
               ...user,
               fullAddress
@@ -156,21 +222,22 @@ function RouteOptimizer() {
         })
       );
 
-      // Create a new ride document in Firestore with full addresses
-      console.log('Preparing ride data...');
+      // Create ride data with the selected driver
       const rideData = {
         driver: {
-          uid: user.uid,
-          name: user.displayName || 'Driver',
-          location: userLocation,
-          address: driverAddress
+          uid: driver.isCreator ? user.uid : null, // Only set uid if creator is driver
+          name: driver.name,
+          location: { lat: driver.lat, lng: driver.lng },
+          address: driverAddress,
+          isCreator: driver.isCreator
         },
         passengers: passengerAddresses.map(passenger => ({
           name: passenger.name,
           location: { lat: passenger.lat, lng: passenger.lng },
           address: passenger.fullAddress,
           status: 'pending',
-          tempId: passenger.tempId
+          tempId: passenger.tempId,
+          isCreator: passenger.isCreator
         })),
         destination: {
           location: destination,
@@ -184,8 +251,7 @@ function RouteOptimizer() {
 
       console.log('Creating ride with data:', rideData);
       const result = await createRide(rideData);
-      console.log('Ride creation result:', result);
-
+      
       if (result.success) {
         setCreatedRideId(result.rideId);
         setShowSuccessModal(true);
@@ -200,145 +266,190 @@ function RouteOptimizer() {
     }
   };
 
+  // Add click handler for sidebar toggle
+  const handleSidebarClick = (e) => {
+    // Only toggle if clicking the sidebar itself, not its children
+    if (e.target === e.currentTarget) {
+      setIsSidebarOpen(!isSidebarOpen);
+    }
+  };
+
   return (
-    <div className="container mt-4" style={{ 
-      minHeight: 'calc(100vh - 200px)', 
-      display: 'flex', 
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center'
-    }}>
-      <div style={{ width: '100%', maxWidth: '800px' }}>
-        <UserForm 
-          form={form} 
-          onChange={handleChange} 
-          onSubmit={addUser} 
-          onDestinationChange={handleDestinationChange}
-          onUserLocationChange={handleUserLocationChange}
-        />
-        <UserTable users={users} onDelete={handleDelete} />
-        <MapView 
-          users={users} 
-          destination={destination}
-          userLocation={userLocation}
-          onSetDestinationFromMap={(coords) => setDestination(coords)}
-        />
-        
-        <div className="start-ride-container">
-          <button
-            className="start-ride-button"
-            onClick={handleStartRide}
-            disabled={isStartingRide || !userLocation || !destination || users.length === 0}
+    <div className="route-optimizer-container">
+      <div className="route-optimizer-content">
+        <div className="route-optimizer-header">
+          <h1>Create New Ride</h1>
+        </div>
+
+        <div className="route-optimizer-main">
+          {/* Sliding Sidebar */}
+          <div 
+            className={`route-optimizer-sidebar ${isSidebarOpen ? 'open' : 'closed'}`}
+            onClick={handleSidebarClick}
           >
-            {isStartingRide ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                Starting Ride...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-car-front me-2"></i>
-                Start Ride
-              </>
-            )}
-          </button>
-          {(!userLocation || !destination || users.length === 0) && (
-            <div className="start-ride-requirements">
-              {!userLocation && <span>• Set your starting location</span>}
-              {!destination && <span>• Set your destination</span>}
-              {users.length === 0 && <span>• Add at least one passenger</span>}
+            <div className="sidebar-handle">
+              <button 
+                className="sidebar-toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsSidebarOpen(!isSidebarOpen);
+                }}
+                aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+              >
+                <i className={`fas fa-${isSidebarOpen ? 'chevron-left' : 'chevron-right'}`}></i>
+              </button>
             </div>
-          )}
+            <div className="sidebar-content" onClick={(e) => e.stopPropagation()}>
+              <UserForm 
+                form={form} 
+                onChange={handleChange} 
+                onSubmit={addUser} 
+                onDestinationChange={handleDestinationChange}
+                onUserLocationChange={handleUserLocationChange}
+                creatorRole={creatorRole}
+                existingParticipants={users}
+              />
+              
+              {/* Enhanced UserTable */}
+              <div className="user-table-container">
+                <h5>Participants</h5>
+                <div className="table-responsive">
+                  <table className="table table-hover">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Address</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {users.map((user) => (
+                        <tr key={user.tempId}>
+                          <td>
+                            <div className="d-flex align-items-center">
+                              <i className={`fas fa-${user.role === 'driver' ? 'car' : 'user'} me-2`} 
+                                 style={{ color: user.role === 'driver' ? '#2196F3' : '#6c757d' }}></i>
+                              {user.name}
+                              {user.isCreator && <span className="badge bg-info ms-2">You</span>}
+                            </div>
+                          </td>
+                          <td>{user.address}</td>
+                          <td>
+                            <span className={`badge bg-${user.status === 'active' ? 'success' : 'secondary'}`}>
+                              {user.status || 'Pending'}
+                            </span>
+                          </td>
+                          <td>
+                            {!user.isCreator && (
+                              <div className="btn-group">
+                                <button
+                                  className="btn btn-sm btn-outline-primary me-1"
+                                  onClick={() => handleRoleChange(user.tempId, user.role === 'driver' ? 'passenger' : 'driver')}
+                                  title={`Change to ${user.role === 'driver' ? 'passenger' : 'driver'}`}
+                                >
+                                  <i className={`fas fa-${user.role === 'driver' ? 'user' : 'car'}`}></i>
+                                </button>
+                                <button
+                                  className="btn btn-sm btn-outline-danger"
+                                  onClick={() => handleDelete(users.findIndex(u => u.tempId === user.tempId))}
+                                  title="Remove participant"
+                                >
+                                  <i className="fas fa-trash"></i>
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
+              <div className="start-ride-container">
+                <button
+                  className={`start-ride-button ${(!destination || users.length === 0 || !users.some(u => u.role === 'driver')) ? 'disabled' : ''}`}
+                  onClick={handleStartRide}
+                  disabled={isStartingRide || !destination || users.length === 0 || !users.some(u => u.role === 'driver')}
+                >
+                  {isStartingRide ? (
+                    <>
+                      <span className="spinner"></span>
+                      Starting Ride...
+                    </>
+                  ) : (
+                    <>
+                      <i className="fas fa-car"></i>
+                      Start Ride
+                    </>
+                  )}
+                </button>
+                
+                {(!destination || users.length === 0 || !users.some(u => u.role === 'driver')) && (
+                  <div className="start-ride-requirements">
+                    {!destination && <span><i className="fas fa-flag-checkered"></i> Set destination</span>}
+                    {users.length === 0 && <span><i className="fas fa-users"></i> Add at least one passenger</span>}
+                    {!users.some(u => u.role === 'driver') && <span><i className="fas fa-user"></i> Assign a driver</span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Map Container */}
+          <div className="route-optimizer-map-wrapper">
+            <div className="route-optimizer-map-container">
+              <MapView 
+                users={users} 
+                destination={destination}
+                userLocation={userLocation}
+                onSetDestinationFromMap={(coords) => setDestination(coords)}
+              />
+            </div>
+          </div>
         </div>
 
         {/* Success Modal */}
         {showSuccessModal && (
-          <div className="modal-backdrop" style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1050
-          }}>
-            <div className="modal-content" style={{
-              backgroundColor: 'white',
-              borderRadius: '8px',
-              padding: '20px',
-              maxWidth: '500px',
-              width: '90%',
-              position: 'relative',
-              zIndex: 1051,
-              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
-            }}>
-              <div className="modal-header" style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '20px'
-              }}>
-                <h5 className="modal-title" style={{ margin: 0 }}>Ride Created Successfully!</h5>
+          <div className="modal-backdrop">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Ride Created Successfully!</h5>
                 <button 
                   type="button" 
-                  className="btn-close" 
+                  className="modal-close" 
                   onClick={() => {
                     setShowSuccessModal(false);
                     navigate('/dashboard');
                   }}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: '1.5rem',
-                    cursor: 'pointer',
-                    padding: '0.5rem'
-                  }}
-                >×</button>
+                >
+                  <i className="fas fa-times"></i>
+                </button>
               </div>
-              <div className="modal-body" style={{ marginBottom: '20px' }}>
-                <div className="text-center mb-4">
-                  <i className="bi bi-check-circle-fill text-success" style={{ fontSize: '3rem', color: '#28a745' }}></i>
+              
+              <div className="modal-body">
+                <div className="success-icon">
+                  <i className="fas fa-check-circle"></i>
                 </div>
-                <p className="text-center mb-3">Your ride has been created successfully!</p>
-                <div className="alert alert-info" style={{
-                  backgroundColor: '#e3f2fd',
-                  border: '1px solid #90caf9',
-                  borderRadius: '4px',
-                  padding: '15px',
-                  marginBottom: '15px'
-                }}>
-                  <strong>Ride ID:</strong> {createdRideId}
+                <p className="success-message">Your ride has been created successfully!</p>
+                <div className="ride-id-container">
+                  <span className="ride-id-label">Ride ID:</span>
+                  <span className="ride-id">{createdRideId}</span>
                 </div>
-                <p className="text-muted small text-center">
+                <p className="ride-id-note">
                   You can use this ID to reference your ride. It will also be visible in your rides list.
                 </p>
               </div>
-              <div className="modal-footer" style={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: '10px'
-              }}>
+
+              <div className="modal-footer">
                 <button 
                   type="button" 
-                  className="btn btn-primary" 
+                  className="modal-button"
                   onClick={() => {
                     setShowSuccessModal(false);
                     navigate('/dashboard');
                   }}
-                  style={{
-                    backgroundColor: '#2196F3',
-                    color: 'white',
-                    border: 'none',
-                    padding: '8px 16px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    transition: 'background-color 0.2s'
-                  }}
-                  onMouseOver={(e) => e.target.style.backgroundColor = '#1976D2'}
-                  onMouseOut={(e) => e.target.style.backgroundColor = '#2196F3'}
                 >
                   Go to Dashboard
                 </button>
@@ -346,108 +457,6 @@ function RouteOptimizer() {
             </div>
           </div>
         )}
-
-        <style jsx>{`
-          .start-ride-container {
-            margin-top: 2rem;
-            text-align: center;
-            padding: 1rem;
-            background: linear-gradient(135deg, rgba(33, 150, 243, 0.1), rgba(0, 188, 212, 0.1));
-            border-radius: 16px;
-            border: 1px solid rgba(33, 150, 243, 0.2);
-          }
-
-          .start-ride-button {
-            background: linear-gradient(45deg, #2196F3, #00BCD4);
-            color: white;
-            border: none;
-            padding: 16px 32px;
-            border-radius: 30px;
-            font-weight: 700;
-            font-size: 1.3em;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(33, 150, 243, 0.3);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 200px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            position: relative;
-            overflow: hidden;
-            width: 100%;
-            max-width: 400px;
-          }
-
-          .start-ride-button::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(
-              120deg,
-              transparent,
-              rgba(255, 255, 255, 0.2),
-              transparent
-            );
-            transition: 0.5s;
-          }
-
-          .start-ride-button:hover:not(:disabled) {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(33, 150, 243, 0.4);
-            background: linear-gradient(45deg, #1976D2, #0097A7);
-          }
-
-          .start-ride-button:hover:not(:disabled)::before {
-            left: 100%;
-          }
-
-          .start-ride-button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-          }
-
-          .start-ride-button:active:not(:disabled) {
-            transform: translateY(1px);
-            box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
-          }
-
-          .start-ride-requirements {
-            margin-top: 1rem;
-            color: #666;
-            font-size: 0.9rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-            align-items: center;
-          }
-
-          .start-ride-requirements span {
-            background: rgba(255, 255, 255, 0.8);
-            padding: 0.25rem 1rem;
-            border-radius: 12px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-          }
-
-          @media (max-width: 768px) {
-            .start-ride-button {
-              width: 100%;
-              padding: 14px 28px;
-              font-size: 1.2em;
-              max-width: none;
-            }
-
-            .container {
-              padding: 1rem;
-            }
-          }
-        `}</style>
       </div>
     </div>
   );

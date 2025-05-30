@@ -12,6 +12,7 @@ import { boundingExtent } from 'ol/extent';
 import { defaults as defaultControls } from 'ol/control';
 import { LineString } from 'ol/geom';
 import { calculateRoute, getTrafficInfo } from './routeService';
+import '../styles/MapView.css';
 
 function MapView({ users, destination, userLocation, onSetDestinationFromMap }) {
   const mapRef = useRef();
@@ -427,13 +428,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
       <div className="map-section">
         <div
           ref={mapRef}
-          style={{
-            width: '100%',
-            height: '500px',
-            border: '1px solid #ccc',
-            borderRadius: '12px',
-            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-          }}
+          className="map-container"
         />
         {error && (
           <div className="error-message">
@@ -494,13 +489,15 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
         .map-and-details-container {
           display: flex;
           flex-direction: column;
-          gap: 20px;
-          margin-top: 20px;
           width: 100%;
+          height: 100%;
+          position: relative;
         }
         .map-section {
           width: 100%;
+          height: 100%;
           position: relative;
+          flex: 1;
         }
         .route-details-section {
           width: 100%;

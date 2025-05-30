@@ -8,6 +8,7 @@ import ProfileSetup from './pages/ProfileSetup';
 import Dashboard from './pages/Dashboard';
 import Friends from './components/Friends';
 import Rides from './pages/Rides';
+import LiveRideView from './pages/LiveRideView';
 import Header from './components/Header';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
 import './styles/theme.css';
@@ -29,7 +30,6 @@ function AppRoutes() {
 
   return (
     <div className="App">
-      {/* Always render Header, but its content will be controlled by the Header component */}
       <Header />
       <Routes>
         <Route path="/" element={
@@ -95,6 +95,11 @@ function AppRoutes() {
         <Route path="/rides" element={
           <ProtectedRoute>
             {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Rides />}
+          </ProtectedRoute>
+        } />
+        <Route path="/rides/:rideId" element={
+          <ProtectedRoute>
+            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <LiveRideView />}
           </ProtectedRoute>
         } />
         <Route path="/profile" element={

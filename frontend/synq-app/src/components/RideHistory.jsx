@@ -1,44 +1,78 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useUserAuth } from '../services/auth';
 import { getUserRideHistory, clearUserRideHistory } from '../services/firebaseOperations';
 import { Link } from 'react-router-dom';
 
-function RideHistory({ limit = 5 }) {
-  const { user } = useUserAuth();
-  const [history, setHistory] = useState([]);
+function RideHistory({ userId }) {
+  const { user } = useUserAuth(); // Get the current user
+  const [rides, setRides] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [showAll, setShowAll] = useState(false);
-  const [showClearModal, setShowClearModal] = useState(false);
-  const [clearing, setClearing] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+
+  // Use the provided userId or fall back to the current user's ID
+  const effectiveUserId = userId || user?.uid;
+
+  const loadRideHistory = useCallback(async () => {
+    if (!effectiveUserId) {
+      setError('User ID is required to load ride history');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      const result = await getUserRideHistory(effectiveUserId);
+      if (result.success) {
+        setRides(result.rides);
+      } else {
+        setError(result.error || 'Failed to load ride history');
+      }
+    } catch (err) {
+      console.error('Error loading ride history:', err);
+      setError(err.message || 'Failed to load ride history');
+    } finally {
+      setLoading(false);
+    }
+  }, [effectiveUserId]);
 
   useEffect(() => {
-    const loadHistory = async () => {
-      if (!user) return;
-      
-      try {
-        setLoading(true);
-        const result = await getUserRideHistory(user.uid, showAll ? 20 : limit);
-        
-        if (result.success) {
-          setHistory(result.rides);
-          setError(null);
-        } else if (result.error) {
-          setError('Failed to load ride history');
-        } else {
-          setHistory([]);
-          setError(null);
-        }
-      } catch (err) {
-        console.error('Error loading ride history:', err);
-        setError('Failed to load ride history');
-      } finally {
-        setLoading(false);
-      }
-    };
+    loadRideHistory();
+  }, [loadRideHistory]);
 
-    loadHistory();
-  }, [user, limit, showAll]);
+  const handleClearHistory = async () => {
+    if (!effectiveUserId) {
+      setError('User ID is required to clear ride history');
+      return;
+    }
+
+    try {
+      setIsClearing(true);
+      const result = await clearUserRideHistory(effectiveUserId);
+      if (result.success) {
+        setRides([]);
+        // Show a temporary success message
+        const successMessage = document.createElement('div');
+        successMessage.className = 'alert alert-success';
+        successMessage.style.position = 'fixed';
+        successMessage.style.top = '20px';
+        successMessage.style.left = '50%';
+        successMessage.style.transform = 'translateX(-50%)';
+        successMessage.style.zIndex = '1000';
+        successMessage.textContent = 'Ride history cleared from view';
+        document.body.appendChild(successMessage);
+        setTimeout(() => successMessage.remove(), 3000);
+      } else {
+        setError(result.error || 'Failed to clear ride history');
+      }
+    } catch (err) {
+      console.error('Error clearing ride history:', err);
+      setError(err.message || 'Failed to clear ride history');
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   const formatDate = (timestamp) => {
     if (!timestamp) return 'N/A';
@@ -66,28 +100,6 @@ function RideHistory({ limit = 5 }) {
 
   const getRoleBadgeClass = (role) => {
     return role === 'driver' ? 'bg-primary' : 'bg-info';
-  };
-
-  const handleClearHistory = async () => {
-    if (!user) return;
-    
-    try {
-      setClearing(true);
-      const result = await clearUserRideHistory(user.uid);
-      
-      if (result.success) {
-        setHistory([]);
-        setError(null);
-        setShowClearModal(false);
-      } else {
-        setError(result.error || 'Failed to clear ride history');
-      }
-    } catch (err) {
-      console.error('Error clearing ride history:', err);
-      setError('Failed to clear ride history');
-    } finally {
-      setClearing(false);
-    }
   };
 
   if (loading) {
@@ -120,17 +132,17 @@ function RideHistory({ limit = 5 }) {
     );
   }
 
-  if (history.length === 0) {
+  if (rides.length === 0) {
     return (
       <div className="card">
         <div className="card-header d-flex justify-content-between align-items-center">
           <h5 className="card-title mb-0">Recent Ride History</h5>
           <button 
             className="btn btn-outline-danger btn-sm"
-            onClick={() => setShowClearModal(true)}
-            disabled={clearing}
+            onClick={handleClearHistory}
+            disabled={isClearing}
           >
-            {clearing ? (
+            {isClearing ? (
               <>
                 <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
                 Clearing...
@@ -149,54 +161,6 @@ function RideHistory({ limit = 5 }) {
           </div>
           <h6 className="text-muted mb-0">No recent rides in the past 24 hours</h6>
         </div>
-
-        {/* Clear History Modal */}
-        {showClearModal && (
-          <div className="modal fade show" style={{ display: 'block' }} tabIndex="-1">
-            <div className="modal-dialog modal-dialog-centered">
-              <div className="modal-content">
-                <div className="modal-header">
-                  <h5 className="modal-title">Clear Ride History</h5>
-                  <button 
-                    type="button" 
-                    className="btn-close" 
-                    onClick={() => setShowClearModal(false)}
-                    disabled={clearing}
-                  ></button>
-                </div>
-                <div className="modal-body">
-                  <p>Are you sure you want to clear your ride history? This action cannot be undone.</p>
-                </div>
-                <div className="modal-footer">
-                  <button 
-                    type="button" 
-                    className="btn btn-secondary" 
-                    onClick={() => setShowClearModal(false)}
-                    disabled={clearing}
-                  >
-                    Cancel
-                  </button>
-                  <button 
-                    type="button" 
-                    className="btn btn-danger" 
-                    onClick={handleClearHistory}
-                    disabled={clearing}
-                  >
-                    {clearing ? (
-                      <>
-                        <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                        Clearing...
-                      </>
-                    ) : (
-                      'Clear History'
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="modal-backdrop fade show"></div>
-          </div>
-        )}
       </div>
     );
   }
@@ -205,20 +169,14 @@ function RideHistory({ limit = 5 }) {
     <div className="card">
       <div className="card-header d-flex justify-content-between align-items-center">
         <div className="d-flex align-items-center">
-          <h5 className="card-title mb-0">Recent Ride History</h5>
-          <button 
-            className="btn btn-link btn-sm ms-3"
-            onClick={() => setShowAll(!showAll)}
-          >
-            {showAll ? 'Show Less' : 'Show More'}
-          </button>
+        <h5 className="card-title mb-0">Recent Ride History</h5>
         </div>
         <button 
           className="btn btn-outline-danger btn-sm"
-          onClick={() => setShowClearModal(true)}
-          disabled={clearing}
+          onClick={handleClearHistory}
+          disabled={isClearing}
         >
-          {clearing ? (
+          {isClearing ? (
             <>
               <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
               Clearing...
@@ -233,7 +191,7 @@ function RideHistory({ limit = 5 }) {
       </div>
       <div className="card-body p-0">
         <div className="list-group list-group-flush">
-          {history.map((ride) => (
+          {rides.map((ride) => (
             <div key={ride.id} className="list-group-item">
               <div className="d-flex justify-content-between align-items-start mb-2">
                 <div>

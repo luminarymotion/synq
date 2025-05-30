@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "deploy:indexes": "node deploy-indexes.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^11.11.0"
+  }
+} 

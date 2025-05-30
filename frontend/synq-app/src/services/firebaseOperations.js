@@ -861,95 +861,136 @@ export const getRideHistory = async (rideId) => {
 
 // Add function to get user's ride history
 export const getUserRideHistory = async (userId, limitCount = 10) => {
+  if (!userId) {
+    console.error('getUserRideHistory called with undefined userId');
+    return { 
+      success: false, 
+      error: 'User ID is required to fetch ride history' 
+    };
+  }
+
   try {
-    // Query for rides where user was either driver or passenger
-    const driverRidesQuery = query(
+    // Query for rides where user is driver
+    const driverQuery = query(
       collection(db, 'rides'),
       where('driver.uid', '==', userId),
-      where('status', '==', 'ended'),
-      where(`hiddenForUsers.${userId}`, '!=', true), // Exclude hidden rides
-      orderBy('endedAt', 'desc'),
+      where('status', 'in', ['ended', 'completed', 'cancelled']),
+      orderBy('createdAt', 'desc'),
       limit(limitCount)
     );
 
-    const passengerRidesQuery = query(
+    // Query for rides where user is passenger
+    const passengerQuery = query(
       collection(db, 'rides'),
       where('passengerUids', 'array-contains', userId),
-      where('status', '==', 'ended'),
-      where(`hiddenForUsers.${userId}`, '!=', true), // Exclude hidden rides
-      orderBy('endedAt', 'desc'),
+      where('status', 'in', ['ended', 'completed', 'cancelled']),
+      orderBy('createdAt', 'desc'),
       limit(limitCount)
     );
 
     try {
+      console.log('Fetching ride history for user:', userId);
       const [driverSnapshot, passengerSnapshot] = await Promise.all([
-        getDocs(driverRidesQuery),
-        getDocs(passengerRidesQuery)
+        getDocs(driverQuery),
+        getDocs(passengerQuery)
       ]);
+
+      console.log('Driver rides found:', driverSnapshot.docs.length);
+      console.log('Passenger rides found:', passengerSnapshot.docs.length);
 
       // Combine and deduplicate rides
       const allRides = [
-        ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'driver' })),
-        ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'passenger' }))
+        ...driverSnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data(), 
+          role: 'driver',
+          createdAt: doc.data().createdAt?.toDate() || new Date(0)
+        })),
+        ...passengerSnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data(), 
+          role: 'passenger',
+          createdAt: doc.data().createdAt?.toDate() || new Date(0)
+        }))
       ];
 
+      // Sort by creation time, most recent first
       const uniqueRides = Array.from(
         new Map(allRides.map(ride => [ride.id, ride])).values()
-      ).sort((a, b) => b.endedAt.toDate() - a.endedAt.toDate());
+      ).sort((a, b) => b.createdAt - a.createdAt);
 
+      console.log('Total unique rides:', uniqueRides.length);
       return {
         success: true,
         rides: uniqueRides.slice(0, limitCount)
       };
     } catch (error) {
-      // If we get an index error, fall back to a simpler query without ordering
+      console.error('Error in primary query:', error);
+      
       if (error.code === 'failed-precondition') {
-        console.log('Index not available, fetching without orderBy');
+        console.log('Index not available, trying without ordering');
         
-        const simpleDriverQuery = query(
+        // Fallback query without ordering
+        const basicDriverQuery = query(
           collection(db, 'rides'),
           where('driver.uid', '==', userId),
-          where('status', '==', 'ended'),
+          where('status', 'in', ['ended', 'completed', 'cancelled']),
           limit(limitCount)
         );
 
-        const simplePassengerQuery = query(
+        const basicPassengerQuery = query(
           collection(db, 'rides'),
           where('passengerUids', 'array-contains', userId),
-          where('status', '==', 'ended'),
+          where('status', 'in', ['ended', 'completed', 'cancelled']),
           limit(limitCount)
         );
 
-        const [driverSnapshot, passengerSnapshot] = await Promise.all([
-          getDocs(simpleDriverQuery),
-          getDocs(simplePassengerQuery)
-        ]);
+        try {
+          const [driverSnapshot, passengerSnapshot] = await Promise.all([
+            getDocs(basicDriverQuery),
+            getDocs(basicPassengerQuery)
+          ]);
 
-        const allRides = [
-          ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'driver' })),
-          ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), role: 'passenger' }))
-        ];
+          const allRides = [
+            ...driverSnapshot.docs.map(doc => ({ 
+              id: doc.id, 
+              ...doc.data(), 
+              role: 'driver',
+              createdAt: doc.data().createdAt?.toDate() || new Date(0)
+            })),
+            ...passengerSnapshot.docs.map(doc => ({ 
+              id: doc.id, 
+              ...doc.data(), 
+              role: 'passenger',
+              createdAt: doc.data().createdAt?.toDate() || new Date(0)
+            }))
+          ];
 
-        const uniqueRides = Array.from(
-          new Map(allRides.map(ride => [ride.id, ride])).values()
-        );
+          // Sort in memory by creation time
+          const uniqueRides = Array.from(
+            new Map(allRides.map(ride => [ride.id, ride])).values()
+          ).sort((a, b) => b.createdAt - a.createdAt);
 
-        // Sort in memory since we can't use orderBy
-        uniqueRides.sort((a, b) => {
-          if (!a.endedAt || !b.endedAt) return 0;
-          return b.endedAt.toDate() - a.endedAt.toDate();
-        });
-
-        return {
-          success: true,
-          rides: uniqueRides.slice(0, limitCount)
-        };
+          return {
+            success: true,
+            rides: uniqueRides.slice(0, limitCount)
+          };
+        } catch (fallbackError) {
+          console.error('Error in fallback query:', fallbackError);
+          throw fallbackError;
+        }
       }
       throw error;
     }
   } catch (error) {
     console.error('Error getting user ride history:', error);
-    return { success: false, error: error.message || 'Failed to load ride history' };
+    return { 
+      success: false, 
+      error: error.message || 'Failed to load ride history',
+      details: error.code === 'failed-precondition' ? 
+        'Please create the required index in Firebase Console' : 
+        undefined
+    };
   }
 };
 
@@ -999,59 +1040,11 @@ export const migrateRidesToFriendlyIds = async () => {
   }
 };
 
-// Add function to clear user's ride history
+// Update clearUserRideHistory to only clear frontend state
 export const clearUserRideHistory = async (userId) => {
-  try {
-    // Get all rides where user was either driver or passenger
-    const driverRidesQuery = query(
-      collection(db, 'rides'),
-      where('driver.uid', '==', userId),
-      where('status', '==', 'ended')
-    );
-
-    const passengerRidesQuery = query(
-      collection(db, 'rides'),
-      where('passengerUids', 'array-contains', userId),
-      where('status', '==', 'ended')
-    );
-
-    const [driverSnapshot, passengerSnapshot] = await Promise.all([
-      getDocs(driverRidesQuery),
-      getDocs(passengerRidesQuery)
-    ]);
-
-    // Combine and deduplicate rides
-    const allRides = [
-      ...driverSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
-      ...passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-    ];
-
-    const uniqueRides = Array.from(
-      new Map(allRides.map(ride => [ride.id, ride])).values()
-    );
-
-    // Use a batch write to update all rides
-    const batch = writeBatch(db);
-    
-    for (const ride of uniqueRides) {
-      const rideRef = doc(db, 'rides', ride.id);
-      // Instead of deleting, we'll mark the ride as hidden for this user
-      batch.update(rideRef, {
-        [`hiddenForUsers.${userId}`]: true,
-        updatedAt: serverTimestamp()
-      });
-    }
-
-    await batch.commit();
-    return { 
-      success: true, 
-      message: `Successfully cleared ${uniqueRides.length} rides from history` 
-    };
-  } catch (error) {
-    console.error('Error clearing ride history:', error);
-    return { 
-      success: false, 
-      error: error.message || 'Failed to clear ride history' 
-    };
-  }
+  // This function now just returns success since we're only clearing frontend state
+  return { 
+    success: true, 
+    message: 'Ride history cleared from view' 
+  };
 }; 
