@@ -1,6 +1,6 @@
 // LocationTracker.jsx - Component for testing location tracking
 import React, { useEffect } from 'react';
-import useLocation from '../hooks/useLocation';
+import { useLocation } from '../services/locationTrackingService';
 import '../styles/LocationTracker.css';
 
 const LocationTracker = () => {
@@ -8,34 +8,27 @@ const LocationTracker = () => {
     location,
     isTracking,
     error,
-    permissionStatus,
+    status,
     startTracking,
-    stopTracking,
-    isSupported
-  } = useLocation();
+    stopTracking
+  } = useLocation({
+    preset: 'basic',
+    autoStop: true
+  });
 
-  // Auto-start tracking when component mounts
+  // Auto-start tracking when component mounts if status is active
   useEffect(() => {
-    if (permissionStatus === 'granted' && !isTracking) {
+    if (status === 'active' && !isTracking) {
       startTracking();
     }
-  }, [permissionStatus, isTracking, startTracking]);
-
-  if (!isSupported) {
-    return (
-      <div className="location-tracker error">
-        <i className="fas fa-exclamation-triangle"></i>
-        <p>Geolocation is not supported by your browser</p>
-      </div>
-    );
-  }
+  }, [status, isTracking, startTracking]);
 
   if (error) {
     return (
       <div className="location-tracker error">
         <i className="fas fa-exclamation-circle"></i>
         <p>{error}</p>
-        {permissionStatus === 'denied' && (
+        {status === 'denied' && (
           <button 
             className="location-tracker-button"
             onClick={() => window.location.reload()}
@@ -54,12 +47,16 @@ const LocationTracker = () => {
         <div className="status-indicator">
           <span className={`status-dot ${isTracking ? 'active' : ''}`}></span>
           <span className="status-text">
-            {isTracking ? 'Tracking Active' : 'Tracking Inactive'}
+            {status === 'active' ? 'Tracking Active' : 
+             status === 'offline' ? 'Tracking Paused - Offline' :
+             status === 'syncing' ? 'Syncing Location Data...' :
+             'Tracking Inactive'}
           </span>
         </div>
         <button
           className="location-tracker-button"
           onClick={isTracking ? stopTracking : startTracking}
+          disabled={status === 'syncing'}
         >
           <i className={`fas fa-${isTracking ? 'stop' : 'play'}-circle`}></i>
           {isTracking ? 'Stop Tracking' : 'Start Tracking'}
@@ -81,6 +78,12 @@ const LocationTracker = () => {
               <span className="label">Accuracy:</span>
               <span className="value">{Math.round(location.accuracy)}m</span>
             </div>
+            {location.address && (
+              <div className="coordinate">
+                <span className="label">Address:</span>
+                <span className="value">{location.address}</span>
+              </div>
+            )}
           </div>
           <div className="location-timestamp">
             Last updated: {new Date(location.timestamp).toLocaleTimeString()}
@@ -88,7 +91,7 @@ const LocationTracker = () => {
         </div>
       )}
 
-      {permissionStatus === 'prompt' && (
+      {status === 'prompt' && (
         <div className="location-permission-prompt">
           <i className="fas fa-map-marker-alt"></i>
           <p>Location access is required for this feature</p>

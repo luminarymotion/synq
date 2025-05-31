@@ -66,4 +66,61 @@
 .warning-message {
   background-color: rgba(255, 193, 7, 0.9);
   color: #000;
+}
+
+.pickup-popup {
+  position: absolute;
+  background-color: white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  padding: 15px;
+  border-radius: 10px;
+  border: 1px solid #cccccc;
+  bottom: 12px;
+  left: -50px;
+  min-width: 200px;
+  transform: translate(-50%, -50%);
+}
+
+.pickup-popup:after, .pickup-popup:before {
+  top: 100%;
+  border: solid transparent;
+  content: " ";
+  height: 0;
+  width: 0;
+  position: absolute;
+  pointer-events: none;
+}
+
+.pickup-popup:after {
+  border-top-color: white;
+  border-width: 10px;
+  left: 50%;
+  margin-left: -10px;
+}
+
+.pickup-popup:before {
+  border-top-color: #cccccc;
+  border-width: 11px;
+  left: 50%;
+  margin-left: -11px;
+}
+
+.pickup-popup-content {
+  text-align: left;
+}
+
+.pickup-popup-content h4 {
+  margin: 0 0 5px 0;
+  color: #2196F3;
+  font-size: 1.1em;
+}
+
+.pickup-popup-content p {
+  margin: 5px 0;
+  color: #666;
+  font-size: 0.9em;
+}
+
+.pickup-popup-content strong {
+  color: #333;
 } 

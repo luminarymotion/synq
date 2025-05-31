@@ -4,6 +4,7 @@ import { useUserAuth } from '../services/auth';
 import { createRide } from '../services/firebaseOperations';
 import MapView from '../components/MapView';
 import '../styles/CreateGroup.css';
+import { MAPQUEST_SERVICE } from '../services/locationService';
 
 function CreateGroup() {
   const navigate = useNavigate();
@@ -12,6 +13,7 @@ function CreateGroup() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [createdRideId, setCreatedRideId] = useState(null);
+  const [error, setError] = useState(null);
   
   // Form state
   const [formData, setFormData] = useState({
@@ -46,59 +48,101 @@ function CreateGroup() {
     </div>
   );
 
-  const DestinationStep = () => (
-    <div className="step-content">
-      <h2>Where are you headed?</h2>
-      <p className="step-description">Enter your destination to start planning the ride</p>
-      
-      <div className="form-group">
-        <div className="search-container">
-          <i className="fas fa-map-marker-alt search-icon"></i>
-          <input
-            type="text"
-            className="form-control"
-            placeholder="Enter destination address..."
-            value={formData.destination}
-            onChange={(e) => setFormData(prev => ({ ...prev, destination: e.target.value }))}
-            onKeyPress={async (e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                const coords = await geocodeAddress(e.target.value);
-                if (coords) {
-                  setFormData(prev => ({ 
-                    ...prev, 
-                    destinationCoords: coords,
-                    destination: coords.address 
-                  }));
-                } else {
-                  alert('Destination not found. Please try again.');
+  const DestinationStep = () => {
+    const [isGeocoding, setIsGeocoding] = useState(false);
+
+    const handleDestinationSubmit = async (address) => {
+      setIsGeocoding(true);
+      try {
+        const coords = await geocodeAddress(address);
+        if (coords) {
+          setFormData(prev => ({ 
+            ...prev, 
+            destinationCoords: coords,
+            destination: coords.address 
+          }));
+
+          // If we have user location, calculate route immediately
+          if (formData.userLocationCoords) {
+            const route = await calculateRoute(formData.userLocationCoords, coords);
+            if (route) {
+              // Update the map with the new route
+              const mapView = document.querySelector('.map-preview');
+              if (mapView) {
+                const mapComponent = mapView.querySelector('.map-container');
+                if (mapComponent && mapComponent.__reactFiber$) {
+                  const mapInstance = mapComponent.__reactFiber$.stateNode;
+                  if (mapInstance && mapInstance.updateRoute) {
+                    mapInstance.updateRoute(route);
+                  }
                 }
               }
+            }
+          }
+        } else {
+          alert('Destination not found. Please try again.');
+        }
+      } catch (error) {
+        console.error('Error geocoding destination:', error);
+        alert('Error finding destination. Please try again.');
+      } finally {
+        setIsGeocoding(false);
+      }
+    };
+
+    return (
+      <div className="step-content">
+        <h2>Where are you headed?</h2>
+        <p className="step-description">Enter your destination to start planning the ride</p>
+        
+        <div className="form-group">
+          <div className="search-container">
+            <i className="fas fa-map-marker-alt search-icon"></i>
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Enter destination address..."
+              value={formData.destination}
+              onChange={(e) => setFormData(prev => ({ ...prev, destination: e.target.value }))}
+              onKeyPress={async (e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  await handleDestinationSubmit(e.target.value);
+                }
+              }}
+            />
+            {isGeocoding && (
+              <div className="geocoding-spinner">
+                <i className="fas fa-spinner fa-spin"></i>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="map-preview">
+          <MapView
+            destination={formData.destinationCoords}
+            userLocation={formData.userLocationCoords}
+            passengers={formData.passengers}
+            onRouteUpdate={(route) => {
+              console.log('Route updated:', route);
             }}
           />
         </div>
-      </div>
 
-      <div className="map-preview">
-        <MapView
-          destination={formData.destinationCoords}
-          userLocation={formData.userLocationCoords}
-          passengers={formData.passengers}
-        />
+        <div className="step-actions">
+          <button
+            className="btn-next"
+            onClick={() => setCurrentStep(2)}
+            disabled={!formData.destinationCoords}
+          >
+            Next Step
+            <i className="fas fa-arrow-right"></i>
+          </button>
+        </div>
       </div>
-
-      <div className="step-actions">
-        <button
-          className="btn-next"
-          onClick={() => setCurrentStep(2)}
-          disabled={!formData.destinationCoords}
-        >
-          Next Step
-          <i className="fas fa-arrow-right"></i>
-        </button>
-      </div>
-    </div>
-  );
+    );
+  };
 
   const LocationStep = () => (
     <div className="step-content">
@@ -392,16 +436,14 @@ function CreateGroup() {
   );
 
   const geocodeAddress = async (address) => {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=us&limit=1`;
-    const response = await fetch(url);
-    const data = await response.json();
-    if (data.length > 0) {
-      const display_name = data[0].display_name;
-      const nameParts = display_name.split(',');
-      const establishmentName = nameParts.length > 1 ? nameParts[0].trim() : display_name;
-      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), address: establishmentName };
+    if (!address) return null;
+    try {
+      const result = await MAPQUEST_SERVICE.getCoordsFromAddress(address);
+      return { lat: result.lat, lng: result.lng, address: result.address };
+    } catch (error) {
+      console.error('Error geocoding address:', error);
+      return null;
     }
-    return null;
   };
 
   const handleCreateRide = async () => {
@@ -413,39 +455,24 @@ function CreateGroup() {
     try {
       setIsSubmitting(true);
       
-      // Get full addresses
+      // Get full addresses using MapQuest
       const [driverAddress, destinationAddress] = await Promise.all([
-        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${formData.userLocationCoords.lat}&lon=${formData.userLocationCoords.lng}&addressdetails=1`)
-          .then(res => res.json())
-          .then(data => data.display_name)
-          .catch(() => 'Location not found'),
-        
-        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${formData.destinationCoords.lat}&lon=${formData.destinationCoords.lng}&addressdetails=1`)
-          .then(res => res.json())
-          .then(data => data.display_name)
-          .catch(() => 'Destination not found')
+        MAPQUEST_SERVICE.getAddressFromCoords(formData.userLocationCoords.lat, formData.userLocationCoords.lng),
+        MAPQUEST_SERVICE.getAddressFromCoords(formData.destinationCoords.lat, formData.destinationCoords.lng)
       ]);
 
-      // Get full addresses for passengers
-      const passengersWithAddresses = await Promise.all(
+      // Get passenger addresses
+      const passengerAddresses = await Promise.all(
         formData.passengers.map(async (passenger) => {
+          if (!passenger.userLocationCoords) return null;
           try {
-            const fullAddress = await fetch(
-              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${passenger.lat}&lon=${passenger.lng}&addressdetails=1`
-            )
-              .then(res => res.json())
-              .then(data => data.display_name)
-              .catch(() => 'Location not found');
-            
-            return {
-              ...passenger,
-              fullAddress
-            };
+            return await MAPQUEST_SERVICE.getAddressFromCoords(
+              passenger.userLocationCoords.lat,
+              passenger.userLocationCoords.lng
+            );
           } catch (error) {
-            return {
-              ...passenger,
-              fullAddress: 'Location not found'
-            };
+            console.error('Error getting passenger address:', error);
+            return 'Location not found';
           }
         })
       );
@@ -457,12 +484,12 @@ function CreateGroup() {
           location: formData.userLocationCoords,
           address: driverAddress
         },
-        passengers: passengersWithAddresses.map(passenger => ({
-          name: passenger.name,
-          location: { lat: passenger.lat, lng: passenger.lng },
-          address: passenger.fullAddress,
+        passengers: passengerAddresses.map(address => ({
+          name: formData.passengers[passengerAddresses.indexOf(address)].name,
+          location: formData.passengers[passengerAddresses.indexOf(address)].userLocationCoords,
+          address: address,
           status: 'pending',
-          tempId: passenger.tempId
+          tempId: formData.passengers[passengerAddresses.indexOf(address)].tempId
         })),
         destination: {
           location: formData.destinationCoords,
@@ -485,7 +512,7 @@ function CreateGroup() {
       }
     } catch (error) {
       console.error('Error creating ride:', error);
-      alert(`Failed to create ride: ${error.message || 'Please try again.'}`);
+      setError('Failed to create ride group. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

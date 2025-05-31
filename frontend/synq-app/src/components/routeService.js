@@ -331,99 +331,98 @@ const optimizePickupOrder = (start, passengers, destination) => {
   return optimizedOrder;
 };
 
-export const calculateRoute = async (start, end, passengers = []) => {
-  if (!start || !end) {
-    throw new Error('Start and end locations are required');
-  }
-
-  if (!start.lat || !start.lng || !end.lat || !end.lng) {
-    throw new Error('Invalid coordinates provided');
+export const calculateRoute = async (waypoints) => {
+  if (!Array.isArray(waypoints) || waypoints.length < 2) {
+    console.error('Invalid waypoints:', waypoints);
+    throw new Error('At least two waypoints are required');
   }
 
   try {
-    // Optimize the pickup order
-    const optimizedPassengers = optimizePickupOrder(start, passengers, end);
+    console.log('Starting route calculation with waypoints:', waypoints);
 
-    // For direct routes (no passengers), use segmentation with improved handling
-    if (passengers.length === 0) {
-      const points = findIntermediatePoints(start, end);
-      const segments = [];
+    // Validate and snap all waypoint coordinates
+    const validatedCoordinates = await validateAndSnapCoordinates(
+      waypoints.map(wp => [wp.location.lng, wp.location.lat])
+    );
 
-      for (let i = 0; i < points.length - 1; i++) {
-        try {
-          const segment = await calculateRouteSegment(points[i], points[i + 1]);
-          segments.push(segment);
-        } catch (error) {
-          console.warn(`Failed to calculate segment ${i}, trying fallback:`, error);
-          const fallbackSegment = await createFallbackRoute(points[i], points[i + 1]);
-          segments.push(fallbackSegment);
-        }
-      }
+    console.log('Validated coordinates:', validatedCoordinates);
 
-      return mergeRouteSegments(segments);
-    }
-
-    // For routes with passengers, try the full route first
+    // Try to calculate the full route first
     try {
-      const validatedCoordinates = await validateAndSnapCoordinates([
-      [start.lng, start.lat],
-      ...optimizedPassengers.map(p => [p.lng, p.lat]),
-      [end.lng, end.lat]
-      ]);
-
-    const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
-        'Authorization': `Bearer ${OPENROUTE_API_KEY}`
-      },
-      body: JSON.stringify({
+      const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+          'Authorization': `Bearer ${OPENROUTE_API_KEY}`
+        },
+        body: JSON.stringify({
           coordinates: validatedCoordinates,
-        instructions: true,
-        preference: 'fastest',
-        units: 'm',
-        language: 'en',
-        geometry_simplify: true,
+          instructions: true,
+          preference: 'fastest',
+          units: 'm',
+          language: 'en',
+          geometry_simplify: true,
           continue_straight: false,
           radiuses: validatedCoordinates.map(() => 2000) // 2km search radius for each point
-      })
-    });
+        })
+      });
 
-    if (!response.ok) {
-        throw new Error('Failed to calculate full route');
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Route calculation failed:', errorData);
+        throw new Error(errorData.error?.message || 'Failed to calculate route');
       }
 
-      return await response.json();
+      const routeData = await response.json();
+      
+      // Add waypoint information to the route data
+      routeData.waypoints = waypoints.map((wp, index) => ({
+        ...wp,
+        order: index,
+        type: wp.type || (index === 0 ? 'start' : index === waypoints.length - 1 ? 'destination' : 'pickup')
+      }));
+
+      console.log('Route calculated successfully:', routeData);
+      return routeData;
     } catch (error) {
       console.warn('Full route calculation failed, falling back to segmented approach:', error);
       
-      // Fall back to segmented approach with improved handling
+      // Fall back to segmented approach
       const segments = [];
-      let currentPoint = start;
       
-      for (const passenger of optimizedPassengers) {
+      // Calculate route segments between consecutive waypoints
+      for (let i = 0; i < waypoints.length - 1; i++) {
         try {
-          const segment = await calculateRouteSegment(currentPoint, passenger);
+          console.log(`Calculating segment ${i + 1}/${waypoints.length - 1}`);
+          const segment = await calculateRouteSegment(
+            waypoints[i].location,
+            waypoints[i + 1].location
+          );
           segments.push(segment);
         } catch (error) {
-          console.warn(`Failed to calculate route to passenger ${passenger.name}, trying fallback:`, error);
-          const fallbackSegment = await createFallbackRoute(currentPoint, passenger);
+          console.warn(`Failed to calculate segment ${i}, trying fallback:`, error);
+          const fallbackSegment = await createFallbackRoute(
+            waypoints[i].location,
+            waypoints[i + 1].location
+          );
           segments.push(fallbackSegment);
         }
-        currentPoint = passenger;
       }
       
-      try {
-        const finalSegment = await calculateRouteSegment(currentPoint, end);
-        segments.push(finalSegment);
-      } catch (error) {
-        console.warn('Failed to calculate final segment, trying fallback:', error);
-        const fallbackSegment = await createFallbackRoute(currentPoint, end);
-        segments.push(fallbackSegment);
+      const mergedRoute = mergeRouteSegments(segments);
+      
+      // Add waypoint information to the merged route
+      if (mergedRoute) {
+        mergedRoute.waypoints = waypoints.map((wp, index) => ({
+          ...wp,
+          order: index,
+          type: wp.type || (index === 0 ? 'start' : index === waypoints.length - 1 ? 'destination' : 'pickup')
+        }));
       }
       
-      return mergeRouteSegments(segments);
+      console.log('Segmented route calculated successfully:', mergedRoute);
+      return mergedRoute;
     }
   } catch (error) {
     console.error('Error in calculateRoute:', error);
