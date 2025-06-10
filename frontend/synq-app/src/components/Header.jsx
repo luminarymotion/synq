@@ -1,19 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
-import { signOut } from 'firebase/auth';
-import { auth } from '../services/firebase';
-import useLocation from '../hooks/useLocation';
+import { useLocation } from '../services/locationTrackingService';
 import '../styles/Header.css';
 
 function Header() {
-  const { user } = useUserAuth();
+  const { user, logOut } = useUserAuth();
   const navigate = useNavigate();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isGroupDropdownOpen, setIsGroupDropdownOpen] = useState(false);
   const userDropdownRef = useRef(null);
   const groupDropdownRef = useRef(null);
-  const { isTracking, startTracking, stopTracking, error } = useLocation();
+  const { isTracking, status, startTracking, stopTracking, error } = useLocation({
+    preset: 'basic',
+    autoStop: true
+  });
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -39,7 +40,7 @@ function Header() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await logOut();
       navigate('/login');
     } catch (error) {
       console.error('Error signing out:', error);
@@ -67,13 +68,17 @@ function Header() {
   };
 
   // Handle location tracking toggle
-  const handleLocationToggle = (e) => {
+  const handleLocationToggle = async (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (isTracking) {
       stopTracking();
     } else {
-      startTracking();
+      try {
+        await startTracking(user.uid);
+      } catch (error) {
+        console.error('Error starting location tracking:', error);
+      }
     }
   };
 
@@ -159,12 +164,16 @@ function Header() {
                     <div className="location-toggle-content">
                       <i className={`fas fa-${isTracking ? 'location-arrow' : 'location-slash'}`}></i>
                       <span>Location Tracking</span>
+                      {status === 'offline' && <span className="status-badge offline">Offline</span>}
+                      {status === 'syncing' && <span className="status-badge syncing">Syncing</span>}
+                      {error && <span className="status-badge error">Error</span>}
                     </div>
                     <label className="modern-toggle">
                       <input
                         type="checkbox"
                         checked={isTracking}
                         onChange={handleLocationToggle}
+                        disabled={status === 'syncing'}
                       />
                       <span className="toggle-slider"></span>
                       {isTracking && <span className="tracking-indicator"></span>}

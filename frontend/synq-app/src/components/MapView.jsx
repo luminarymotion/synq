@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import 'ol/ol.css';
 import { Map, View } from 'ol';
 import { OSM } from 'ol/source';
@@ -6,15 +6,17 @@ import { Tile as TileLayer, Vector as VectorLayer } from 'ol/layer';
 import { Vector as VectorSource } from 'ol/source';
 import { Feature } from 'ol';
 import Point from 'ol/geom/Point';
-import { Style, Fill, Stroke, Circle as CircleStyle, Icon } from 'ol/style';
+import { Style, Fill, Stroke, Circle as CircleStyle, Icon, Text } from 'ol/style';
 import { fromLonLat, toLonLat } from 'ol/proj';
 import { boundingExtent } from 'ol/extent';
 import { defaults as defaultControls } from 'ol/control';
 import { LineString } from 'ol/geom';
 import { calculateRoute, getTrafficInfo } from './routeService';
+import { calculateDistance } from '../services/locationService';
 import '../styles/MapView.css';
+import { Overlay } from 'ol';
 
-function MapView({ users, destination, userLocation, onSetDestinationFromMap }) {
+function MapView({ users, destination, userLocation, onSetDestinationFromMap, onRouteUpdate }) {
   const mapRef = useRef();
   const vectorSourceRef = useRef(new VectorSource());
   const mapInstanceRef = useRef(null);
@@ -23,6 +25,9 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
   const [error, setError] = useState(null);
   const [routeDetails, setRouteDetails] = useState(null);
   const [warning, setWarning] = useState(null);
+  const [routeLayer, setRouteLayer] = useState(null);
+  const [driverMarker, setDriverMarker] = useState(null);
+  const [isRecalculating, setIsRecalculating] = useState(false);
 
   useEffect(() => {
     // Use CartoDB's Voyager tiles for a modern look
@@ -64,214 +69,272 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
     };
   }, []);
 
-  // Calculate route when user location or destination changes
+  // Add effect to handle driver location updates
   useEffect(() => {
-    const calculateAndDisplayRoute = async () => {
-      if (userLocation && destination) {
-        try {
-          setError(null);
-          setWarning(null);
-          
-          // Get all passengers from the users array
-          const passengers = users.filter(user => user.role === 'passenger');
-          console.log('Calculating route with:', { userLocation, destination, passengers });
-          
-          // Calculate direct route if no passengers
-          if (passengers.length === 0) {
-            const directRouteData = await calculateRoute(userLocation, destination);
-            if (!directRouteData || !directRouteData.features || !directRouteData.features[0]) {
-              throw new Error('Invalid route data received');
-            }
+    if (!mapInstanceRef.current || !userLocation) return;
 
-            // Calculate total distance
-            const totalDistance = directRouteData.features[0].properties.segments.reduce(
-              (sum, seg) => sum + seg.distance, 
-              0
-            );
+    const map = mapInstanceRef.current;
+    const source = vectorSourceRef.current;
 
-            // Check distance limit
-            if (totalDistance > 150000) {
-              setWarning('Warning: Route distance exceeds 150km. Some features may be limited.');
-            }
+    // Update or create driver marker
+    const driverFeature = new Feature({
+      geometry: new Point(fromLonLat([userLocation.lng, userLocation.lat])),
+      name: 'Driver Location',
+    });
 
-            setRoute(directRouteData);
-            setRouteDetails({
-              totalDistance,
-              totalDuration: directRouteData.features[0].properties.segments.reduce(
-                (sum, seg) => sum + seg.duration, 
-                0
-              ),
-              segments: [{
-                distance: totalDistance,
-                duration: directRouteData.features[0].properties.segments.reduce(
-                  (sum, seg) => sum + seg.duration, 
-                  0
-                ),
-                type: 'direct',
-                isDestination: true
-              }]
-            });
+    driverFeature.setStyle(
+      new Style({
+        image: new CircleStyle({
+          radius: 10,
+          fill: new Fill({ color: '#2196F3' }),
+          stroke: new Stroke({ color: '#ffffff', width: 2 }),
+        }),
+      })
+    );
+
+    // Remove old driver marker if it exists
+    if (driverMarker) {
+      source.removeFeature(driverMarker);
+    }
+
+    source.addFeature(driverFeature);
+    setDriverMarker(driverFeature);
+
+    // If we have a route, check if we need to recalculate
+    if (route && !isRecalculating) {
+      const driver = users.find(u => u.role === 'driver');
+      if (driver && driver.isCreator) {
+        const currentLocation = { lat: userLocation.lat, lng: userLocation.lng };
+        const lastLocation = driver.userLocationCoords;
+        
+        // If driver has moved more than 100 meters, recalculate route
+        if (lastLocation && calculateDistance(currentLocation, lastLocation) > 0.1) {
+          setIsRecalculating(true);
+          calculateOptimizedRoute().finally(() => setIsRecalculating(false));
+        }
+      }
+    }
+  }, [userLocation, users, route]);
+
+  // Update route calculation to handle driver location updates
+  const calculateOptimizedRoute = useCallback(async () => {
+    if (!users.length || !destination) {
+      console.log('Missing required data for route calculation:', { users, destination });
             return;
           }
 
-          // Calculate optimized route with passengers
-          const routeData = await calculateRoute(userLocation, destination, passengers);
-          console.log('Received route data:', routeData);
-          
-          if (!routeData || !routeData.features || !routeData.features[0]) {
-            throw new Error('Invalid route data received');
-          }
-
-          // Calculate total distance for the optimized route
-          const totalDistance = routeData.features[0].properties.segments.reduce(
-            (sum, seg) => sum + seg.distance, 
-            0
-          );
-
-          // Check distance limit
-          if (totalDistance > 150000) {
-            setWarning('Warning: Route distance exceeds 150km. Some features may be limited.');
-          }
-
-          setRoute(routeData);
-
-          // Calculate route details
-          const segments = routeData.features[0].properties.segments;
-          console.log('Route segments:', segments);
-
-          // Get the optimized passenger order from the route coordinates
-          const optimizedPassengers = [];
-          if (routeData.features[0].geometry.coordinates.length > 2) {
-            // Skip first (start) and last (destination) coordinates
-            const passengerCoordinates = routeData.features[0].geometry.coordinates.slice(1, -1);
-            
-            console.log('Passenger coordinates from route:', passengerCoordinates);
-            console.log('Available passengers:', passengers);
-            
-            // Create a map of passenger coordinates for easier matching
-            const passengerMap = new Map();
-            passengers.forEach(passenger => {
-              // Use a more precise key for matching
-              const key = `${passenger.lng.toFixed(4)},${passenger.lat.toFixed(4)}`;
-              passengerMap.set(key, passenger);
-              console.log(`Added passenger to map: ${passenger.name} at ${key}`);
-            });
-
-            // Match coordinates to passengers
-            passengerCoordinates.forEach((coord, index) => {
-              const [lng, lat] = coord;
-              console.log(`Processing coordinate ${index}: [${lng}, ${lat}]`);
-              
-              // Try exact match first
-              let key = `${lng.toFixed(4)},${lat.toFixed(4)}`;
-              let passenger = passengerMap.get(key);
-
-              // If no exact match, try finding the closest passenger
-              if (!passenger) {
-                let minDistance = Infinity;
-                let closestPassenger = null;
-
-                passengers.forEach(p => {
-                  const distance = Math.sqrt(
-                    Math.pow(p.lng - lng, 2) + Math.pow(p.lat - lat, 2)
-                  );
-                  if (distance < minDistance) {
-                    minDistance = distance;
-                    closestPassenger = p;
-                  }
-                });
-
-                console.log(`Closest passenger distance: ${minDistance}`);
-                // Increased threshold for matching
-                if (minDistance < 0.001) { // More lenient threshold
-                  passenger = closestPassenger;
-                  console.log(`Matched to closest passenger: ${passenger?.name}`);
-                }
-              }
-
-              if (passenger) {
-                console.log(`Matched passenger: ${passenger.name} to coordinate ${index}`);
-                optimizedPassengers.push(passenger);
-              } else {
-                console.log(`No passenger matched for coordinate ${index}`);
-              }
-            });
-          }
-
-          // If no passengers were matched, use the original passenger order
-          if (optimizedPassengers.length === 0 && passengers.length > 0) {
-            console.log('No passengers matched, using original order');
-            optimizedPassengers.push(...passengers);
-          }
-
-          console.log('Final optimized passenger order:', optimizedPassengers);
-
-          // Calculate cumulative times for each segment
-          let cumulativeTime = 0;
-          const segmentsWithCumulativeTime = segments.map((segment, index) => {
-            cumulativeTime += segment.duration;
-            return {
-              ...segment,
-              cumulativeTime
-            };
-          });
-
-          // Create route details with the correct passenger order
-          const details = {
-            totalDistance: segments.reduce((sum, seg) => sum + seg.distance, 0),
-            totalDuration: segments.reduce((sum, seg) => sum + seg.duration, 0),
-            segments: []
-          };
-
-          // Add the first segment with the first passenger
-          if (optimizedPassengers.length > 0) {
-            details.segments.push({
-              distance: segments[0].distance,
-              duration: segments[0].duration,
-              cumulativeTime: segmentsWithCumulativeTime[0].cumulativeTime,
-              passenger: optimizedPassengers[0],
-              isDestination: false,
-              type: 'pickup'
-            });
-          }
-
-          // Add the middle segments with the remaining passengers
-          for (let i = 1; i < segments.length - 1; i++) {
-            const passenger = optimizedPassengers[i];
-            console.log(`Creating segment ${i} with passenger:`, passenger);
-            details.segments.push({
-              distance: segments[i].distance,
-              duration: segments[i].duration,
-              cumulativeTime: segmentsWithCumulativeTime[i].cumulativeTime,
-              passenger: passenger || null,
-              isDestination: false,
-              type: passenger ? 'pickup' : 'travel'
-            });
-          }
-
-          // Add the final destination segment
-          details.segments.push({
-            distance: segments[segments.length - 1].distance,
-            duration: segments[segments.length - 1].duration,
-            cumulativeTime: segmentsWithCumulativeTime[segments.length - 1].cumulativeTime,
-            passenger: null,
-            isDestination: true,
-            type: 'destination'
-          });
-
-          console.log('Final route details:', details);
-          setRouteDetails(details);
-        } catch (error) {
-          console.error('Error calculating route:', error);
-          setError(error.message || 'Failed to calculate route');
-          setRoute(null);
-          setRouteDetails(null);
-        }
+    try {
+      // Find the driver (either creator or assigned driver)
+      const driver = users.find(u => u.role === 'driver');
+      if (!driver) {
+        console.warn('No driver found in the route');
+        setError('No driver assigned for the route');
+        return;
       }
-    };
 
-    calculateAndDisplayRoute();
-  }, [userLocation, destination, users]);
+      // Get driver's starting location
+      const startLocation = driver.isCreator ? userLocation : driver.userLocationCoords;
+      if (!startLocation) {
+        console.warn('Driver location not available');
+        setError('Driver location not available');
+        return;
+      }
+
+      console.log('Calculating route with:', {
+        startLocation,
+        destination,
+        pickupPoints: users.filter(u => u.role === 'passenger' && u.userLocationCoords)
+      });
+
+      // Get all pickup points (excluding driver)
+      const pickupPoints = users
+        .filter(u => u.role === 'passenger' && u.userLocationCoords)
+        .map(u => ({
+          ...u,
+          location: u.userLocationCoords,
+          type: 'pickup',
+          passengerId: u.tempId
+        }));
+
+      // Create waypoints array with start, pickup points, and destination
+      const waypoints = [
+        { location: startLocation, type: 'start' },
+        ...pickupPoints,
+        { location: destination, type: 'destination' }
+      ];
+
+      console.log('Calculating route with waypoints:', waypoints);
+      const route = await calculateRoute(waypoints);
+
+      if (!route || !route.features || !route.features[0]) {
+        throw new Error('Invalid route data received');
+      }
+
+      console.log('Route calculated successfully:', route);
+
+      // Update route with pickup order information and estimated times
+      const optimizedRoute = {
+        ...route,
+        pickupOrder: route.waypoints
+          .filter(wp => wp.type === 'pickup')
+          .map((waypoint, index) => {
+            const estimatedTime = calculateEstimatedPickupTime(route, index);
+            return {
+              passenger: waypoint.name,
+              location: waypoint.location,
+              order: index + 1,
+              estimatedPickupTime: estimatedTime,
+              distance: calculateDistance(startLocation, waypoint.location)
+            };
+          }),
+        lastUpdate: new Date().toISOString()
+      };
+
+      setRoute(optimizedRoute);
+      setRouteDetails({
+        totalDistance: route.features[0].properties.summary.distance,
+        totalDuration: route.features[0].properties.summary.duration,
+        segments: optimizedRoute.pickupOrder.map((pickup, index) => ({
+          type: 'pickup',
+          passenger: {
+            name: pickup.passenger,
+            address: pickup.location.address || 'Location not available'
+          },
+          distance: pickup.distance * 1000, // Convert to meters
+          duration: pickup.estimatedPickupTime * 60, // Convert to seconds
+          cumulativeTime: pickup.estimatedPickupTime * 60
+        }))
+      });
+      setError(null); // Clear any previous errors
+    } catch (error) {
+      console.error('Error calculating optimized route:', error);
+      setError(error.message || 'Failed to calculate route. Please try again.');
+      setRoute(null); // Clear the route on error
+      setRouteDetails(null);
+    }
+  }, [users, destination, userLocation]);
+
+  // Add effect to trigger route calculation when needed
+  useEffect(() => {
+    if (users.length > 0 && destination && userLocation) {
+      calculateOptimizedRoute();
+    }
+  }, [users, destination, userLocation, calculateOptimizedRoute]);
+
+  // Calculate estimated pickup time based on route segments
+  const calculateEstimatedPickupTime = (route, pickupIndex) => {
+    if (!route || !route.features || pickupIndex >= route.features[0].geometry.coordinates.length) {
+      return null;
+    }
+
+    // Sum up the duration of all segments up to this pickup point
+    const totalDuration = route.features[0].geometry.coordinates
+      .slice(0, pickupIndex + 1)
+      .reduce((sum, coord) => sum + coord[2], 0);
+
+    // Convert seconds to minutes and round to nearest minute
+    return Math.round(totalDuration / 60);
+  };
+
+  // Update the route visualization
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !route) return;
+
+    try {
+      // Clear existing route layer if it exists
+      if (routeLayer) {
+        map.removeLayer(routeLayer);
+        setRouteLayer(null);
+      }
+
+      // Create new route layer
+      const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
+      const routeFeature = new Feature({
+        geometry: new LineString(coordinates),
+        name: 'Route',
+      });
+
+      // Style the route with a more prominent line
+      const routeStyle = new Style({
+        stroke: new Stroke({
+          color: '#2196F3',
+          width: 8,
+          lineDash: [5, 5],
+        }),
+      });
+
+      routeFeature.setStyle(routeStyle);
+      vectorSourceRef.current.addFeature(routeFeature);
+
+      // Create a new vector layer for the route
+      const newRouteLayer = new VectorLayer({
+        source: new VectorSource({
+          features: [routeFeature]
+        })
+      });
+
+      map.addLayer(newRouteLayer);
+      setRouteLayer(newRouteLayer);
+
+      // Get all features to include in the extent calculation
+      const allFeatures = vectorSourceRef.current.getFeatures();
+      const allCoordinates = allFeatures.map(feature => {
+        const geometry = feature.getGeometry();
+        if (geometry instanceof Point) {
+          return geometry.getCoordinates();
+        } else if (geometry instanceof LineString) {
+          return geometry.getCoordinates();
+        }
+        return null;
+      }).filter(coord => coord !== null).flat();
+
+      // Calculate the extent with additional padding
+      const extent = boundingExtent(allCoordinates);
+      
+      // Add 20% padding to the extent
+      const [minX, minY, maxX, maxY] = extent;
+      const width = maxX - minX;
+      const height = maxY - minY;
+      const paddedExtent = [
+        minX - width * 0.2,
+        minY - height * 0.2,
+        maxX + width * 0.2,
+        maxY + height * 0.2
+      ];
+
+      // Fit map to show all features with padding and smooth animation
+      map.getView().fit(paddedExtent, {
+        padding: [50, 50, 50, 50], // Padding around the extent
+        maxZoom: 16, // Prevent zooming in too close
+        minZoom: 4,  // Prevent zooming out too far
+        duration: 1500, // Longer duration for smoother animation
+        easing: (t) => {
+          // Custom easing function for smoother animation
+          return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        }
+      });
+
+      // Add a small delay and then adjust zoom if needed
+      setTimeout(() => {
+        const currentZoom = map.getView().getZoom();
+        const extentSize = Math.max(width, height);
+        
+        // If the route is very long, zoom out a bit more
+        if (extentSize > 100000) { // If route is longer than 100km
+          map.getView().animate({
+            zoom: Math.min(currentZoom - 1, 12),
+            duration: 1000
+          });
+        }
+      }, 1600);
+
+      console.log('Route visualization updated successfully');
+    } catch (error) {
+      console.error('Error updating route visualization:', error);
+      setError('Failed to display route on map');
+    }
+  }, [route, destination]);
 
   useEffect(() => {
     const source = vectorSourceRef.current;
@@ -423,6 +486,29 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
     return `${kilometers.toFixed(1)} km`;
   };
 
+  // Add method to update route from parent component
+  const updateRoute = useCallback((newRoute) => {
+    if (!newRoute || !mapInstanceRef.current) return;
+    
+    setRoute(newRoute);
+    setRouteDetails({
+      totalDistance: newRoute.features[0].properties.summary.distance,
+      totalDuration: newRoute.features[0].properties.summary.duration,
+      segments: []
+    });
+    
+    if (onRouteUpdate) {
+      onRouteUpdate(newRoute);
+    }
+  }, [onRouteUpdate]);
+
+  // Expose updateRoute method to parent component
+  useEffect(() => {
+    if (mapRef.current) {
+      mapRef.current.updateRoute = updateRoute;
+    }
+  }, [updateRoute]);
+
   return (
     <div className="map-and-details-container">
       <div className="map-section">
@@ -432,11 +518,19 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
         />
         {error && (
           <div className="error-message">
+            <i className="fas fa-exclamation-circle"></i>
             <p>{error}</p>
+          </div>
+        )}
+        {isRecalculating && (
+          <div className="recalculating-message">
+            <i className="fas fa-sync fa-spin"></i>
+            <p>Updating route...</p>
           </div>
         )}
         {warning && (
           <div className="warning-message">
+            <i className="fas fa-exclamation-triangle"></i>
             <p>{warning}</p>
           </div>
         )}
@@ -445,42 +539,68 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
         <div className="route-details-section">
           <div className="route-info">
             <h5>Optimized Route Details</h5>
+            <div className="route-status">
+              <span className="last-update">
+                Last updated: {new Date(route.lastUpdate).toLocaleTimeString()}
+              </span>
+              {isRecalculating && (
+                <span className="updating-badge">
+                  <i className="fas fa-sync fa-spin"></i> Updating...
+                </span>
+              )}
+            </div>
             <div className="total-info">
-              <p>Total Distance: {formatDistance(routeDetails.totalDistance)}</p>
-              <p>Total Duration: {formatDuration(routeDetails.totalDuration)}</p>
+              <p>
+                <i className="fas fa-road"></i>
+                Total Distance: {formatDistance(routeDetails.totalDistance)}
+              </p>
+              <p>
+                <i className="fas fa-clock"></i>
+                Total Duration: {formatDuration(routeDetails.totalDuration)}
+              </p>
             </div>
             <div className="segments-info">
               <div className="segment start">
-                <h6>Starting Point</h6>
-                <p>Your Location</p>
+                <h6>
+                  <i className="fas fa-car"></i>
+                  Starting Point
+                </h6>
+                <p>Driver's Current Location</p>
               </div>
               {routeDetails.segments.map((segment, index) => (
-                <div key={index} className="segment">
-                  {segment.type === 'pickup' && segment.passenger ? (
-                    <div>
-                      <h6>Pickup {index + 1}: {segment.passenger.name}</h6>
-                      <p>Distance: {formatDistance(segment.distance)}</p>
-                      <p>Time to Pickup: {formatDuration(segment.duration)}</p>
-                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
-                      <p>Address: {segment.passenger.address}</p>
-                    </div>
-                  ) : segment.type === 'travel' ? (
-                    <div>
-                      <h6>Travel to Next Stop</h6>
-                      <p>Distance: {formatDistance(segment.distance)}</p>
-                      <p>Duration: {formatDuration(segment.duration)}</p>
-                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
-                    </div>
-                  ) : segment.type === 'destination' ? (
-                    <div>
-                      <h6>Final Destination</h6>
-                      <p>Distance: {formatDistance(segment.distance)}</p>
-                      <p>Time to Destination: {formatDuration(segment.duration)}</p>
-                      <p>Total Time from Start: {formatDuration(segment.cumulativeTime)}</p>
-                    </div>
-                  ) : null}
+                <div key={index} className="segment pickup">
+                  <h6>
+                    <i className="fas fa-user"></i>
+                    Pickup {index + 1}: {segment.passenger.name}
+                  </h6>
+                  <p>
+                    <i className="fas fa-map-marker-alt"></i>
+                    {segment.passenger.address}
+                  </p>
+                  <p>
+                    <i className="fas fa-road"></i>
+                    Distance: {formatDistance(segment.distance)}
+                  </p>
+                  <p>
+                    <i className="fas fa-clock"></i>
+                    Estimated Pickup Time: {formatDuration(segment.duration)}
+                  </p>
                 </div>
               ))}
+              <div className="segment destination">
+                <h6>
+                  <i className="fas fa-flag-checkered"></i>
+                  Final Destination
+                </h6>
+                <p>
+                  <i className="fas fa-road"></i>
+                  Total Distance: {formatDistance(routeDetails.totalDistance)}
+                </p>
+                <p>
+                  <i className="fas fa-clock"></i>
+                  Total Duration: {formatDuration(routeDetails.totalDuration)}
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -517,6 +637,28 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
           color: #333;
           font-size: 1.2em;
         }
+        .route-status {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 15px;
+          padding-bottom: 10px;
+          border-bottom: 1px solid #eee;
+        }
+        .last-update {
+          color: #666;
+          font-size: 0.9em;
+        }
+        .updating-badge {
+          background-color: #e3f2fd;
+          color: #2196F3;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 0.9em;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+        }
         .total-info {
           margin-bottom: 20px;
           padding-bottom: 15px;
@@ -551,6 +693,39 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap }) 
         .segment p {
           margin: 5px 0;
           color: #666;
+        }
+        .segment.pickup {
+          border-left: 3px solid #2196F3;
+        }
+        .segment.destination {
+          border-left: 3px solid #4CAF50;
+        }
+        .segment h6 {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0 0 10px 0;
+        }
+        .segment p {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 5px 0;
+        }
+        .recalculating-message {
+          position: absolute;
+          top: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          background-color: rgba(33, 150, 243, 0.9);
+          color: white;
+          padding: 10px 20px;
+          border-radius: 4px;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          gap: 10px;
         }
         .warning-message {
           position: absolute;

@@ -19,7 +19,7 @@ import {
 import { db } from './firebase';
 
 // User Operations
-export const createUserProfile = async (userId, userData) => {
+const createUserProfile = async (userId, userData) => {
   try {
     const userRef = doc(db, 'users', userId);
     const profileData = {
@@ -50,7 +50,7 @@ export const createUserProfile = async (userId, userData) => {
   }
 };
 
-export const updateUserProfile = async (userId, userData) => {
+const updateUserProfile = async (userId, userData) => {
   try {
     const userRef = doc(db, 'users', userId);
     await updateDoc(userRef, {
@@ -65,7 +65,7 @@ export const updateUserProfile = async (userId, userData) => {
 };
 
 // Group Operations
-export const createGroup = async (groupData) => {
+const createGroup = async (groupData) => {
   try {
     const groupRef = doc(collection(db, 'groups'));
     await setDoc(groupRef, {
@@ -80,7 +80,7 @@ export const createGroup = async (groupData) => {
   }
 };
 
-export const updateGroup = async (groupId, groupData) => {
+const updateGroup = async (groupId, groupData) => {
   try {
     const groupRef = doc(db, 'groups', groupId);
     await updateDoc(groupRef, {
@@ -121,7 +121,7 @@ const generateRideId = async () => {
 };
 
 // Update the createRide function to use friendly ride ID as document ID
-export const createRide = async (rideData) => {
+const createRide = async (rideData) => {
   try {
     // Generate a user-friendly ride ID
     const rideId = await generateRideId();
@@ -129,11 +129,44 @@ export const createRide = async (rideData) => {
     // Use the friendly ride ID as the document ID
     const rideRef = doc(db, 'rides', rideId);
     
+    // Calculate initial route details
+    const routeDetails = {
+      optimizedRoute: null, // Will be calculated when the ride starts
+      pickupOrder: [], // Will be populated with optimized pickup order
+      estimatedTimes: {
+        totalDuration: null, // Total estimated duration in minutes
+        totalDistance: null, // Total distance in kilometers
+        pickupTimes: {}, // Map of passenger tempId to estimated pickup time
+        arrivalTime: null // Estimated arrival time at destination
+      },
+      waypoints: [], // Array of waypoints including pickup locations and destination
+      lastUpdated: null // Timestamp of last route update
+    };
+
+    // Create the ride document with enhanced data structure
     await setDoc(rideRef, {
       ...rideData,
       rideId, // Store the ID as a field for easy access
       createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(),
+      routeDetails,
+      // Add passengerUids array for easier querying
+      passengerUids: rideData.passengers.map(p => p.uid).filter(Boolean),
+      // Add status tracking
+      status: 'created', // 'created', 'active', 'completed', 'cancelled'
+      statusHistory: [{
+        status: 'created',
+        timestamp: new Date().toISOString(),
+        updatedBy: rideData.driver?.uid || null
+      }],
+      // Add metadata
+      metadata: {
+        isOptimized: false,
+        optimizationAttempts: 0,
+        lastOptimizationAttempt: null,
+        optimizationStatus: 'pending', // 'pending', 'in_progress', 'completed', 'failed'
+        optimizationError: null
+      }
     });
 
     return { 
@@ -147,7 +180,7 @@ export const createRide = async (rideData) => {
   }
 };
 
-export const updateRide = async (rideId, rideData) => {
+const updateRide = async (rideId, rideData) => {
   try {
     const rideRef = doc(db, 'rides', rideId);
     await updateDoc(rideRef, {
@@ -162,7 +195,7 @@ export const updateRide = async (rideId, rideData) => {
 };
 
 // Participant Operations
-export const updateRideParticipation = async (rideId, userId, status) => {
+const updateRideParticipation = async (rideId, userId, status) => {
   try {
     const rideRef = doc(db, 'rides', rideId);
     await updateDoc(rideRef, {
@@ -179,7 +212,7 @@ export const updateRideParticipation = async (rideId, userId, status) => {
 };
 
 // Location Operations
-export const updateUserLocation = async (userId, location) => {
+const updateUserLocation = async (userId, location) => {
   try {
     const userRef = doc(db, 'users', userId);
     await updateDoc(userRef, {
@@ -196,7 +229,7 @@ export const updateUserLocation = async (userId, location) => {
 };
 
 // Message Operations
-export const sendMessage = async (groupId, messageData) => {
+const sendMessage = async (groupId, messageData) => {
   try {
     const messageRef = doc(collection(db, 'messages'));
     await setDoc(messageRef, {
@@ -212,7 +245,7 @@ export const sendMessage = async (groupId, messageData) => {
 };
 
 // Notification Operations
-export const createNotification = async (userId, notificationData) => {
+const createNotification = async (userId, notificationData) => {
   try {
     const notificationRef = doc(collection(db, 'notifications'));
     await setDoc(notificationRef, {
@@ -229,7 +262,7 @@ export const createNotification = async (userId, notificationData) => {
 };
 
 // Friend Operations
-export const sendFriendRequest = async (senderId, receiverId) => {
+const sendFriendRequest = async (senderId, receiverId) => {
   try {
     // Get sender's profile information
     const senderDoc = await getDoc(doc(db, 'users', senderId));
@@ -257,7 +290,7 @@ export const sendFriendRequest = async (senderId, receiverId) => {
   }
 };
 
-export const getMutualFriends = async (userId1, userId2) => {
+const getMutualFriends = async (userId1, userId2) => {
   try {
     const [user1Friends, user2Friends] = await Promise.all([
       getDocs(collection(db, 'users', userId1, 'friends')),
@@ -279,7 +312,7 @@ export const getMutualFriends = async (userId1, userId2) => {
   }
 };
 
-export const updateFriendRequest = async (requestId, status) => {
+const updateFriendRequest = async (requestId, status) => {
   try {
     const batch = writeBatch(db);
     const requestRef = doc(db, 'friendRequests', requestId);
@@ -389,7 +422,7 @@ export const updateFriendRequest = async (requestId, status) => {
   }
 };
 
-export const getFriendRequests = async (userId) => {
+const getFriendRequests = async (userId) => {
   try {
     const requestsQuery = query(
       collection(db, 'friendRequests'),
@@ -410,7 +443,7 @@ export const getFriendRequests = async (userId) => {
   }
 };
 
-export const getFriendsList = async (userId) => {
+const getFriendsList = async (userId) => {
   try {
     // Get accepted friend requests where user is either sender or receiver
     const sentRequestsQuery = query(
@@ -456,7 +489,7 @@ export const getFriendsList = async (userId) => {
   }
 };
 
-export const searchUsers = async (searchTerm) => {
+const searchUsers = async (searchTerm) => {
   try {
     if (!searchTerm.trim()) {
       return { success: true, users: [] };
@@ -497,7 +530,7 @@ export const searchUsers = async (searchTerm) => {
 };
 
 // Real-time Friend Operations
-export const subscribeToFriendRequests = (userId, callback) => {
+const subscribeToFriendRequests = (userId, callback) => {
   try {
     // First try the optimized query with ordering
     const requestsQuery = query(
@@ -566,7 +599,7 @@ export const subscribeToFriendRequests = (userId, callback) => {
   }
 };
 
-export const subscribeToFriendsList = (userId, callback) => {
+const subscribeToFriendsList = (userId, callback) => {
   try {
     const friendsRef = collection(db, 'users', userId, 'friends');
     
@@ -590,7 +623,7 @@ export const subscribeToFriendsList = (userId, callback) => {
   }
 };
 
-export const subscribeToUserStatus = (userId, callback) => {
+const subscribeToUserStatus = (userId, callback) => {
   try {
     const userRef = doc(db, 'users', userId);
     
@@ -622,7 +655,7 @@ export const subscribeToUserStatus = (userId, callback) => {
 };
 
 // Update user's online status
-export const updateUserOnlineStatus = async (userId, isOnline) => {
+const updateUserOnlineStatus = async (userId, isOnline) => {
   try {
     const userRef = doc(db, 'users', userId);
     await updateDoc(userRef, {
@@ -636,7 +669,7 @@ export const updateUserOnlineStatus = async (userId, isOnline) => {
   }
 };
 
-export const removeFriendship = async (currentUserId, friendId) => {
+const removeFriendship = async (currentUserId, friendId) => {
   try {
     const batch = writeBatch(db);
 
@@ -671,7 +704,7 @@ export const removeFriendship = async (currentUserId, friendId) => {
 };
 
 // Add function to update friendship metadata
-export const updateFriendshipMetadata = async (userId, friendId, metadata) => {
+const updateFriendshipMetadata = async (userId, friendId, metadata) => {
   try {
     const friendRef = doc(db, 'users', userId, 'friends', friendId);
     await updateDoc(friendRef, {
@@ -686,7 +719,7 @@ export const updateFriendshipMetadata = async (userId, friendId, metadata) => {
 };
 
 // Add function to update ride statistics
-export const updateRideStatistics = async (userId, friendId, rideData) => {
+const updateRideStatistics = async (userId, friendId, rideData) => {
   try {
     const batch = writeBatch(db);
     const [userFriendRef, friendUserRef] = [
@@ -714,7 +747,7 @@ export const updateRideStatistics = async (userId, friendId, rideData) => {
 };
 
 // Add new function to end a ride and record its history
-export const endRide = async (rideId, userId, reason, type = 'left') => {
+const endRide = async (rideId, userId, reason, type = 'left') => {
   try {
     if (!rideId) {
       throw new Error('Ride ID is required');
@@ -813,7 +846,7 @@ export const endRide = async (rideId, userId, reason, type = 'left') => {
 };
 
 // Update leaveRide to use the new endRide function
-export const leaveRide = async (rideId, userId, isDriver) => {
+const leaveRide = async (rideId, userId, isDriver) => {
   try {
     if (!rideId) {
       throw new Error('Ride ID is required');
@@ -836,7 +869,7 @@ export const leaveRide = async (rideId, userId, isDriver) => {
 };
 
 // Add function to get ride history
-export const getRideHistory = async (rideId) => {
+const getRideHistory = async (rideId) => {
   try {
     const rideRef = doc(db, 'rides', rideId);
     const rideDoc = await getDoc(rideRef);
@@ -860,7 +893,7 @@ export const getRideHistory = async (rideId) => {
 };
 
 // Add function to get user's ride history
-export const getUserRideHistory = async (userId, limitCount = 10) => {
+const getUserRideHistory = async (userId, limitCount = 10) => {
   if (!userId) {
     console.error('getUserRideHistory called with undefined userId');
     return { 
@@ -995,7 +1028,7 @@ export const getUserRideHistory = async (userId, limitCount = 10) => {
 };
 
 // Add a function to migrate existing rides to use friendly IDs
-export const migrateRidesToFriendlyIds = async () => {
+const migrateRidesToFriendlyIds = async () => {
   try {
     const ridesRef = collection(db, 'rides');
     const snapshot = await getDocs(ridesRef);
@@ -1041,10 +1074,408 @@ export const migrateRidesToFriendlyIds = async () => {
 };
 
 // Update clearUserRideHistory to only clear frontend state
-export const clearUserRideHistory = async (userId) => {
+const clearUserRideHistory = async (userId) => {
   // This function now just returns success since we're only clearing frontend state
   return { 
     success: true, 
     message: 'Ride history cleared from view' 
   };
+};
+
+// Add new function to send ride invitation
+const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
+  try {
+    console.log('Starting sendRideInvitation with:', {
+      rideId,
+      inviterId,
+      inviteeId,
+      timestamp: new Date().toISOString()
+    });
+
+    const batch = writeBatch(db);
+    
+    // Get inviter's and invitee's profile information
+    console.log('Fetching user profiles...');
+    const [inviterDoc, inviteeDoc] = await Promise.all([
+      getDoc(doc(db, 'users', inviterId)),
+      getDoc(doc(db, 'users', inviteeId))
+    ]);
+
+    if (!inviterDoc.exists() || !inviteeDoc.exists()) {
+      console.error('User profile not found:', {
+        inviterExists: inviterDoc.exists(),
+        inviteeExists: inviteeDoc.exists()
+      });
+      throw new Error('User profile not found');
+    }
+
+    const inviterData = inviterDoc.data();
+    const inviteeData = inviteeDoc.data();
+
+    console.log('User profiles found:', {
+      inviterName: inviterData.displayName,
+      inviteeName: inviteeData.displayName
+    });
+
+    // Create invitation document
+    const invitationRef = doc(collection(db, 'rideInvitations'));
+    console.log('Creating invitation document with ID:', invitationRef.id);
+
+    const invitationData = {
+      rideId,
+      inviterId,
+      inviteeId,
+      status: 'pending',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      // Include inviter's information
+      inviterName: inviterData.displayName,
+      inviterPhotoURL: inviterData.photoURL,
+      // Include invitee's information
+      inviteeName: inviteeData.displayName,
+      inviteePhotoURL: inviteeData.photoURL,
+      // Add metadata
+      metadata: {
+        invitationType: 'friend',
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
+        notificationSent: false
+      }
+    };
+
+    console.log('Setting invitation data:', invitationData);
+    batch.set(invitationRef, invitationData);
+
+    // Add invitation reference to the ride document
+    const rideRef = doc(db, 'rides', rideId);
+    console.log('Updating ride document with invitation reference');
+    
+    const invitationReference = {
+      invitationId: invitationRef.id,
+      inviteeId,
+      status: 'pending',
+      createdAt: serverTimestamp()
+    };
+
+    console.log('Adding invitation reference to ride:', invitationReference);
+    batch.update(rideRef, {
+      invitations: arrayUnion(invitationReference)
+    });
+
+    // Create notification for the invitee
+    const notificationRef = doc(collection(db, 'notifications'));
+    console.log('Creating notification for invitee');
+    
+    const notificationData = {
+      userId: inviteeId,
+      type: 'ride-invitation',
+      title: 'New Ride Invitation',
+      message: `${inviterData.displayName} invited you to join their ride`,
+      rideId,
+      invitationId: invitationRef.id,
+      createdAt: serverTimestamp(),
+      isRead: false,
+      metadata: {
+        inviterId,
+        inviterName: inviterData.displayName,
+        inviterPhotoURL: inviterData.photoURL
+      }
+    };
+
+    console.log('Setting notification data:', notificationData);
+    batch.set(notificationRef, notificationData);
+
+    console.log('Committing batch write...');
+    await batch.commit();
+    console.log('Batch write committed successfully');
+
+    return { success: true, invitationId: invitationRef.id };
+  } catch (error) {
+    console.error('Error in sendRideInvitation:', {
+      error: error.message,
+      code: error.code,
+      stack: error.stack,
+      rideId,
+      inviterId,
+      inviteeId,
+      timestamp: new Date().toISOString()
+    });
+    return { success: false, error };
+  }
+};
+
+// Add function to update ride invitation status
+const updateRideInvitation = async (invitationId, status) => {
+  try {
+    const batch = writeBatch(db);
+    const invitationRef = doc(db, 'rideInvitations', invitationId);
+    const invitationDoc = await getDoc(invitationRef);
+    
+    if (!invitationDoc.exists()) {
+      throw new Error('Invitation not found');
+    }
+
+    const invitationData = invitationDoc.data();
+    const { rideId, inviterId, inviteeId } = invitationData;
+
+    // Update invitation status
+    batch.update(invitationRef, {
+      status,
+      updatedAt: serverTimestamp()
+    });
+
+    // Update invitation status in the ride document
+    const rideRef = doc(db, 'rides', rideId);
+    const rideDoc = await getDoc(rideRef);
+    
+    if (rideDoc.exists()) {
+      const rideData = rideDoc.data();
+      const updatedInvitations = rideData.invitations?.map(inv => 
+        inv.invitationId === invitationId 
+          ? { ...inv, status, updatedAt: serverTimestamp() }
+          : inv
+      ) || [];
+
+      batch.update(rideRef, { invitations: updatedInvitations });
+
+      // If invitation is accepted, add invitee to passengers
+      if (status === 'accepted') {
+        const inviteeDoc = await getDoc(doc(db, 'users', inviteeId));
+        if (inviteeDoc.exists()) {
+          const inviteeData = inviteeDoc.data();
+          const newPassenger = {
+            uid: inviteeId,
+            name: inviteeData.displayName,
+            photoURL: inviteeData.photoURL,
+            status: 'pending',
+            addedAt: serverTimestamp()
+          };
+
+          batch.update(rideRef, {
+            passengers: arrayUnion(newPassenger),
+            passengerUids: arrayUnion(inviteeId)
+          });
+        }
+      }
+    }
+
+    // Create notification for the inviter
+    const notificationRef = doc(collection(db, 'notifications'));
+    batch.set(notificationRef, {
+      userId: inviterId,
+      type: 'invitation-response',
+      title: 'Ride Invitation Response',
+      message: `${invitationData.inviteeName} ${status === 'accepted' ? 'accepted' : 'declined'} your ride invitation`,
+      rideId,
+      invitationId,
+      createdAt: serverTimestamp(),
+      isRead: false,
+      metadata: {
+        inviteeId,
+        inviteeName: invitationData.inviteeName,
+        status
+      }
+    });
+
+    await batch.commit();
+    return { success: true };
+  } catch (error) {
+    console.error('Error updating ride invitation:', error);
+    return { success: false, error };
+  }
+};
+
+// Add function to get user's pending ride invitations
+const getPendingRideInvitations = async (userId) => {
+  try {
+    // First try the optimized query with ordering
+    const invitationsQuery = query(
+      collection(db, 'rideInvitations'),
+      where('inviteeId', '==', userId),
+      where('status', '==', 'pending'),
+      where('metadata.expiresAt', '>', new Date()),
+      orderBy('metadata.expiresAt', 'asc')
+    );
+
+    try {
+      const snapshot = await getDocs(invitationsQuery);
+      const invitations = await Promise.all(
+        snapshot.docs.map(async (doc) => {
+          const invitationData = doc.data();
+          // Get ride details
+          const rideDoc = await getDoc(doc(db, 'rides', invitationData.rideId));
+          return {
+            id: doc.id,
+            ...invitationData,
+            ride: rideDoc.exists() ? rideDoc.data() : null
+          };
+        })
+      );
+
+      return { success: true, invitations };
+    } catch (error) {
+      // If we get an index error, fall back to a simpler query
+      if (error.code === 'failed-precondition') {
+        console.log('Index not ready, falling back to simple query');
+        
+        // Use a simpler query without ordering and expiration check
+        const simpleQuery = query(
+          collection(db, 'rideInvitations'),
+          where('inviteeId', '==', userId),
+          where('status', '==', 'pending')
+        );
+
+        const snapshot = await getDocs(simpleQuery);
+        const invitations = await Promise.all(
+          snapshot.docs.map(async (doc) => {
+            const invitationData = doc.data();
+            // Filter out expired invitations client-side
+            if (invitationData.metadata?.expiresAt?.toDate() < new Date()) {
+              return null;
+            }
+            // Get ride details
+            const rideDoc = await getDoc(doc(db, 'rides', invitationData.rideId));
+            return {
+              id: doc.id,
+              ...invitationData,
+              ride: rideDoc.exists() ? rideDoc.data() : null
+            };
+          })
+        );
+
+        // Filter out null values and sort by expiration date
+        const validInvitations = invitations
+          .filter(inv => inv !== null)
+          .sort((a, b) => {
+            const dateA = a.metadata?.expiresAt?.toDate() || new Date(0);
+            const dateB = b.metadata?.expiresAt?.toDate() || new Date(0);
+            return dateA - dateB;
+          });
+
+        return { 
+          success: true, 
+          invitations: validInvitations,
+          usingFallback: true 
+        };
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error getting pending ride invitations:', error);
+    return { 
+      success: false, 
+      error,
+      details: error.code === 'failed-precondition' ? 
+        'Please create the required index in Firebase Console' : 
+        undefined
+    };
+  }
+};
+
+// Define deleteRideInvitation function
+const deleteRideInvitation = async ({ rideId, inviteeId }) => {
+  try {
+    // Get references to the ride and invitation documents
+    const rideRef = doc(db, 'rides', rideId);
+    const invitationRef = doc(db, 'invitations', `${rideId}_${inviteeId}`);
+
+    // Start a batch write
+    const batch = writeBatch(db);
+
+    // Delete the invitation document
+    batch.delete(invitationRef);
+
+    // Update the ride document to remove the invitee from the participants list
+    // and update the invitation status metadata
+    const rideDoc = await getDoc(rideRef);
+    if (rideDoc.exists()) {
+      const rideData = rideDoc.data();
+      
+      // Remove the invitee from passengers array
+      const updatedPassengers = rideData.passengers.filter(
+        p => p.uid !== inviteeId
+      );
+
+      // Update the invitation status metadata
+      const updatedMetadata = { ...rideData.metadata };
+      if (updatedMetadata.invitationStatus) {
+        // Decrement the appropriate counter based on the invitee's status
+        const invitee = rideData.passengers.find(p => p.uid === inviteeId);
+        if (invitee && invitee.invitationStatus) {
+          updatedMetadata.invitationStatus[invitee.invitationStatus]--;
+          updatedMetadata.invitationStatus.total--;
+        }
+      }
+
+      // Update the ride document
+      batch.update(rideRef, {
+        passengers: updatedPassengers,
+        'metadata.invitationStatus': updatedMetadata.invitationStatus,
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    // Commit the batch
+    await batch.commit();
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error deleting invitation:', error);
+    return { 
+      success: false, 
+      error: {
+        message: 'Failed to delete invitation',
+        details: error.message
+      }
+    };
+  }
+};
+
+// At the end of the file, have a single export statement:
+export {
+  // User Operations
+  createUserProfile,
+  updateUserProfile,
+  updateUserLocation,
+  updateUserOnlineStatus,
+
+  // Group Operations
+  createGroup,
+  updateGroup,
+
+  // Ride Operations
+  createRide,
+  updateRide,
+  updateRideParticipation,
+  endRide,
+  leaveRide,
+  getRideHistory,
+  getUserRideHistory,
+  migrateRidesToFriendlyIds,
+  clearUserRideHistory,
+
+  // Invitation Operations
+  sendRideInvitation,
+  updateRideInvitation,
+  deleteRideInvitation,
+  getPendingRideInvitations,
+
+  // Friend Operations
+  sendFriendRequest,
+  getMutualFriends,
+  updateFriendRequest,
+  getFriendRequests,
+  getFriendsList,
+  searchUsers,
+  removeFriendship,
+  updateFriendshipMetadata,
+  updateRideStatistics,
+
+  // Subscription Operations
+  subscribeToFriendRequests,
+  subscribeToFriendsList,
+  subscribeToUserStatus,
+
+  // Message and Notification Operations
+  sendMessage,
+  createNotification
 }; 

@@ -11,6 +11,8 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [addingFriend, setAddingFriend] = useState(null);
+  const [invitedFriends, setInvitedFriends] = useState(new Set());
 
   // Fetch friends when modal opens
   useEffect(() => {
@@ -59,9 +61,15 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
     }
   };
 
-  const handleAddFriend = (friend) => {
-    onAddFriend(friend);
-    onClose(); // Close modal after adding
+  const handleAddFriend = async (friend) => {
+    try {
+      setAddingFriend(friend.id);
+      await onAddFriend(friend);
+      // Add friend to invited set after successful invite
+      setInvitedFriends(prev => new Set([...prev, friend.id]));
+    } finally {
+      setAddingFriend(null);
+    }
   };
 
   if (!isOpen) return null;
@@ -124,14 +132,37 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
                     alt={friend.displayName}
                     className="friend-avatar"
                   />
-                  <span className="friend-name">{friend.displayName}</span>
+                  <div className="friend-details">
+                    <span className="friend-name">{friend.displayName}</span>
+                    {invitedFriends.has(friend.id) && (
+                      <span className="invite-status">
+                        <i className="fas fa-check-circle"></i>
+                        Invite Sent
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <button
-                  className="add-friend-button"
+                  className={`add-friend-button ${addingFriend === friend.id ? 'adding' : ''} ${invitedFriends.has(friend.id) ? 'invited' : ''}`}
                   onClick={() => handleAddFriend(friend)}
+                  disabled={addingFriend === friend.id || invitedFriends.has(friend.id)}
                 >
-                  <i className="fas fa-plus"></i>
-                  Add
+                  {addingFriend === friend.id ? (
+                    <>
+                      <i className="fas fa-spinner fa-spin"></i>
+                      Sending...
+                    </>
+                  ) : invitedFriends.has(friend.id) ? (
+                    <>
+                      <i className="fas fa-check"></i>
+                      Invited
+                    </>
+                  ) : (
+                    <>
+                      <i className="fas fa-plus"></i>
+                      Invite
+                    </>
+                  )}
                 </button>
               </div>
             ))
@@ -141,5 +172,187 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
     </div>
   );
 }
+
+// Updated styles for better UI
+const styles = `
+  .friend-selection-modal {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    width: 90%;
+    max-width: 500px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .modal-header {
+    padding: 1.25rem;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .modal-header h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: #333;
+  }
+
+  .search-container {
+    padding: 1rem;
+    position: relative;
+  }
+
+  .search-input {
+    width: 100%;
+    padding: 0.75rem 1rem 0.75rem 2.5rem;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 1.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #666;
+  }
+
+  .friends-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 1rem 1rem;
+  }
+
+  .friend-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+    transition: background-color 0.2s;
+  }
+
+  .friend-item:hover {
+    background-color: #f8f9fa;
+  }
+
+  .friend-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+  }
+
+  .friend-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .friend-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .friend-name {
+    font-weight: 500;
+    color: #333;
+  }
+
+  .invite-status {
+    font-size: 0.8rem;
+    color: #28a745;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .add-friend-button {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 90px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  .add-friend-button:not(.invited):not(.adding) {
+    background-color: #2196F3;
+    color: white;
+  }
+
+  .add-friend-button:not(.invited):not(.adding):hover {
+    background-color: #1976D2;
+  }
+
+  .add-friend-button.adding {
+    background-color: #e3f2fd;
+    color: #2196F3;
+    cursor: wait;
+  }
+
+  .add-friend-button.invited {
+    background-color: #e8f5e9;
+    color: #28a745;
+    cursor: default;
+  }
+
+  .add-friend-button i {
+    font-size: 0.875rem;
+  }
+
+  .loading-state, .error-state, .empty-state {
+    text-align: center;
+    padding: 2rem;
+    color: #666;
+  }
+
+  .spinner {
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #2196F3;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 1rem;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .retry-button {
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    background-color: #2196F3;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .retry-button:hover {
+    background-color: #1976D2;
+  }
+`;
+
+// Add the styles to the document
+const styleSheet = document.createElement("style");
+styleSheet.innerText = styles;
+document.head.appendChild(styleSheet);
 
 export default FriendSelectionModal; 

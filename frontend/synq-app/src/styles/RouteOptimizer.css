@@ -1222,4 +1222,8 @@
 .creator-role-selector select {
   width: auto;
   min-width: 120px;
+}
+
+.btn-primary.mb-3.w-100 {
+  margin-top: 2rem;
 } 

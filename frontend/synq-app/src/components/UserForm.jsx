@@ -1,8 +1,361 @@
 import { useEffect, useState, useRef } from 'react';
 import '../styles/UserForm.css';
 import FriendSelectionModal from './FriendSelectionModal';
+import { useUserAuth } from '../services/auth';
+import { sendRideInvitation } from '../services/firebaseOperations';
+import { MAPQUEST_SERVICE } from '../services/locationService';
 
-function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocationChange, creatorRole, existingParticipants = [] }) {
+// Add fuzzy search helper
+const fuzzySearch = (searchTerm, text) => {
+  searchTerm = searchTerm.toLowerCase();
+  text = text.toLowerCase();
+  
+  // Exact match
+  if (text.includes(searchTerm)) return 1;
+  
+  // Remove common words and special characters
+  const cleanText = text.replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  const cleanSearch = searchTerm.replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  
+  // Check if all words in search term are in text
+  const searchWords = cleanSearch.split(' ');
+  const allWordsMatch = searchWords.every(word => cleanText.includes(word));
+  if (allWordsMatch) return 0.8;
+  
+  // Check for partial word matches
+  const partialMatch = searchWords.some(word => 
+    cleanText.split(' ').some(textWord => textWord.includes(word) || word.includes(textWord))
+  );
+  if (partialMatch) return 0.5;
+  
+  return 0;
+};
+
+// Add geocoding cache
+const geocodingCache = {
+  cache: new Map(),
+  
+  get(key) {
+    const item = this.cache.get(key);
+    if (!item) return null;
+    if (Date.now() > item.expiry) {
+      this.cache.delete(key);
+      return null;
+    }
+    return item.data;
+  },
+  
+  set(key, data) {
+    this.cache.set(key, {
+      data,
+      expiry: Date.now() + MAPQUEST_SERVICE.cacheExpiry
+    });
+  }
+};
+
+// Add rate limiter with queue
+class RateLimiter {
+  constructor(interval) {
+    this.interval = interval;
+    this.lastRequestTime = 0;
+    this.queue = [];
+    this.processing = false;
+  }
+
+  async wait() {
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.processing || this.queue.length === 0) return;
+    
+    this.processing = true;
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.interval) {
+      await new Promise(resolve => setTimeout(resolve, this.interval - timeSinceLastRequest));
+    }
+    
+    this.lastRequestTime = Date.now();
+    const resolve = this.queue.shift();
+    resolve();
+    this.processing = false;
+    
+    if (this.queue.length > 0) {
+      this.processQueue();
+    }
+  }
+}
+
+// Create rate limiter instance
+const rateLimiter = new RateLimiter(MAPQUEST_SERVICE.rateLimit);
+
+// Add geocoding service
+const geocodingService = {
+  async search(query, options = {}) {
+    const searchTerm = query.toLowerCase().trim();
+    
+    // First check common places
+    const commonPlaceMatches = Object.entries(COMMON_PLACES)
+      .map(([key, place]) => ({
+        ...place,
+        score: Math.max(
+          fuzzySearch(searchTerm, key),
+          ...place.aliases.map(alias => fuzzySearch(searchTerm, alias))
+        )
+      }))
+      .filter(match => match.score > 0.3)
+      .sort((a, b) => b.score - a.score);
+
+    if (commonPlaceMatches.length > 0) {
+      console.log('Found match in common places:', commonPlaceMatches[0]);
+      return [commonPlaceMatches[0]];
+    }
+
+    // If no common place match, check cache
+    const cacheKey = `search:${searchTerm}:${JSON.stringify(options)}`;
+    const cachedResult = geocodingCache.get(cacheKey);
+    if (cachedResult) {
+      console.log('Using cached geocoding result for:', searchTerm);
+      return cachedResult;
+    }
+
+    // If no cache hit, make API request
+    await rateLimiter.wait();
+    
+    // Prepare search query
+    let searchQuery = searchTerm;
+    
+    // Add common place name expansions
+    if (searchTerm.includes('dfw')) {
+      searchQuery = searchTerm.replace('dfw', 'dallas fort worth international airport');
+    }
+    
+    const url = new URL(`${MAPQUEST_SERVICE.baseUrl}/address`);
+    url.searchParams.append('key', MAPQUEST_SERVICE.apiKey);
+    url.searchParams.append('location', searchQuery);
+    url.searchParams.append('maxResults', options.limit || 10);
+    url.searchParams.append('country', 'US');
+    url.searchParams.append('outFormat', 'json');
+    url.searchParams.append('thumbMaps', 'false'); // Reduce response size
+    
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), MAPQUEST_SERVICE.timeout);
+      
+      const response = await fetch(url.toString(), {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // Transform and score results
+      const transformedResults = data.results[0].locations
+        .map(location => {
+          const fullAddress = location.street 
+            ? `${location.street}, ${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
+            : `${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`;
+            
+          return {
+            display_name: fullAddress,
+            lat: location.latLng.lat.toString(),
+            lon: location.latLng.lng.toString(),
+            importance: location.geocodeQuality === 'POINT' ? 1 : 0.5,
+            type: location.geocodeQuality,
+            score: fuzzySearch(searchTerm, fullAddress)
+          };
+        })
+        .filter(result => result.score > 0.3)
+        .sort((a, b) => b.score - a.score);
+      
+      // Cache results
+      geocodingCache.set(cacheKey, transformedResults);
+      
+      // Also cache individual results for future partial matches
+      transformedResults.forEach(result => {
+        const words = result.display_name.toLowerCase().split(/[\s,]+/);
+        words.forEach(word => {
+          if (word.length > 2) { // Only cache words longer than 2 characters
+            const wordCacheKey = `word:${word}`;
+            const existingCache = geocodingCache.get(wordCacheKey) || [];
+            if (!existingCache.some(item => item.display_name === result.display_name)) {
+              geocodingCache.set(wordCacheKey, [...existingCache, result]);
+            }
+          }
+        });
+      });
+      
+      return transformedResults;
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        console.warn('Geocoding request timed out for:', searchTerm);
+        throw new Error('Request timed out. Please try again.');
+      }
+      throw error;
+    }
+  },
+
+  async reverseGeocode(lat, lng) {
+    const cacheKey = `reverse:${lat}:${lng}`;
+    const cachedResult = geocodingCache.get(cacheKey);
+    if (cachedResult) {
+      console.log('Using cached reverse geocoding result');
+      return cachedResult;
+    }
+
+    await rateLimiter.wait();
+    
+    const url = new URL(`${MAPQUEST_SERVICE.baseUrl}/reverse`);
+    url.searchParams.append('key', MAPQUEST_SERVICE.apiKey);
+    url.searchParams.append('location', `${lat},${lng}`);
+    
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), MAPQUEST_SERVICE.timeout);
+      
+      const response = await fetch(url.toString(), {
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const location = data.results[0].locations[0];
+      
+      const result = {
+        display_name: location.street 
+          ? `${location.street}, ${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
+          : `${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
+      };
+      
+      geocodingCache.set(cacheKey, result);
+      return result;
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        console.warn('Reverse geocoding request timed out');
+        throw new Error('Request timed out. Please try again.');
+      }
+      throw error;
+    }
+  }
+};
+
+// Add fallback geocoding service
+const fallbackGeocode = async (query) => {
+  try {
+    const response = await fetch(`https://api.geocode.earth/v1/search?text=${encodeURIComponent(query)}&api_key=ge-0c2c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0`);
+    if (!response.ok) throw new Error('Fallback geocoding failed');
+    const data = await response.json();
+    if (data.features && data.features.length > 0) {
+      const feature = data.features[0];
+      return {
+        display_name: feature.place_name,
+        lat: feature.center[1],
+        lon: feature.center[0]
+      };
+    }
+    return null;
+  } catch (error) {
+    console.warn('Fallback geocoding failed:', error);
+    return null;
+  }
+};
+
+// Update the fetchWithRetry function
+const fetchWithRetry = async (url, options = {}, maxRetries = 2) => {
+  let lastError;
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      await rateLimiter.wait(); // Add rate limiting
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...NOMINATIM_HEADERS,
+          ...options.headers
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.warn(`Attempt ${i + 1} failed:`, error);
+      lastError = error;
+      
+      // If this is the last retry and it failed, try the fallback service
+      if (i === maxRetries) {
+        const query = url.split('q=')[1]?.split('&')[0];
+        if (query) {
+          console.log('Trying fallback geocoding service for:', query);
+          const fallbackResult = await fallbackGeocode(decodeURIComponent(query));
+          if (fallbackResult) {
+            return [fallbackResult]; // Return in same format as Nominatim
+          }
+        }
+      }
+      
+      if (i < maxRetries) {
+        // Exponential backoff
+        const delay = Math.min(1000 * Math.pow(2, i), 5000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
+};
+
+// Function to search for suggestions
+const searchSuggestions = async (query, options = {}) => {
+  if (!query || query.length < 2) return [];
+
+  try {
+    const results = await MAPQUEST_SERVICE.searchAddress(query, options);
+    return results;
+  } catch (error) {
+    console.error('Error fetching suggestions:', error);
+    return [];
+  }
+};
+
+// Update the geocodeAddress function
+const geocodeAddress = async (address) => {
+  if (!address) return null;
+  try {
+    const result = await MAPQUEST_SERVICE.getCoordsFromAddress(address);
+    return { lat: result.lat, lng: result.lng, address: result.address };
+  } catch (error) {
+    console.error('Error geocoding address:', error);
+    return null;
+  }
+};
+
+// Update the getAddressFromCoords function
+const getAddressFromCoords = async (lat, lng) => {
+  try {
+    return await MAPQUEST_SERVICE.getAddressFromCoords(lat, lng);
+  } catch (error) {
+    console.error('Error getting address from coordinates:', error);
+    return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
+  }
+};
+
+function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocationChange, creatorRole, existingParticipants = [], isTrackingLocation, rideId, groupCreated }) {
   const [suggestions, setSuggestions] = useState([]);
   const [destinationSuggestions, setDestinationSuggestions] = useState([]);
   const [userLocationSuggestions, setUserLocationSuggestions] = useState([]);
@@ -15,26 +368,44 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedFriend, setSelectedFriend] = useState(null);
   const [error, setError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
+  const successTimeout = useRef(null);
+  const { user } = useUserAuth();
+
+  // Add logging for initial props
+  console.log('UserForm rendered with props:', {
+    creatorRole,
+    form,
+    groupCreated
+  });
 
   // Function to get user's current location
-  const getUserLocation = () => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setUserCoordinates({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude
-          });
-        },
-        (error) => {
-          console.error("Error getting location:", error);
-        },
-        {
+  const getUserLocation = async () => {
+    if (!navigator.geolocation) {
+      console.error('Geolocation is not supported by your browser');
+      return;
+    }
+
+    try {
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
           enableHighAccuracy: true,
           timeout: 5000,
           maximumAge: 0
-        }
-      );
+        });
+      });
+
+      const { latitude, longitude } = position.coords;
+      const formattedAddress = await MAPQUEST_SERVICE.getAddressFromCoords(latitude, longitude);
+      
+      setUserCoordinates({ lat: latitude, lng: longitude });
+      onChange({ target: { name: 'userLocation', value: formattedAddress } });
+      if (onUserLocationChange) {
+        onUserLocationChange(latitude, longitude, formattedAddress);
+      }
+    } catch (error) {
+      console.error('Error getting user location:', error);
+      setError('Failed to get your location. Please try again.');
     }
   };
 
@@ -90,24 +461,14 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
       .slice(0, 5); // Limit to top 5 suggestions
   };
 
-  // Watch for changes in user coordinates
-  useEffect(() => {
-    getUserLocation();
-    // Set up periodic location updates
-    const locationInterval = setInterval(getUserLocation, 30000); // Update every 30 seconds
-    return () => clearInterval(locationInterval);
-  }, []);
-
   // Update suggestions for destination
   useEffect(() => {
-    // Only show suggestions if:
-    // 1. There is input
-    // 2. The input is different from the last selected value
-    // 3. The input is at least 3 characters
-    // 4. The input is not exactly matching the last selected value
+    // Don't search if:
+    // 1. No input
+    // 2. Same as last selected
     if (!form.destination || 
         form.destination === lastSelectedDestination || 
-        form.destination.length < 3 ||
+        form.destination.length < 2 ||
         form.destination.trim() === lastSelectedDestination.trim()) {
       setDestinationSuggestions([]);
       return;
@@ -119,32 +480,25 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
 
     destinationTimeout.current = setTimeout(async () => {
       try {
-        const searchTerm = form.destination;
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTerm)}&countrycodes=us&limit=10`
-        );
-        const data = await res.json();
-        const processedSuggestions = processSuggestions(data, userCoordinates, searchTerm);
+        const suggestions = await searchSuggestions(form.destination, { limit: 5 });
+        const processedSuggestions = processSuggestions(suggestions, userCoordinates, form.destination);
         setDestinationSuggestions(processedSuggestions);
       } catch (error) {
         console.error("Error fetching destination suggestions:", error);
         setDestinationSuggestions([]);
+        setError(error.message || "Unable to fetch location suggestions. Please try again in a few seconds.");
+        setTimeout(() => setError(null), 3000);
       }
-    }, 300);
+    }, 500);
 
     return () => clearTimeout(destinationTimeout.current);
   }, [form.destination, lastSelectedDestination, userCoordinates]);
 
   // Update suggestions for user location
   useEffect(() => {
-    // Only show suggestions if:
-    // 1. There is input
-    // 2. The input is different from the last selected value
-    // 3. The input is at least 3 characters
-    // 4. The input is not exactly matching the last selected value
     if (!form.userLocation || 
         form.userLocation === lastSelectedUserLocation || 
-        form.userLocation.length < 3 ||
+        form.userLocation.length < 2 ||
         form.userLocation.trim() === lastSelectedUserLocation.trim()) {
       setUserLocationSuggestions([]);
       return;
@@ -156,18 +510,16 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
 
     userLocationTimeout.current = setTimeout(async () => {
       try {
-        const searchTerm = form.userLocation;
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTerm)}&countrycodes=us&limit=10`
-        );
-        const data = await res.json();
-        const processedSuggestions = processSuggestions(data, userCoordinates, searchTerm);
+        const suggestions = await searchSuggestions(form.userLocation, { limit: 5 });
+        const processedSuggestions = processSuggestions(suggestions, userCoordinates, form.userLocation);
         setUserLocationSuggestions(processedSuggestions);
       } catch (error) {
         console.error("Error fetching user location suggestions:", error);
         setUserLocationSuggestions([]);
+        setError("Unable to fetch location suggestions. Please try again in a few seconds.");
+        setTimeout(() => setError(null), 3000);
       }
-    }, 300);
+    }, 500);
 
     return () => clearTimeout(userLocationTimeout.current);
   }, [form.userLocation, lastSelectedUserLocation, userCoordinates]);
@@ -175,13 +527,23 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   const handleDestinationSelect = (place) => {
     const selectedDestination = place.display_name;
     setLastSelectedDestination(selectedDestination);
+    
+    // Update form with the address
     onChange({ target: { name: 'destination', value: selectedDestination } });
     setDestinationSuggestions([]); // Clear suggestions immediately
+    
     if (destinationTimeout.current) {
       clearTimeout(destinationTimeout.current);
     }
+    
+    // Call onDestinationChange with the coordinates
     if (onDestinationChange) {
-      onDestinationChange({ lat: parseFloat(place.lat), lng: parseFloat(place.lon) });
+      const coords = {
+        lat: parseFloat(place.lat),
+        lng: parseFloat(place.lon)
+      };
+      console.log('Setting destination coordinates:', coords);
+      onDestinationChange(coords);
     }
   };
 
@@ -198,15 +560,40 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }
   };
 
-  const handleAddFriend = (friend) => {
+  const handleAddFriend = async (friend) => {
+    try {
     setSelectedFriend(friend);
-    // Pre-fill the form with friend's information
-    setForm(prev => ({
-      ...prev,
+      
+      // Create a pending invitation entry
+      const pendingInvitation = {
+        id: friend.uid,
       name: friend.displayName,
-      userLocation: '',
-      destination: ''
-    }));
+        photoURL: friend.photoURL,
+        email: friend.email,
+        role: null, // Role will be set by the friend when they respond
+        invitationStatus: 'pending',
+        tempId: `temp-${Date.now()}`,
+        isCreator: false,
+        destination: form.destination,
+        userLocation: null, // Location will be set by the friend when they respond
+        userLocationCoords: null
+      };
+
+      // Add the pending invitation to the participants list
+      await onSubmit(pendingInvitation);
+      
+      setSuccessMessage(`Invitation sent to ${friend.displayName}`);
+      if (successTimeout.current) {
+        clearTimeout(successTimeout.current);
+      }
+      successTimeout.current = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 3000);
+
+    } catch (error) {
+      console.error('Error in handleAddFriend:', error);
+      setError('An error occurred while sending the invitation.');
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -238,6 +625,7 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
       // If a friend was selected, include their information
       const userData = {
         ...form,
+        destination: currentDestination, // Use the stored destination
         ...(selectedFriend && {
           id: selectedFriend.id,
           photoURL: selectedFriend.photoURL,
@@ -245,15 +633,22 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
         })
       };
 
+      console.log('Submitting user data:', userData);
       await onSubmit(userData);
       
       // Reset form but keep destination
-      setForm(prev => ({
-        ...prev,
-        name: '',
-        userLocation: '',
-        destination: prev.destination // Keep the destination
-      }));
+      onChange({ 
+        target: { 
+          name: 'name', 
+          value: '' 
+        } 
+      });
+      onChange({ 
+        target: { 
+          name: 'userLocation', 
+          value: '' 
+        } 
+      });
       
       setError(null);
       setSelectedFriend(null); // Clear selected friend
@@ -300,8 +695,66 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     </li>
   );
 
+  // Add a new function to handle location button click
+  const handleLocationButtonClick = () => {
+    getUserLocation();
+  };
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimeout.current) {
+        clearTimeout(successTimeout.current);
+      }
+    };
+  }, []);
+
+  // Add a specific handler for role changes with detailed logging
+  const handleRoleChange = (e) => {
+    const { value } = e.target;
+    console.log('Role change triggered:', {
+      newRole: value,
+      currentRole: creatorRole,
+      event: e.target
+    });
+
+    // Call the parent's onChange with the correct event structure
+    const eventObj = {
+      target: {
+        name: 'creatorRole',
+        value: value
+      }
+    };
+    console.log('Sending event to parent:', eventObj);
+    
+    try {
+      onChange(eventObj);
+      console.log('onChange called successfully');
+    } catch (error) {
+      console.error('Error in handleRoleChange:', error);
+    }
+  };
+
+  // Add effect to monitor creatorRole changes
+  useEffect(() => {
+    console.log('creatorRole changed:', creatorRole);
+  }, [creatorRole]);
+
   return (
     <div className="user-form-container">
+      {error && (
+        <div className="alert alert-danger" role="alert">
+          <i className="fas fa-exclamation-circle me-2"></i>
+          {error}
+        </div>
+      )}
+      {successMessage && (
+        <div className="alert alert-success" role="alert">
+          <i className="fas fa-check-circle me-2"></i>
+          {successMessage}
+        </div>
+      )}
+
       {form.isCreator && (
         <div className="role-toggle-container">
           <div className="role-toggle">
@@ -311,11 +764,18 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
               name="creatorRole"
               value="driver"
               checked={creatorRole === 'driver'}
-              onChange={onChange}
+              onChange={handleRoleChange}
               className="role-input"
+              disabled={groupCreated}
+              onClick={() => console.log('Driver radio clicked, current role:', creatorRole)}
             />
-            <label htmlFor="driver-role" className="role-label">
+            <label 
+              htmlFor="driver-role" 
+              className="role-label"
+              onClick={() => console.log('Driver label clicked, current role:', creatorRole)}
+            >
               <i className="fas fa-car-side"></i>
+              <span>Driver</span>
             </label>
 
             <input
@@ -324,11 +784,18 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
               name="creatorRole"
               value="passenger"
               checked={creatorRole === 'passenger'}
-              onChange={onChange}
+              onChange={handleRoleChange}
               className="role-input"
+              disabled={groupCreated}
+              onClick={() => console.log('Passenger radio clicked, current role:', creatorRole)}
             />
-            <label htmlFor="passenger-role" className="role-label">
+            <label 
+              htmlFor="passenger-role" 
+              className="role-label"
+              onClick={() => console.log('Passenger label clicked, current role:', creatorRole)}
+            >
               <i className="fas fa-user-friends"></i>
+              <span>Passenger</span>
             </label>
           </div>
         </div>
@@ -338,6 +805,7 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
         {form.isCreator && creatorRole === 'passenger' && (
           <div className="form-group">
             <label htmlFor="userLocation">Pickup Location</label>
+            <div className="location-input-group">
             <input
               type="text"
               id="userLocation"
@@ -349,6 +817,15 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
               placeholder="Enter your pickup location"
               required
             />
+              <button
+                type="button"
+                className="location-button"
+                onClick={handleLocationButtonClick}
+                title="Use current location"
+              >
+                <i className="fas fa-location-arrow"></i>
+              </button>
+            </div>
             {userLocationSuggestions.length > 0 && (
               <ul className="suggestions-list">
                 {userLocationSuggestions.map(suggestion => 
@@ -381,10 +858,10 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
           )}
         </div>
 
-        {form.isCreator && (
+        {form.isCreator && !groupCreated && (
           <div className="form-group">
             <button 
-              type="submit"
+              type="button"
               className="add-friend-button primary"
               onClick={() => setIsModalOpen(true)}
             >
@@ -393,13 +870,32 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
             </button>
           </div>
         )}
+
+        {/* Location status for driver */}
+        {creatorRole === 'driver' && (
+          <div className="location-status mt-2">
+            {isTrackingLocation ? (
+              <div className="alert alert-success" role="alert">
+                <i className="bi bi-geo-alt-fill me-2"></i>
+                Location tracking active
+              </div>
+            ) : (
+              <div className="alert alert-info" role="alert">
+                <i className="bi bi-geo-alt me-2"></i>
+                Waiting for location...
+              </div>
+            )}
+          </div>
+        )}
       </form>
 
       <div className="form-info">
         {form.isCreator && (
           <div className="alert alert-info">
             <i className="fas fa-info-circle"></i>
-            {creatorRole === 'passenger' 
+            {groupCreated 
+              ? "Group has been created. Waiting for participants to join and provide their locations."
+              : creatorRole === 'passenger' 
               ? "As a passenger, please provide your pickup location."
               : "As a driver, you'll be picking up passengers."}
           </div>
@@ -407,7 +903,9 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
         {!form.isCreator && (
           <div className="alert alert-info">
             <i className="fas fa-info-circle"></i>
-            Adding a new participant. You can change their role later.
+            {groupCreated
+              ? "Group has been created. Please provide your pickup location."
+              : "Adding a new participant. You can change their role later."}
           </div>
         )}
       </div>
@@ -417,9 +915,97 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
         onClose={() => setIsModalOpen(false)}
         onAddFriend={handleAddFriend}
         existingParticipants={existingParticipants}
+        disabled={groupCreated}
       />
     </div>
   );
 }
+
+// Update the styles
+const styles = `
+  .role-toggle-container {
+    margin-bottom: 1.5rem;
+    padding: 0.75rem;
+    background-color: #f8f9fa;
+    border-radius: 12px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+
+  .role-toggle {
+    display: flex;
+    background-color: #e9ecef;
+    padding: 4px;
+    border-radius: 8px;
+    position: relative;
+  }
+
+  .role-input {
+    display: none;
+  }
+
+  .role-label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 500;
+    color: #495057;
+    position: relative;
+    z-index: 1;
+  }
+
+  .role-label i {
+    font-size: 1.1rem;
+    transition: transform 0.2s ease;
+  }
+
+  .role-label:hover {
+    color: #2196F3;
+  }
+
+  .role-label:hover i {
+    transform: scale(1.1);
+  }
+
+  .role-input:checked + .role-label {
+    color: #fff;
+    background-color: #2196F3;
+    box-shadow: 0 2px 4px rgba(33, 150, 243, 0.2);
+  }
+
+  .role-input:checked + .role-label i {
+    transform: scale(1.1);
+  }
+
+  .role-input:disabled + .role-label {
+    opacity: 0.6;
+    cursor: not-allowed;
+    background-color: #e9ecef;
+    color: #6c757d;
+  }
+
+  .role-input:disabled + .role-label:hover {
+    color: #6c757d;
+  }
+
+  .role-input:disabled + .role-label:hover i {
+    transform: none;
+  }
+
+  .role-input:disabled:checked + .role-label {
+    background-color: #90CAF9;
+    color: #fff;
+  }
+`;
+
+// Add the styles to the document
+const styleSheet = document.createElement("style");
+styleSheet.innerText = styles;
+document.head.appendChild(styleSheet);
 
 export default UserForm;

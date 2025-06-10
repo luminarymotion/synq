@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
 import { Map, View } from 'ol';
 import { OSM } from 'ol/source';
 import { Tile as TileLayer, Vector as VectorLayer } from 'ol/layer';
@@ -16,11 +16,14 @@ import 'ol/ol.css';
 import '../styles/Dashboard.css';
 import { Link } from 'react-router-dom';
 import RideHistory from '../components/RideHistory';
+import { getPendingRideInvitations, updateRideInvitation } from '../services/firebaseOperations';
 
 function Dashboard() {
   const { user } = useUserAuth();
   const [loading, setLoading] = useState(true);
   const [activeRides, setActiveRides] = useState([]);
+  const [pendingInvitations, setPendingInvitations] = useState([]);
+  const [processingInvitation, setProcessingInvitation] = useState(null);
   const mapRefs = useRef({});
   const [mapsInitialized, setMapsInitialized] = useState({});
   const [error, setError] = useState(null);
@@ -152,6 +155,167 @@ function Dashboard() {
     });
 
     return () => unsubscribeDriverActive();
+  }, [user]);
+
+  // Add new useEffect for pending invitations
+  useEffect(() => {
+    if (!user) return;
+
+    console.log('Setting up invitations listener for user:', user.uid, 'email:', user.email);
+
+    // Query for pending invitations
+    const invitationsQuery = query(
+      collection(db, 'rideInvitations'),
+      where('inviteeId', '==', user.uid),
+      where('status', '==', 'pending')
+    );
+
+    console.log('Created invitations query:', invitationsQuery);
+
+    // Set up real-time listener
+    const unsubscribe = onSnapshot(invitationsQuery, 
+      async (snapshot) => {
+        try {
+          console.log('Received invitations snapshot:', {
+            empty: snapshot.empty,
+            size: snapshot.size,
+            docs: snapshot.docs.map(doc => ({
+              id: doc.id,
+              data: doc.data()
+            }))
+          });
+          
+          const invitations = await Promise.all(
+            snapshot.docs.map(async (doc) => {
+              try {
+                const invitationData = doc.data();
+                console.log('Processing invitation:', {
+                  id: doc.id,
+                  inviteeId: invitationData.inviteeId,
+                  rideId: invitationData.rideId,
+                  status: invitationData.status
+                });
+                
+                // Get ride details
+                const rideDoc = await getDoc(doc(db, 'rides', invitationData.rideId));
+                console.log('Fetched ride document:', {
+                  exists: rideDoc.exists(),
+                  rideId: invitationData.rideId,
+                  data: rideDoc.exists() ? rideDoc.data() : null
+                });
+                
+                return {
+                  id: doc.id,
+                  ...invitationData,
+                  ride: rideDoc.exists() ? rideDoc.data() : null
+                };
+              } catch (docError) {
+                console.error('Error processing invitation document:', docError);
+                return null;
+              }
+            })
+          );
+
+          // Filter out any null values from failed document processing
+          const validInvitations = invitations.filter(inv => inv !== null);
+          console.log('Final processed invitations:', validInvitations);
+          setPendingInvitations(validInvitations);
+        } catch (error) {
+          console.error('Error processing invitations snapshot:', error);
+          setError('Failed to process invitations. Please try refreshing the page.');
+        }
+      },
+      (error) => {
+        console.error('Error in invitations listener:', error);
+        console.error('Full error details:', {
+          code: error.code,
+          message: error.message,
+          stack: error.stack
+        });
+        
+        if (error.code === 'permission-denied') {
+          console.error('Permission denied accessing invitations. Please check Firebase security rules.');
+          setError('You do not have permission to view invitations. Please contact support.');
+        } else if (error.code === 'failed-precondition') {
+          console.log('Index not ready, falling back to simple query');
+          // Use a simpler query without expiration check
+          const simpleQuery = query(
+            collection(db, 'rideInvitations'),
+            where('inviteeId', '==', user.uid),
+            where('status', '==', 'pending')
+          );
+
+          console.log('Created fallback query:', simpleQuery);
+
+          // Set up a new listener with the simple query
+          const simpleUnsubscribe = onSnapshot(simpleQuery,
+            async (snapshot) => {
+              try {
+                console.log('Received fallback invitations snapshot:', {
+                  empty: snapshot.empty,
+                  size: snapshot.size,
+                  docs: snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    data: doc.data()
+                  }))
+                });
+                
+                const invitations = await Promise.all(
+                  snapshot.docs.map(async (doc) => {
+                    try {
+                      const invitationData = doc.data();
+                      console.log('Processing fallback invitation:', {
+                        id: doc.id,
+                        inviteeId: invitationData.inviteeId,
+                        rideId: invitationData.rideId,
+                        status: invitationData.status
+                      });
+                      
+                      // Get ride details
+                      const rideDoc = await getDoc(doc(db, 'rides', invitationData.rideId));
+                      return {
+                        id: doc.id,
+                        ...invitationData,
+                        ride: rideDoc.exists() ? rideDoc.data() : null
+                      };
+                    } catch (docError) {
+                      console.error('Error processing fallback invitation document:', docError);
+                      return null;
+                    }
+                  })
+                );
+
+                // Filter out any null values from failed document processing
+                const validInvitations = invitations.filter(inv => inv !== null);
+                console.log('Final processed fallback invitations:', validInvitations);
+                setPendingInvitations(validInvitations);
+              } catch (error) {
+                console.error('Error processing fallback invitations snapshot:', error);
+                setError('Failed to process invitations. Please try refreshing the page.');
+              }
+            },
+            (fallbackError) => {
+              console.error('Error in fallback invitations listener:', fallbackError);
+              console.error('Full fallback error details:', {
+                code: fallbackError.code,
+                message: fallbackError.message,
+                stack: fallbackError.stack
+              });
+              setError('Failed to load invitations. Please try refreshing the page.');
+            }
+          );
+
+          return simpleUnsubscribe;
+        } else {
+          setError('Failed to load invitations. Please try refreshing the page.');
+        }
+      }
+    );
+
+    return () => {
+      console.log('Cleaning up invitations listener for user:', user.uid);
+      unsubscribe();
+    };
   }, [user]);
 
   // Helper function to handle query errors
@@ -304,6 +468,28 @@ function Dashboard() {
     return `${duration} min ago`;
   };
 
+  const handleInvitationResponse = async (invitationId, status) => {
+    try {
+      setProcessingInvitation(invitationId);
+      const result = await updateRideInvitation(invitationId, status);
+      
+      if (result.success) {
+        // Update local state
+        setPendingInvitations(prev => 
+          prev.filter(inv => inv.id !== invitationId)
+        );
+      } else {
+        console.error('Error updating invitation:', result.error);
+        setError('Failed to update invitation. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error in handleInvitationResponse:', error);
+      setError('An unexpected error occurred. Please try again.');
+    } finally {
+      setProcessingInvitation(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="dashboard-container">
@@ -411,7 +597,76 @@ function Dashboard() {
             <h2>Your Groups</h2>
           </div>
           <div className="card-body">
-            <p className="no-groups">No groups yet</p>
+            {pendingInvitations.length === 0 ? (
+              <p className="no-groups">No pending invitations</p>
+            ) : (
+              <div className="invitations-list">
+                {pendingInvitations.map((invitation) => (
+                  <div key={invitation.id} className="invitation-item">
+                    <div className="invitation-content">
+                      <div className="inviter-info">
+                        <img 
+                          src={invitation.inviterPhotoURL || '/default-avatar.png'} 
+                          alt={invitation.inviterName}
+                          className="inviter-avatar"
+                        />
+                        <div className="invitation-details">
+                          <h5>{invitation.inviterName} invited you to join their ride</h5>
+                          {invitation.ride && (
+                            <div className="ride-details">
+                              <p className="destination">
+                                <i className="fas fa-map-marker-alt"></i>
+                                {invitation.ride.destination?.address}
+                              </p>
+                              <p className="time">
+                                <i className="fas fa-clock"></i>
+                                Created {new Date(invitation.createdAt?.toDate()).toLocaleString()}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="invitation-actions">
+                        <button
+                          className="btn btn-success btn-sm"
+                          onClick={() => handleInvitationResponse(invitation.id, 'accepted')}
+                          disabled={processingInvitation === invitation.id}
+                        >
+                          {processingInvitation === invitation.id ? (
+                            <>
+                              <span className="spinner-border spinner-border-sm me-1"></span>
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <i className="fas fa-check me-1"></i>
+                              Accept
+                            </>
+                          )}
+                        </button>
+                        <button
+                          className="btn btn-outline-danger btn-sm"
+                          onClick={() => handleInvitationResponse(invitation.id, 'declined')}
+                          disabled={processingInvitation === invitation.id}
+                        >
+                          {processingInvitation === invitation.id ? (
+                            <>
+                              <span className="spinner-border spinner-border-sm me-1"></span>
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <i className="fas fa-times me-1"></i>
+                              Decline
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -583,6 +838,119 @@ function Dashboard() {
 
         .progress-bar.bg-info {
           background-color: #0dcaf0 !important;
+        }
+
+        .invitations-list {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+
+        .invitation-item {
+          background: #f8f9fa;
+          border-radius: 8px;
+          padding: 1rem;
+          transition: all 0.2s;
+        }
+
+        .invitation-item:hover {
+          background: #e9ecef;
+        }
+
+        .invitation-content {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 1rem;
+        }
+
+        .inviter-info {
+          display: flex;
+          gap: 1rem;
+          flex: 1;
+        }
+
+        .inviter-avatar {
+          width: 48px;
+          height: 48px;
+          border-radius: 50%;
+          object-fit: cover;
+        }
+
+        .invitation-details {
+          flex: 1;
+        }
+
+        .invitation-details h5 {
+          margin: 0 0 0.5rem 0;
+          font-size: 1rem;
+          color: #333;
+        }
+
+        .ride-details {
+          font-size: 0.875rem;
+          color: #666;
+        }
+
+        .ride-details p {
+          margin: 0.25rem 0;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .ride-details i {
+          color: #2196F3;
+          width: 16px;
+        }
+
+        .invitation-actions {
+          display: flex;
+          gap: 0.5rem;
+          align-items: flex-start;
+        }
+
+        .btn-sm {
+          padding: 0.375rem 0.75rem;
+          font-size: 0.875rem;
+        }
+
+        .btn-success {
+          background-color: #28a745;
+          border-color: #28a745;
+        }
+
+        .btn-success:hover {
+          background-color: #218838;
+          border-color: #1e7e34;
+        }
+
+        .btn-outline-danger {
+          color: #dc3545;
+          border-color: #dc3545;
+        }
+
+        .btn-outline-danger:hover {
+          background-color: #dc3545;
+          color: white;
+        }
+
+        .spinner-border {
+          width: 1rem;
+          height: 1rem;
+          border-width: 0.15em;
+        }
+
+        @media (max-width: 576px) {
+          .invitation-content {
+            flex-direction: column;
+          }
+
+          .invitation-actions {
+            width: 100%;
+            justify-content: flex-end;
+            margin-top: 1rem;
+          }
         }
       `}</style>
     </div>
