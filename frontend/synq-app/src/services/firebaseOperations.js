@@ -14,9 +14,13 @@ import {
   writeBatch,
   increment,
   arrayUnion,
-  limit
+  limit,
+  deleteField
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { auth } from './firebase';
+import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 // User Operations
 const createUserProfile = async (userId, userData) => {
@@ -301,12 +305,15 @@ const sendMessage = async (groupId, messageData) => {
 };
 
 // Notification Operations
-const createNotification = async (userId, notificationData) => {
+const createNotification = async (notificationData) => {
   try {
+    if (!notificationData.userId) {
+      throw new Error('userId is required for notification');
+    }
+
     const notificationRef = doc(collection(db, 'notifications'));
     await setDoc(notificationRef, {
       ...notificationData,
-      userId,
       isRead: false,
       createdAt: serverTimestamp()
     });
@@ -317,147 +324,448 @@ const createNotification = async (userId, notificationData) => {
   }
 };
 
+// Helper function to generate a consistent friendship ID
+const generateFriendshipId = (userId1, userId2) => {
+  // Sort the user IDs to ensure consistent friendship ID regardless of who initiated
+  const sortedIds = [userId1, userId2].sort();
+  return `${sortedIds[0]}_${sortedIds[1]}`;
+};
+
 // Friend Operations
-const sendFriendRequest = async (senderId, receiverId, message = '') => {
+const sendFriendRequest = async ({ senderId, receiverId, message }) => {
   try {
-    // Check if users exist
-    const [senderDoc, receiverDoc] = await Promise.all([
-      getDoc(doc(db, 'users', senderId)),
-      getDoc(doc(db, 'users', receiverId))
-    ]);
+    console.log('\n=== sendFriendRequest START ===');
+    console.log('Initial Parameters:', { senderId, receiverId, message });
+
+    // 1. Check authentication
+    const auth = getAuth();
+    const user = auth.currentUser;
+    console.log('Authentication State:', {
+      isAuthenticated: !!user,
+      authUserId: user?.uid,
+      email: user?.email,
+      token: user ? 'Present' : 'Missing',
+      authUid: user?.uid,
+      auth: user
+    });
+
+    if (!user) {
+      throw new Error('User must be authenticated to send friend requests');
+    }
+
+    // 2. Verify both users exist
+    const senderDoc = await getDoc(doc(db, 'users', senderId));
+    const receiverDoc = await getDoc(doc(db, 'users', receiverId));
+    
+    console.log('User Documents Check:', {
+      senderExists: senderDoc.exists(),
+      receiverExists: receiverDoc.exists(),
+      senderId,
+      receiverId
+    });
 
     if (!senderDoc.exists() || !receiverDoc.exists()) {
-      throw new Error('User not found');
+      throw new Error('One or both users do not exist');
     }
 
-    // Check receiver's privacy settings
+    // 3. Check receiver's privacy settings
     const receiverData = receiverDoc.data();
-    if (receiverData.settings?.privacy?.allowFriendRequests === false) {
-      throw new Error('User is not accepting friend requests');
+    const privacySettings = receiverData.settings?.privacy || {};
+    console.log('Receiver Privacy Settings:', {
+      allowFriendRequests: privacySettings.allowFriendRequests !== false,
+      settings: privacySettings
+    });
+
+    if (privacySettings.allowFriendRequests === false) {
+      throw new Error('This user is not accepting friend requests');
     }
 
-    // Create friend request
-    const requestRef = doc(collection(db, 'friendRequests'));
-    const requestData = {
-      id: requestRef.id,
+    // 4. Check for existing requests
+    const existingRequestsQuery = query(
+      collection(db, 'friendRequests'),
+      where('senderId', '==', senderId),
+      where('receiverId', '==', receiverId),
+      where('metadata.status', '==', 'pending')  // Only check for pending requests
+    );
+
+    const existingRequests = await getDocs(existingRequestsQuery);
+    console.log('Existing Requests Check:', {
+      hasExistingRequests: !existingRequests.empty,
+      count: existingRequests.size,
+      status: 'Only checking for pending requests'
+    });
+
+    if (!existingRequests.empty) {
+      throw new Error('A pending friend request already exists between these users');
+    }
+
+    // 5. Prepare the friend request data
+    const senderData = senderDoc.data();
+    const friendRequestData = {
       senderId,
       receiverId,
-      status: 'pending',
-      message: message.trim(),
       senderProfile: {
-        displayName: senderDoc.data().profile.displayName,
-        photoURL: senderDoc.data().profile.photoURL,
-        email: senderDoc.data().profile.email
+        displayName: senderData.profile?.displayName || 'Anonymous User',
+        photoURL: senderData.profile?.photoURL || '',
+        email: senderData.profile?.email || user.email || ''
       },
+      message,
       metadata: {
-      createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        status: 'pending',
+        createdBy: senderId
       }
     };
 
-    await setDoc(requestRef, requestData);
+    console.log('\n5. Final Data Being Sent:');
+    console.log(JSON.stringify(friendRequestData, null, 2));
 
-    // Create notification for receiver
-    await createNotification({
-      userId: receiverId,
-      type: 'friend_request',
-      title: 'New Friend Request',
-      message: `${requestData.senderProfile.displayName} sent you a friend request`,
-      data: {
-        requestId: requestRef.id,
-        senderId,
-        senderName: requestData.senderProfile.displayName
-      }
+    // 6. Log the Firestore rule evaluation context
+    console.log('\n7. Firestore Rule Evaluation Context:');
+    console.log('request.auth:', {
+      uid: user.uid,
+      token: 'Present'
     });
 
-    return { success: true, requestId: requestRef.id };
+    // 7. Log the exact data being sent to Firestore
+    console.log('\n8. Exact Data Being Sent to Firestore:');
+    const validation = {
+      basic: {
+        hasData: true,
+        hasSenderId: typeof friendRequestData.senderId === 'string',
+        hasReceiverId: typeof friendRequestData.receiverId === 'string',
+        hasMetadata: typeof friendRequestData.metadata === 'object',
+        hasMessage: typeof friendRequestData.message === 'string',
+        hasSenderProfile: typeof friendRequestData.senderProfile === 'object'
+      },
+      metadata: {
+        hasStatus: friendRequestData.metadata.status === 'pending',
+        isPending: friendRequestData.metadata.status === 'pending',
+        hasCreatedBy: typeof friendRequestData.metadata.createdBy === 'string'
+      },
+      profile: {
+        hasDisplayName: typeof friendRequestData.senderProfile.displayName === 'string',
+        hasEmail: typeof friendRequestData.senderProfile.email === 'string',
+        hasValidPhotoURL: typeof friendRequestData.senderProfile.photoURL === 'string'
+      },
+      auth: {
+        isAuthenticated: !!user,
+        senderMatchesAuth: user.uid === senderId,
+        notSelfRequest: senderId !== receiverId
+      }
+    };
+
+    console.log(JSON.stringify({
+      path: `friendRequests/${doc(collection(db, 'friendRequests')).id}`,
+      data: friendRequestData,
+      validation
+    }, null, 2));
+
+    // 8. Create the friend request
+    const friendRequestRef = doc(collection(db, 'friendRequests'));
+    await setDoc(friendRequestRef, friendRequestData);
+
+    return {
+      success: true,
+      requestId: friendRequestRef.id,
+      data: friendRequestData
+    };
+
   } catch (error) {
-    console.error('Error sending friend request:', error);
-    return { success: false, error };
+    console.error('\nError Details:', {
+      code: error.code,
+      message: error.message,
+      ruleValidation: error.ruleValidation,
+      auth: error.auth,
+      request: error.request
+    });
+    
+    throw {
+      error,
+      code: error.code,
+      message: error.message,
+      senderId,
+      receiverId,
+      timestamp: new Date().toISOString()
+    };
   }
 };
 
-const updateFriendRequest = async (requestId, status, userId) => {
+const updateFriendRequest = async (requestId, status) => {
+  console.log('=== updateFriendRequest START ===');
+  console.log('Initial Parameters:', { requestId, status });
+  
+  let userId;
+  
   try {
+    const authUser = auth.currentUser;
+    if (!authUser) {
+      console.error('No authenticated user found');
+      throw new Error('User not authenticated');
+    }
+
+    userId = authUser.uid;
+    console.log('=== Friend Request Update Debug ===');
+    console.log('Authentication State:', {
+      isAuthenticated: true,
+      authUserId: userId,
+      email: authUser.email,
+      token: authUser.accessToken ? 'Present' : 'Missing',
+      authUid: authUser.uid
+    });
+
     const requestRef = doc(db, 'friendRequests', requestId);
     const requestDoc = await getDoc(requestRef);
     
     if (!requestDoc.exists()) {
+      console.error('Request not found:', requestId);
       throw new Error('Friend request not found');
     }
 
     const requestData = requestDoc.data();
-    if (requestData.receiverId !== userId) {
-      throw new Error('Not authorized to update this request');
-    }
-
-    const updates = {
-      status,
-      updatedAt: serverTimestamp()
-    };
-
-    if (status === 'accepted') {
-      // Create friendship relationship
-      const relationshipRef = doc(collection(db, 'relationships'));
-      const relationshipData = {
-        id: relationshipRef.id,
-        type: 'friend',
-        status: 'active',
-        users: [requestData.senderId, requestData.receiverId],
+    
+    // If this is an old document structure, migrate it first
+    if ('status' in requestData && (!('metadata' in requestData) || !requestData.metadata?.status)) {
+      console.log('Migrating old document structure to new format');
+      const migrationUpdate = {
         metadata: {
-          createdAt: serverTimestamp(),
-          lastInteraction: serverTimestamp(),
-          communityId: null, // Will be set when users join a community
-          communityRole: null // Will be set when users join a community
+          status: requestData.status,
+          createdAt: requestData.createdAt || new Date().toISOString(),
+          createdBy: requestData.senderId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: userId
         }
       };
+      
+      // Remove the old status field
+      await updateDoc(requestRef, {
+        ...migrationUpdate,
+        status: deleteField()
+      });
+      
+      // Refresh the document data after migration
+      const updatedDoc = await getDoc(requestRef);
+      if (!updatedDoc.exists()) {
+        throw new Error('Document disappeared after migration');
+      }
+      requestData = updatedDoc.data();
+    }
 
-      await setDoc(relationshipRef, relationshipData);
+    // Log the document structure after migration
+    console.log('Friend Request Document Structure:', {
+      id: requestId,
+      fullData: requestData,
+      hasMetadata: 'metadata' in requestData,
+      metadataStatus: requestData.metadata?.status,
+      allFields: Object.keys(requestData)
+    });
 
-      // Create notifications for both users
-      await Promise.all([
-        createNotification({
-          userId: requestData.senderId,
-          type: 'friend_request_accepted',
-          title: 'Friend Request Accepted',
-          message: `${requestData.receiverProfile.displayName} accepted your friend request`,
-          data: {
-            requestId,
-            receiverId: requestData.receiverId,
-            receiverName: requestData.receiverProfile.displayName
-          }
-        }),
-        createNotification({
-          userId: requestData.receiverId,
-          type: 'friend_added',
-          title: 'New Friend Added',
-          message: `You are now friends with ${requestData.senderProfile.displayName}`,
-          data: {
-            requestId,
-            senderId: requestData.senderId,
-            senderName: requestData.senderProfile.displayName
-          }
-        })
+    if (!requestData.metadata?.status) {
+      console.error('Invalid document structure after migration:', requestData);
+      throw new Error('Invalid friend request document structure');
+    }
+
+    console.log('Current Request State:', {
+      id: requestId,
+      senderId: requestData.senderId,
+      receiverId: requestData.receiverId,
+      currentStatus: requestData.metadata.status,
+      attemptedStatus: status,
+      metadata: requestData.metadata,
+      authUserId: userId,
+      isReceiverMatch: requestData.receiverId === userId,
+      isStatusPending: requestData.metadata.status === 'pending',
+      isStatusChange: status !== requestData.metadata.status,
+      isStatusValid: ['accepted', 'rejected'].includes(status)
+    });
+
+    // Verify all conditions required by Firestore rules
+    const ruleChecks = {
+      isAuthenticated: true,
+      isReceiver: requestData.receiverId === userId,
+      isPending: requestData.metadata.status === 'pending',
+      isValidStatus: ['accepted', 'rejected'].includes(status),
+      isStatusChange: status !== requestData.metadata.status
+    };
+
+    console.log('Firestore Rule Checks:', {
+      ...ruleChecks,
+      ruleCheckDetails: {
+        isAuthenticated: 'User must be authenticated',
+        isReceiver: `User ID (${userId}) must match receiver ID (${requestData.receiverId})`,
+        isPending: `Current status (${requestData.metadata.status}) must be 'pending'`,
+        isValidStatus: `New status (${status}) must be 'accepted' or 'rejected'`,
+        isStatusChange: `New status (${status}) must be different from current status (${requestData.metadata.status})`
+      }
+    });
+
+    // Check each condition and log which one fails
+    if (!ruleChecks.isReceiver) {
+      console.error('Rule Check Failed: User is not the receiver', {
+        userId,
+        receiverId: requestData.receiverId,
+        authUid: authUser.uid,
+        isMatch: requestData.receiverId === userId
+      });
+      throw new Error('Unauthorized: Only the receiver can update the request');
+    }
+    if (!ruleChecks.isPending) {
+      console.error('Rule Check Failed: Request is not pending', {
+        currentStatus: requestData.metadata.status,
+        expectedStatus: 'pending'
+      });
+      throw new Error('Cannot update: Request is no longer pending');
+    }
+    if (!ruleChecks.isValidStatus) {
+      console.error('Rule Check Failed: Invalid status', {
+        attemptedStatus: status,
+        allowedStatuses: ['accepted', 'rejected']
+      });
+      throw new Error('Invalid status: Must be accepted or rejected');
+    }
+    if (!ruleChecks.isStatusChange) {
+      console.error('Rule Check Failed: Status not changing', {
+        currentStatus: requestData.metadata.status,
+        attemptedStatus: status
+      });
+      throw new Error('Status must change');
+    }
+
+    // Update metadata with new status
+    const metadataUpdate = {
+      metadata: {
+        ...requestData.metadata,
+        status,
+        updatedAt: new Date().toISOString(),
+        updatedBy: userId
+      }
+    };
+
+    console.log('Attempting Update:', {
+      requestRef: requestRef.path,
+      metadataUpdate,
+      authUser: {
+        uid: userId,
+        email: authUser.email,
+        authUid: authUser.uid
+      }
+    });
+
+    await updateDoc(requestRef, metadataUpdate);
+    console.log('Update Successful');
+
+    // Handle side effects based on the new status
+    if (status === 'accepted') {
+      // Create friendship relationship
+      const batch = writeBatch(db);
+      
+      // Get user data for notifications
+      const [senderDoc, receiverDoc] = await Promise.all([
+        getDoc(doc(db, 'users', requestData.senderId)),
+        getDoc(doc(db, 'users', requestData.receiverId))
       ]);
+
+      if (!senderDoc.exists() || !receiverDoc.exists()) {
+        throw new Error('User profiles not found');
+      }
+
+      const senderData = senderDoc.data();
+      const receiverData = receiverDoc.data();
+
+      // Create friendship documents using the helper function
+      const friendshipId = generateFriendshipId(requestData.senderId, requestData.receiverId);
+      const friendshipRef = doc(db, 'relationships', friendshipId);
+      
+      batch.set(friendshipRef, {
+        users: [requestData.senderId, requestData.receiverId],
+        type: 'friend',
+        status: 'active',
+        metadata: {
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: userId,
+          lastInteraction: new Date().toISOString()
+        }
+      });
+
+      // Create notifications
+      const senderNotificationRef = doc(collection(db, 'notifications'));
+      const receiverNotificationRef = doc(collection(db, 'notifications'));
+
+      batch.set(senderNotificationRef, {
+        userId: requestData.senderId,
+        type: 'friend_request_accepted',
+        title: 'Friend Request Accepted',
+        message: `${receiverData.profile.displayName} accepted your friend request`,
+        metadata: {
+          status: 'unread',
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: userId
+        }
+      });
+
+      batch.set(receiverNotificationRef, {
+        userId: requestData.receiverId,
+        type: 'friend_request_accepted',
+        title: 'Friend Request Accepted',
+        message: `You accepted ${senderData.profile.displayName}'s friend request`,
+        metadata: {
+          status: 'unread',
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: userId
+        }
+      });
+
+      await batch.commit();
+      console.log('Successfully created friendship and notifications');
     } else if (status === 'rejected') {
-      await createNotification({
+      // Notify the sender about rejection
+      const senderDoc = await getDoc(doc(db, 'users', requestData.senderId));
+      if (!senderDoc.exists()) {
+        throw new Error('Sender profile not found');
+      }
+
+      const senderData = senderDoc.data();
+      const receiverDoc = await getDoc(doc(db, 'users', requestData.receiverId));
+      const receiverData = receiverDoc.data();
+
+      const notificationRef = doc(collection(db, 'notifications'));
+      await setDoc(notificationRef, {
         userId: requestData.senderId,
         type: 'friend_request_rejected',
         title: 'Friend Request Rejected',
-        message: `${requestData.receiverProfile.displayName} declined your friend request`,
-        data: {
-          requestId,
-          receiverId: requestData.receiverId,
-          receiverName: requestData.receiverProfile.displayName
+        message: `${receiverData.profile.displayName} rejected your friend request`,
+        metadata: {
+          status: 'unread',
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          updatedAt: new Date().toISOString(),
+          updatedBy: userId
         }
       });
+      console.log('Successfully created rejection notification');
     }
 
-    await updateDoc(requestRef, updates);
-    return { success: true };
+    return { success: true, message: `Friend request ${status}` };
   } catch (error) {
-    console.error('Error updating friend request:', error);
-    return { success: false, error };
+    console.error('Error updating friend request:', {
+      error,
+      code: error.code,
+      message: error.message,
+      requestId,
+      status,
+      userId: userId || 'not set',
+      authContext: auth.currentUser ? {
+        uid: auth.currentUser.uid,
+        email: auth.currentUser.email
+      } : 'No auth user',
+      timestamp: new Date().toISOString()
+    });
+    throw error;
   }
 };
 
@@ -664,8 +972,17 @@ const searchUsers = async (searchTerm) => {
         ...doc.data()
       }))
       .filter(user => {
-        const displayName = (user.displayName || '').toLowerCase();
-        const email = (user.email || '').toLowerCase();
+        // Get displayName and email from profile object for Google sign-in users
+        const displayName = (user.profile?.displayName || user.displayName || '').toLowerCase();
+        const email = (user.profile?.email || user.email || '').toLowerCase();
+        
+        console.log('Searching user:', {
+          id: user.id,
+          displayName,
+          email,
+          hasProfile: !!user.profile,
+          profileData: user.profile
+        });
         
         // Check for exact matches first
         if (displayName === searchTermLower || email === searchTermLower) {
@@ -690,16 +1007,15 @@ const searchUsers = async (searchTerm) => {
 // Real-time Friend Operations
 const subscribeToFriendRequests = (userId, callback) => {
   try {
-    // First try the optimized query with ordering
+    // Query using the new metadata structure
     const requestsQuery = query(
       collection(db, 'friendRequests'),
       where('receiverId', '==', userId),
-      where('status', '==', 'pending'),
-      orderBy('createdAt', 'desc')
+      where('metadata.status', '==', 'pending')
     );
 
     // Return the unsubscribe function
-    const unsubscribe = onSnapshot(requestsQuery, 
+    return onSnapshot(requestsQuery, 
       (snapshot) => {
         const requests = snapshot.docs.map(doc => ({
           id: doc.id,
@@ -708,48 +1024,10 @@ const subscribeToFriendRequests = (userId, callback) => {
         callback({ success: true, requests });
       },
       (error) => {
-        // If we get an index error, fall back to a simpler query
-        if (error.code === 'failed-precondition' && error.message.includes('index')) {
-          console.log('Index not ready, falling back to simple query');
-          // Use a simpler query without ordering
-          const simpleQuery = query(
-            collection(db, 'friendRequests'),
-            where('receiverId', '==', userId),
-            where('status', '==', 'pending')
-          );
-
-          // Set up a new listener with the simple query
-          const simpleUnsubscribe = onSnapshot(simpleQuery,
-            (snapshot) => {
-              const requests = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-              }));
-              // Sort the requests client-side
-              requests.sort((a, b) => {
-                const dateA = a.createdAt?.toDate?.() || new Date(0);
-                const dateB = b.createdAt?.toDate?.() || new Date(0);
-                return dateB - dateA;
-              });
-              callback({ success: true, requests });
-            },
-            (fallbackError) => {
-              console.error('Error in fallback friend requests subscription:', fallbackError);
-              callback({ success: false, error: fallbackError });
-            }
-          );
-
-          // Return the new unsubscribe function
-          return simpleUnsubscribe;
-        }
-
-        // For other errors, just pass them through
         console.error('Error in friend requests subscription:', error);
         callback({ success: false, error });
       }
     );
-
-    return unsubscribe;
   } catch (error) {
     console.error('Error setting up friend requests subscription:', error);
     callback({ success: false, error });
@@ -1113,6 +1391,263 @@ const getMutualFriends = async (userId1, userId2) => {
   }
 };
 
+// Define the test function
+const testFriendRequestsAccess = async () => {
+  try {
+    console.log('=== Testing Friend Requests Access ===');
+    const db = getFirestore();
+    const auth = getAuth();
+    const user = auth.currentUser;
+    
+    if (!user) {
+      console.error('No authenticated user found');
+      return false;
+    }
+
+    console.log('Current user:', {
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName,
+      photoURL: user.photoURL
+    });
+
+    // Test 1: Try to create a minimal document first
+    console.log('\nTest 1: Creating minimal document...');
+    const minimalDocRef = doc(collection(db, 'friendRequests'));
+    const minimalData = {
+      senderId: user.uid.trim(),  // Ensure no extra spaces
+      receiverId: 'tz9KYTQbvtOZ9MQ5S1VdEYrpck83',
+      message: 'test'
+    };
+
+    console.log('Sending minimal data:', {
+      ...minimalData,
+      uidComparison: {
+        authUid: user.uid.trim(),
+        senderId: minimalData.senderId.trim(),
+        areEqual: user.uid.trim() === minimalData.senderId.trim()
+      }
+    });
+
+    try {
+      await setDoc(minimalDocRef, minimalData);
+      console.log('Minimal document created successfully');
+      await deleteDoc(minimalDocRef);
+      console.log('Minimal document deleted');
+    } catch (minimalError) {
+      console.error('Minimal document test failed:', {
+        code: minimalError.code,
+        message: minimalError.message,
+        details: minimalError
+      });
+    }
+
+    // If minimal test fails, don't proceed with full test
+    if (minimalError) {
+      return false;
+    }
+
+    // Get user profile data first
+    const userDoc = await getDoc(doc(db, 'users', user.uid));
+    if (!userDoc.exists()) {
+      console.error('Current user profile not found in database');
+      return false;
+    }
+
+    const userData = userDoc.data();
+    console.log('User profile data:', {
+      id: userDoc.id,
+      exists: userDoc.exists(),
+      data: userData,
+      hasProfile: !!userData.profile,
+      hasSettings: !!userData.settings,
+      hasReputation: !!userData.reputation
+    });
+
+    // Verify user data structure
+    if (!userData.profile || !userData.settings || !userData.reputation) {
+      console.error('User profile data is incomplete:', {
+        hasProfile: !!userData.profile,
+        hasSettings: !!userData.settings,
+        hasReputation: !!userData.reputation
+      });
+      return false;
+    }
+
+    const friendRequestsRef = collection(db, 'friendRequests');
+    
+    // Test 2: Try to read requests where user is sender
+    console.log('\nTest 2: Reading sent requests...');
+    const sentRequestsQuery = query(
+      friendRequestsRef,
+      where('senderId', '==', user.uid),
+      limit(1)
+    );
+    const sentRequestsSnapshot = await getDocs(sentRequestsQuery);
+    console.log('Sent requests test result:', {
+      success: true,
+      empty: sentRequestsSnapshot.empty,
+      size: sentRequestsSnapshot.size,
+      docs: sentRequestsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        exists: doc.exists(),
+        data: doc.data()
+      }))
+    });
+
+    // Test 3: Try to read requests where user is receiver
+    console.log('\nTest 3: Reading received requests...');
+    const receivedRequestsQuery = query(
+      friendRequestsRef,
+      where('receiverId', '==', user.uid),
+      limit(1)
+    );
+    const receivedRequestsSnapshot = await getDocs(receivedRequestsQuery);
+    console.log('Received requests test result:', {
+      success: true,
+      empty: receivedRequestsSnapshot.empty,
+      size: receivedRequestsSnapshot.size,
+      docs: receivedRequestsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        exists: doc.exists(),
+        data: doc.data()
+      }))
+    });
+
+    // Get a valid receiver ID from the users collection
+    console.log('\nGetting a valid receiver ID...');
+    const usersQuery = query(
+      collection(db, 'users'),
+      where('__name__', '!=', user.uid),  // Exclude current user
+      limit(1)
+    );
+    const usersSnapshot = await getDocs(usersQuery);
+    
+    if (usersSnapshot.empty) {
+      console.error('No other users found in the database');
+      return false;
+    }
+
+    const receiverDoc = usersSnapshot.docs[0];
+    const receiverId = receiverDoc.id;
+    const receiverData = receiverDoc.data();
+    
+    // Verify receiver data structure
+    console.log('Found receiver:', {
+      id: receiverId,
+      exists: receiverDoc.exists(),
+      data: receiverData,
+      hasProfile: !!receiverData.profile,
+      hasSettings: !!receiverData.settings,
+      hasReputation: !!receiverData.reputation
+    });
+
+    if (!receiverData.profile || !receiverData.settings || !receiverData.reputation) {
+      console.error('Receiver profile data is incomplete:', {
+        hasProfile: !!receiverData.profile,
+        hasSettings: !!receiverData.settings,
+        hasReputation: !!receiverData.reputation
+      });
+      return false;
+    }
+
+    // Test 4: Try to create a test document
+    console.log('\nTest 4: Creating test document...');
+    const testDocRef = doc(collection(db, 'friendRequests'));
+    const testData = {
+      senderId: user.uid,
+      receiverId: receiverId,
+      message: 'Test friend request',
+      senderProfile: {
+        displayName: userData.profile.displayName || user.displayName || 'Test User',
+        photoURL: userData.profile.photoURL || user.photoURL || '',
+        email: userData.profile.email || user.email || ''
+      },
+      metadata: {
+        status: 'pending',
+        createdBy: user.uid,
+        createdAt: new Date().toISOString()
+      }
+    };
+
+    // Log the exact data being sent
+    console.log('Test data validation:', {
+      hasSenderId: typeof testData.senderId === 'string',
+      hasReceiverId: typeof testData.receiverId === 'string',
+      hasMessage: typeof testData.message === 'string',
+      hasMetadata: testData.metadata && typeof testData.metadata === 'object',
+      hasValidMetadata: testData.metadata && 
+                       testData.metadata.status === 'pending' &&
+                       testData.metadata.createdBy === user.uid,
+      hasSenderProfile: testData.senderProfile && typeof testData.senderProfile === 'object',
+      hasValidProfile: testData.senderProfile &&
+                      typeof testData.senderProfile.displayName === 'string' &&
+                      typeof testData.senderProfile.photoURL === 'string' &&
+                      typeof testData.senderProfile.email === 'string',
+      senderMatchesAuth: testData.senderId === user.uid,
+      notSelfRequest: testData.senderId !== testData.receiverId,
+      senderProfileData: {
+        displayName: testData.senderProfile.displayName,
+        photoURL: testData.senderProfile.photoURL,
+        email: testData.senderProfile.email
+      }
+    });
+
+    console.log('Sending data:', JSON.stringify(testData, null, 2));
+
+    try {
+      await setDoc(testDocRef, testData);
+      console.log('Write test successful:', {
+        docId: testDocRef.id,
+        data: testData
+      });
+
+      // Test 5: Try to read the created document
+      console.log('\nTest 5: Reading created document...');
+      const createdDoc = await getDoc(testDocRef);
+      console.log('Read created document result:', {
+        success: createdDoc.exists(),
+        data: createdDoc.exists() ? createdDoc.data() : null
+      });
+
+      // Clean up: Delete the test document
+      console.log('\nCleaning up: Deleting test document...');
+      await deleteDoc(testDocRef);
+      console.log('Test document deleted successfully');
+      
+      return true;
+    } catch (writeError) {
+      console.error('Write test failed:', {
+        code: writeError.code,
+        message: writeError.message,
+        details: writeError,
+        data: testData,
+        validation: {
+          senderProfile: testData.senderProfile,
+          metadata: testData.metadata,
+          auth: {
+            uid: user.uid,
+            email: user.email
+          }
+        }
+      });
+      return false;
+    }
+  } catch (error) {
+    console.error('Access test failed:', {
+      code: error.code,
+      message: error.message,
+      details: error
+    });
+    return false;
+  }
+};
+
+// Make it available globally for testing
+if (typeof window !== 'undefined') {
+  window.testFriendRequestsAccess = testFriendRequestsAccess;
+}
+
 // At the end of the file, update the export statement:
 export {
   // User Operations
@@ -1156,5 +1691,8 @@ export {
   getUserRideHistory,
 
   // New function
-  getMutualFriends
+  getMutualFriends,
+
+  // New function
+  testFriendRequestsAccess
 }; 

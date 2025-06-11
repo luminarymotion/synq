@@ -121,7 +121,12 @@ function UserTable({ users, onDelete, onRoleChange, rideId }) {
         [userToAdd.id]: 'pending'
       }));
 
-      const result = await sendFriendRequest(user.uid, userToAdd.id, "Let's be friends!");
+      const result = await sendFriendRequest({
+        senderId: user.uid,
+        receiverId: userToAdd.id,
+        message: "Let's be friends!"
+      });
+      
       if (!result.success) {
         setFriendRequestStatus(prev => ({
           ...prev,

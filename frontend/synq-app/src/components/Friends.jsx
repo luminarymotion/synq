@@ -68,9 +68,14 @@ function Friends() {
   }, [user]);
 
   const handleFriendRequest = async (requestId, status) => {
+    if (!user) {
+      setError('You must be logged in to handle friend requests');
+      return;
+    }
+
     try {
       setProcessingRequest(prev => ({ ...prev, [requestId]: true }));
-      const result = await updateFriendRequest(requestId, status, user.uid);
+      const result = await updateFriendRequest(requestId, status);
       if (result.success) {
         setFriendRequests(prev => prev.filter(req => req.id !== requestId));
       } else {
@@ -181,10 +186,6 @@ function Friends() {
                           </div>
                           <div>
                             <h6 className="mb-0">{request.senderProfile.displayName}</h6>
-                            <small className="text-muted">{request.senderProfile.email}</small>
-                            {request.message && (
-                              <p className="mt-1 mb-0 small">{request.message}</p>
-                            )}
                           </div>
                         </div>
                         <div className="d-flex gap-2">

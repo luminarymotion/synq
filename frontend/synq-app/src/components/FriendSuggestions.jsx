@@ -87,18 +87,45 @@ function FriendSuggestions() {
   };
 
   const handleSendRequest = async (userId) => {
+    if (!user) return;
+
     try {
       setSendingRequest(prev => ({ ...prev, [userId]: true }));
-      const result = await sendFriendRequest(user.uid, userId);
+      
+      // Check if already friends
+      const statusResult = await checkFriendshipStatus(user.uid, userId);
+      if (statusResult.success && statusResult.areFriends) {
+        setSuggestions(prev => 
+          prev.map(s => 
+            s.id === userId 
+              ? { ...s, areFriends: true }
+              : s
+          )
+        );
+        return;
+      }
+
+      // Send friend request
+      const result = await sendFriendRequest({
+        senderId: user.uid,
+        receiverId: userId,
+        message: "Let's be friends!"
+      });
+      
       if (result.success) {
-        // Remove the suggestion after successful request
-        setSuggestions(prev => prev.filter(s => s.id !== userId));
+        setSuggestions(prev => 
+          prev.map(s => 
+            s.id === userId 
+              ? { ...s, friendshipStatus: 'pending' }
+              : s
+          )
+        );
       } else {
         setError('Failed to send friend request');
       }
     } catch (err) {
+      console.error('Error sending friend request:', err);
       setError('Error sending friend request');
-      console.error(err);
     } finally {
       setSendingRequest(prev => ({ ...prev, [userId]: false }));
     }
