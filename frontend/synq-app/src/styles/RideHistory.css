@@ -1,0 +1,97 @@
+.ride-history-card {
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ride-history-card .card-header {
+  background-color: #fff;
+  border-bottom: 1px solid #eee;
+  padding: 1rem;
+}
+
+.ride-history-card .card-title {
+  color: #333;
+  font-weight: 600;
+}
+
+.ride-history-item {
+  padding: 1rem;
+  border-bottom: 1px solid #eee;
+  transition: background-color 0.2s ease;
+}
+
+.ride-history-item:last-child {
+  border-bottom: none;
+}
+
+.ride-history-item:hover {
+  background-color: #f8f9fa;
+}
+
+.ride-link {
+  color: #333;
+}
+
+.ride-link:hover {
+  color: #0d6efd;
+}
+
+.badge-container {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.badge {
+  font-weight: 500;
+  padding: 0.5em 0.75em;
+  border-radius: 4px;
+}
+
+.ride-details {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #eee;
+}
+
+.destination {
+  margin-bottom: 0.5rem;
+}
+
+.destination p {
+  color: #666;
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+.passengers {
+  color: #666;
+  font-size: 0.85rem;
+}
+
+/* Status badge colors */
+.bg-success {
+  background-color: #28a745 !important;
+}
+
+.bg-info {
+  background-color: #17a2b8 !important;
+}
+
+.bg-warning {
+  background-color: #ffc107 !important;
+  color: #000 !important;
+}
+
+.bg-danger {
+  background-color: #dc3545 !important;
+}
+
+.bg-primary {
+  background-color: #0d6efd !important;
+}
+
+.bg-secondary {
+  background-color: #6c757d !important;
+} 

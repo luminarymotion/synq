@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { createRide, updateRideInvitation, deleteRideInvitation } from '../services/firebaseOperations';
+import { createRide, getFriendsList, checkFriendshipStatus, sendFriendRequest } from '../services/firebaseOperations';
 import { calculateRoute } from '../components/routeService';
 import '../styles/RouteOptimizer.css';
 import { getCurrentLocation, MAPQUEST_SERVICE } from '../services/locationService';
@@ -164,6 +164,11 @@ function RouteOptimizer() {
   // Add hasDriver check
   const hasDriver = users.some(user => user.role === 'driver');
 
+  // Add new state for friends
+  const [friends, setFriends] = useState([]);
+  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
+  const [friendError, setFriendError] = useState(null);
+
   // Move all useEffect hooks together
   useEffect(() => {
     console.log('RouteOptimizer useEffect running...');
@@ -219,6 +224,32 @@ function RouteOptimizer() {
       }
     };
   }, []);
+
+  // Load friends when component mounts
+  useEffect(() => {
+    const loadFriends = async () => {
+      if (!user) return;
+      
+      setIsLoadingFriends(true);
+      setFriendError(null);
+      
+      try {
+        const result = await getFriendsList(user.uid);
+        if (result.success) {
+          setFriends(result.friends);
+        } else {
+          setFriendError('Failed to load friends list');
+        }
+      } catch (error) {
+        console.error('Error loading friends:', error);
+        setFriendError('Error loading friends list');
+      } finally {
+        setIsLoadingFriends(false);
+      }
+    };
+
+    loadFriends();
+  }, [user]);
 
   // Show loading state
   if (isLoading) {
@@ -523,58 +554,6 @@ function RouteOptimizer() {
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
-  };
-
-  // Handle resend invitation
-  const handleResendInvitation = (userId, status) => {
-    if (status === 'success') {
-      showNotification('Invitation resent successfully');
-    } else {
-      showNotification('Failed to resend invitation', 'error');
-    }
-  };
-
-  // Update handleInvitationResponse to show notifications
-  const handleInvitationResponse = async (userId, status) => {
-    try {
-      if (!createdRideId) {
-        console.error('No ride ID available for invitation response');
-        return;
-      }
-
-      const result = await updateRideInvitation({
-        rideId: createdRideId,
-        inviteeId: userId,
-        status
-      });
-
-      if (result.success) {
-        // Update the user's status in the local state
-        setUsers(prevUsers => 
-          prevUsers.map(user => 
-            (user.id || user.tempId) === userId
-              ? { ...user, invitationStatus: status }
-              : user
-          )
-        );
-
-        // Show notification based on status
-        const user = users.find(u => (u.id || u.tempId) === userId);
-        if (user) {
-          const statusMessages = {
-            accepted: `${user.name} accepted the invitation`,
-            declined: `${user.name} declined the invitation`,
-            maybe: `${user.name} is considering the invitation`
-          };
-          showNotification(statusMessages[status]);
-        }
-      } else {
-        showNotification('Failed to update invitation status', 'error');
-      }
-    } catch (error) {
-      console.error('Error updating invitation:', error);
-      showNotification('An error occurred while updating the invitation status', 'error');
-    }
   };
 
   const handleCreateGroup = async () => {
@@ -967,6 +946,31 @@ function RouteOptimizer() {
     }
   };
 
+  // Replace old invitation handlers with friend handlers
+  const handleAddFriend = async (friendId) => {
+    if (!user) return;
+
+    try {
+      // Check if already friends
+      const statusResult = await checkFriendshipStatus(user.uid, friendId);
+      if (statusResult.success && statusResult.areFriends) {
+        showNotification('Already friends with this user');
+        return;
+      }
+
+      // Send friend request
+      const result = await sendFriendRequest(user.uid, friendId, "Let's be friends!");
+      if (result.success) {
+        showNotification('Friend request sent successfully');
+      } else {
+        showNotification('Failed to send friend request', 'error');
+      }
+    } catch (error) {
+      console.error('Error sending friend request:', error);
+      showNotification('Error sending friend request', 'error');
+    }
+  };
+
   return (
     <div className="route-optimizer-container">
       {/* Notifications */}
@@ -1059,9 +1063,7 @@ function RouteOptimizer() {
                   users={users}
                   onDelete={handleDelete}
                   onRoleChange={handleRoleChange}
-                  onInvitationResponse={handleInvitationResponse}
                   rideId={createdRideId}
-                  onResendInvitation={handleResendInvitation}
                 />
               </div>
               
@@ -1071,7 +1073,6 @@ function RouteOptimizer() {
                   onClick={handleCreateGroup}
                   disabled={
                     isCreatingGroup ||
-                    invitationStatus.isSending ||
                     !destination ||
                     users.length === 0 ||
                     (!users.some(u => u.role === 'driver') && creatorRole !== 'driver') ||
@@ -1082,11 +1083,6 @@ function RouteOptimizer() {
                     <>
                       <i className="fas fa-spinner fa-spin"></i>
                       <span>Creating Group...</span>
-                    </>
-                  ) : invitationStatus.isSending ? (
-                    <>
-                      <i className="fas fa-spinner fa-spin"></i>
-                      <span>Sending Invitations ({invitationStatus.sentCount}/{invitationStatus.totalCount})</span>
                     </>
                   ) : groupCreated ? (
                     <>
@@ -1169,7 +1165,7 @@ function RouteOptimizer() {
                 </div>
                 <p className="success-message">Your group has been created successfully!</p>
                 <p className="group-info">
-                  Invitations have been sent to all participants. Once they join and provide their locations, 
+                  Your group is now ready. Once participants provide their locations, 
                   you can optimize and start the ride.
                 </p>
                 <div className="ride-id-container">
@@ -1196,6 +1192,46 @@ function RouteOptimizer() {
             </div>
           </div>
         )}
+
+        <div className="friends-section">
+          <h3>Friends</h3>
+          {isLoadingFriends ? (
+            <div className="loading-friends">Loading friends...</div>
+          ) : friendError ? (
+            <div className="friend-error">{friendError}</div>
+          ) : (
+            <div className="friends-list">
+              {friends.length === 0 ? (
+                <div className="no-friends">No friends yet</div>
+              ) : (
+                friends.map(friend => (
+                  <div key={friend.id} className="friend-item">
+                    <div className="friend-info">
+                      <img 
+                        src={friend.profile.photoURL || '/default-avatar.png'} 
+                        alt={friend.profile.displayName} 
+                        className="friend-avatar"
+                      />
+                      <div className="friend-details">
+                        <span className="friend-name">{friend.profile.displayName}</span>
+                        <span className="friend-email">{friend.profile.email}</span>
+                      </div>
+                    </div>
+                    <div className="friend-status">
+                      {friend.isOnline ? (
+                        <span className="status-online">Online</span>
+                      ) : (
+                        <span className="status-offline">
+                          Last seen: {friend.lastSeen?.toDate().toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

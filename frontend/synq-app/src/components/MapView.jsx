@@ -75,7 +75,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
 
     const map = mapInstanceRef.current;
     const source = vectorSourceRef.current;
-
+          
     // Update or create driver marker
     const driverFeature = new Feature({
       geometry: new Point(fromLonLat([userLocation.lng, userLocation.lat])),
@@ -130,7 +130,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
         console.warn('No driver found in the route');
         setError('No driver assigned for the route');
         return;
-      }
+          }
 
       // Get driver's starting location
       const startLocation = driver.isCreator ? userLocation : driver.userLocationCoords;
@@ -145,7 +145,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
         destination,
         pickupPoints: users.filter(u => u.role === 'passenger' && u.userLocationCoords)
       });
-
+            
       // Get all pickup points (excluding driver)
       const pickupPoints = users
         .filter(u => u.role === 'passenger' && u.userLocationCoords)
@@ -330,10 +330,10 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
       }, 1600);
 
       console.log('Route visualization updated successfully');
-    } catch (error) {
+        } catch (error) {
       console.error('Error updating route visualization:', error);
       setError('Failed to display route on map');
-    }
+        }
   }, [route, destination]);
 
   useEffect(() => {

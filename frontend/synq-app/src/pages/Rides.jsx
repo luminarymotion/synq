@@ -3,7 +3,8 @@ import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
 import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
 import { Link, useSearchParams } from 'react-router-dom';
-import { leaveRide } from '../services/firebaseOperations';
+import { updateRideParticipation } from '../services/firebaseOperations';
+import '../styles/Rides.css';
 
 /*
  * Rides Page Component
@@ -391,32 +392,26 @@ function Rides() {
 
   const handleLeaveRide = async (rideId) => {
     try {
-      if (!rideId) {
-        throw new Error('Ride ID is required');
-      }
-
       setLeavingRideId(rideId);
-      console.log('Attempting to leave ride:', rideId);
-      
-      // Find the ride using the id field instead of rideId
-      const ride = activeRides.find(r => r.id === rideId);
-      if (!ride) {
-        throw new Error('Ride not found in active rides');
+      const rideDoc = await getDoc(doc(db, 'rides', rideId));
+      if (!rideDoc.exists()) {
+        throw new Error('Ride not found');
       }
 
-      const isDriver = ride?.driver?.uid === user.uid;
-      console.log('User role:', isDriver ? 'driver' : 'passenger');
-      
-      const result = await leaveRide(rideId, user.uid, isDriver);
-      
-      if (result.success) {
-        console.log('Successfully left the ride');
-      } else {
+      const rideData = rideDoc.data();
+      const isDriver = rideData.driverId === user.uid;
+
+      // Use updateRideParticipation instead of leaveRide
+      const result = await updateRideParticipation(rideId, user.uid, 'left');
+      if (!result.success) {
         throw new Error(result.error || 'Failed to leave ride');
       }
+
+      // Update local state
+      setActiveRides(prevRides => prevRides.filter(ride => ride.id !== rideId));
     } catch (error) {
       console.error('Error leaving ride:', error);
-      alert(error.message || 'Failed to leave ride. Please try again.');
+      setError(error.message || 'Failed to leave ride');
     } finally {
       setLeavingRideId(null);
     }

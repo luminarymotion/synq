@@ -59,7 +59,7 @@ function SignUp() {
       }
 
       console.log('User created:', userCredential.user);
-      navigate('/profile-setup');
+      navigate('/settings');
     } catch (error) {
       console.error('Error creating user:', error);
       setError(error.message);

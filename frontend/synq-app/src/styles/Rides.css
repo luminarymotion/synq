@@ -1,0 +1,142 @@
+.rides-page-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background-color: #f8f9fa;
+}
+
+.rides-content-wrapper {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.rides-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.rides-header h2 {
+  margin: 0;
+  color: #2c3e50;
+}
+
+.rides-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.ride-container {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.ride-container:hover {
+  transform: translateY(-2px);
+}
+
+.highlight-ride {
+  animation: highlight 2s ease-out;
+}
+
+@keyframes highlight {
+  0% {
+    box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(33, 150, 243, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(33, 150, 243, 0);
+  }
+}
+
+.ride-container .card {
+  border: none;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.ride-container .card-header {
+  border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+.ride-container .badge {
+  font-size: 0.9em;
+  padding: 0.5em 1em;
+}
+
+.ride-container .list-group-item {
+  border: 1px solid rgba(0,0,0,0.1);
+  margin-bottom: 0.5rem;
+  border-radius: 4px;
+}
+
+@media (max-width: 768px) {
+  .ride-container .card-header h4 {
+    font-size: 1.1rem;
+  }
+}
+
+.ride-container .btn-outline-danger {
+  border-color: #dc3545;
+  color: #dc3545;
+  transition: all 0.2s ease-in-out;
+}
+
+.ride-container .btn-outline-danger:hover:not(:disabled) {
+  background-color: #dc3545;
+  color: white;
+}
+
+.ride-container .btn-outline-danger:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.ride-container .gap-2 {
+  gap: 0.5rem;
+}
+
+.ride-container .btn-outline-primary {
+  border-color: #2196F3;
+  color: #2196F3;
+  transition: all 0.2s ease-in-out;
+}
+
+.ride-container .btn-outline-primary:hover:not(:disabled) {
+  background-color: #2196F3;
+  color: white;
+}
+
+.ride-container .btn-outline-primary:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.ride-container .text-decoration-none {
+  color: inherit;
+}
+
+.ride-container .text-decoration-none:hover {
+  color: #2196F3;
+}
+
+.ride-container .recent-ride {
+  border-left: 4px solid #0dcaf0;
+}
+
+.ride-container .recent-ride .card {
+  border-color: #0dcaf0;
+}
+
+.ride-container .recent-ride .card-header {
+  border-bottom-color: #0dcaf0;
+}
+
+.ride-container .badge.bg-info {
+  background-color: #0dcaf0 !important;
+  color: #000;
+} 

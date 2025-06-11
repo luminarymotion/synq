@@ -2,8 +2,12 @@ import { useEffect, useState, useRef } from 'react';
 import '../styles/UserForm.css';
 import FriendSelectionModal from './FriendSelectionModal';
 import { useUserAuth } from '../services/auth';
-import { sendRideInvitation } from '../services/firebaseOperations';
 import { MAPQUEST_SERVICE } from '../services/locationService';
+import { 
+  sendFriendRequest,
+  getFriendsList,
+  checkFriendshipStatus
+} from '../services/firebaseOperations';
 
 // Add fuzzy search helper
 const fuzzySearch = (searchTerm, text) => {
@@ -371,6 +375,10 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
   const [successMessage, setSuccessMessage] = useState(null);
   const successTimeout = useRef(null);
   const { user } = useUserAuth();
+  const [showFriendModal, setShowFriendModal] = useState(false);
+  const [friends, setFriends] = useState([]);
+  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
+  const [friendError, setFriendError] = useState(null);
 
   // Add logging for initial props
   console.log('UserForm rendered with props:', {
@@ -560,39 +568,55 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
     }
   };
 
-  const handleAddFriend = async (friend) => {
-    try {
-    setSelectedFriend(friend);
+  // Load friends list when component mounts
+  useEffect(() => {
+    const loadFriends = async () => {
+      if (!user) return;
       
-      // Create a pending invitation entry
-      const pendingInvitation = {
-        id: friend.uid,
-      name: friend.displayName,
-        photoURL: friend.photoURL,
-        email: friend.email,
-        role: null, // Role will be set by the friend when they respond
-        invitationStatus: 'pending',
-        tempId: `temp-${Date.now()}`,
-        isCreator: false,
-        destination: form.destination,
-        userLocation: null, // Location will be set by the friend when they respond
-        userLocationCoords: null
-      };
-
-      // Add the pending invitation to the participants list
-      await onSubmit(pendingInvitation);
+      setIsLoadingFriends(true);
+      setFriendError(null);
       
-      setSuccessMessage(`Invitation sent to ${friend.displayName}`);
-      if (successTimeout.current) {
-        clearTimeout(successTimeout.current);
+      try {
+        const result = await getFriendsList(user.uid);
+        if (result.success) {
+          setFriends(result.friends);
+        } else {
+          setFriendError('Failed to load friends list');
+        }
+      } catch (error) {
+        console.error('Error loading friends:', error);
+        setFriendError('Error loading friends list');
+      } finally {
+        setIsLoadingFriends(false);
       }
-      successTimeout.current = setTimeout(() => {
-        setSuccessMessage(null);
-      }, 3000);
+    };
 
+    loadFriends();
+  }, [user]);
+
+  const handleAddFriend = async (friend) => {
+    if (!user) return;
+
+    try {
+      // Check if already friends
+      const statusResult = await checkFriendshipStatus(user.uid, friend.id);
+      if (statusResult.success && statusResult.areFriends) {
+        console.log('Already friends with this user');
+        return;
+      }
+
+      // Send friend request
+      const result = await sendFriendRequest(user.uid, friend.id, "Let's be friends!");
+      if (result.success) {
+        console.log('Friend request sent successfully');
+        // You might want to show a success notification here
+      } else {
+        console.error('Failed to send friend request:', result.error);
+        // You might want to show an error notification here
+      }
     } catch (error) {
-      console.error('Error in handleAddFriend:', error);
-      setError('An error occurred while sending the invitation.');
+      console.error('Error sending friend request:', error);
+      // You might want to show an error notification here
     }
   };
 
@@ -858,17 +882,62 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
           )}
         </div>
 
-        {form.isCreator && !groupCreated && (
-          <div className="form-group">
-            <button 
-              type="button"
-              className="add-friend-button primary"
-              onClick={() => setIsModalOpen(true)}
-            >
-              <i className="fas fa-user-plus"></i>
-              Add from Friends
-            </button>
-          </div>
+        {/* Replace old invitation UI with friend system UI */}
+        <div className="friends-section">
+          <h3>Friends</h3>
+          {isLoadingFriends ? (
+            <div className="loading-friends">Loading friends...</div>
+          ) : friendError ? (
+            <div className="friend-error">{friendError}</div>
+          ) : (
+            <div className="friends-list">
+              {friends.length === 0 ? (
+                <div className="no-friends">No friends yet</div>
+              ) : (
+                friends.map(friend => (
+                  <div key={friend.id} className="friend-item">
+                    <div className="friend-info">
+                      <img 
+                        src={friend.profile.photoURL || '/default-avatar.png'} 
+                        alt={friend.profile.displayName} 
+                        className="friend-avatar"
+                      />
+                      <div className="friend-details">
+                        <span className="friend-name">{friend.profile.displayName}</span>
+                        <span className="friend-email">{friend.profile.email}</span>
+                      </div>
+                    </div>
+                    <div className="friend-status">
+                      {friend.isOnline ? (
+                        <span className="status-online">Online</span>
+                      ) : (
+                        <span className="status-offline">
+                          Last seen: {friend.lastSeen?.toDate().toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+          
+          <button 
+            type="button" 
+            className="add-friend-button"
+            onClick={() => setShowFriendModal(true)}
+          >
+            <i className="fas fa-user-plus"></i> Add Friend
+          </button>
+        </div>
+
+        {/* Friend Selection Modal */}
+        {showFriendModal && (
+          <FriendSelectionModal
+            onClose={() => setShowFriendModal(false)}
+            onSelect={handleAddFriend}
+            currentUserId={user?.uid}
+          />
         )}
 
         {/* Location status for driver */}
@@ -909,14 +978,6 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
           </div>
         )}
       </div>
-
-      <FriendSelectionModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onAddFriend={handleAddFriend}
-        existingParticipants={existingParticipants}
-        disabled={groupCreated}
-      />
     </div>
   );
 }

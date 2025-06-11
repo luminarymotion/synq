@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
 import {
-  getMutualFriends,
+  searchUsers,
   sendFriendRequest,
-  searchUsers
+  checkFriendshipStatus
 } from '../services/firebaseOperations';
 import '../styles/FriendSuggestions.css';
 
@@ -24,31 +24,31 @@ function FriendSuggestions() {
         const { users } = await searchUsers('');
         if (!users) return;
 
-        // Filter out current user and existing friends
+        // Filter out current user
         const potentialFriends = users.filter(u => u.id !== user.uid);
         
-        // Get mutual friends for each potential friend
-        const suggestionsWithMutualFriends = await Promise.all(
+        // Check friendship status and get user profiles
+        const suggestionsWithStatus = await Promise.all(
           potentialFriends.map(async (potentialFriend) => {
-            const { mutualFriends } = await getMutualFriends(user.uid, potentialFriend.id);
+            // Check if they're already friends or have a pending request
+            const { areFriends, friendshipId } = await checkFriendshipStatus(user.uid, potentialFriend.id);
+            
+            // Calculate trust score based on user's reputation
+            const trustScore = calculateTrustScore(potentialFriend.reputation || {});
+            
             return {
               ...potentialFriend,
-              mutualFriends,
-              trustScore: calculateTrustScore(mutualFriends)
+              areFriends,
+              friendshipId,
+              trustScore
             };
           })
         );
 
-        // Sort by trust score and mutual friends
-        const sortedSuggestions = suggestionsWithMutualFriends
-          .sort((a, b) => {
-            // First sort by trust score
-            if (b.trustScore !== a.trustScore) {
-              return b.trustScore - a.trustScore;
-            }
-            // Then by number of mutual friends
-            return b.mutualFriends.length - a.mutualFriends.length;
-          })
+        // Filter out existing friends and sort by trust score
+        const sortedSuggestions = suggestionsWithStatus
+          .filter(suggestion => !suggestion.areFriends) // Only show non-friends
+          .sort((a, b) => b.trustScore - a.trustScore)
           .slice(0, 5); // Show top 5 suggestions
 
         setSuggestions(sortedSuggestions);
@@ -63,15 +63,25 @@ function FriendSuggestions() {
     loadSuggestions();
   }, [user]);
 
-  const calculateTrustScore = (mutualFriends) => {
+  const calculateTrustScore = (reputation) => {
     // Base score starts at 50
     let score = 50;
     
-    // Add points for mutual friends (up to 30 points)
-    score += Math.min(mutualFriends.length * 10, 30);
-    
-    // Add points for verified users (if implemented)
-    // score += user.isVerified ? 20 : 0;
+    // Add points based on reputation metrics
+    if (reputation) {
+      // Add points for ride count (up to 20 points)
+      score += Math.min((reputation.rideCount || 0) * 2, 20);
+      
+      // Add points for rating (up to 20 points)
+      score += Math.min((reputation.rating || 0) * 4, 20);
+      
+      // Add points for verification (10 points)
+      if (reputation.verification?.email) score += 5;
+      if (reputation.verification?.phone) score += 5;
+      
+      // Add points for badges (up to 10 points)
+      score += Math.min((reputation.badges?.length || 0) * 2, 10);
+    }
     
     return Math.min(score, 100); // Cap at 100
   };
@@ -156,18 +166,19 @@ function FriendSuggestions() {
               <div className="d-flex justify-content-between align-items-center">
                 <div>
                   <h6 className="mb-0">
-                    {suggestion.displayName}
+                    {suggestion.profile?.displayName || suggestion.displayName}
                     <span className={`ms-2 badge ${getTrustScoreColor(suggestion.trustScore)}`}>
                       Trust Score: {suggestion.trustScore}%
                     </span>
                   </h6>
                   <small className="text-muted">
-                    {suggestion.mutualFriends.length} mutual friends
+                    {suggestion.reputation?.rideCount || 0} rides completed
+                    {suggestion.reputation?.rating && ` • ${suggestion.reputation.rating.toFixed(1)}★ rating`}
                   </small>
-                  {suggestion.mutualFriends.length > 0 && (
-                    <div className="mutual-friends mt-1">
+                  {suggestion.reputation?.badges?.length > 0 && (
+                    <div className="badges mt-1">
                       <small>
-                        Mutual friends: {suggestion.mutualFriends.map(f => f.displayName).join(', ')}
+                        Badges: {suggestion.reputation.badges.join(', ')}
                       </small>
                     </div>
                   )}

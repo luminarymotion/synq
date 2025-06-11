@@ -40,3 +40,42 @@
 .read-the-docs {
   color: #888;
 }
+
+/* Global styles */
+.App {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Main content area */
+.App > div:not(.header) {
+  flex: 1;
+  padding-top: 80px; /* Space for fixed header */
+  min-height: calc(100vh - 80px);
+}
+
+/* Container spacing */
+.container {
+  padding-top: 1rem;
+  padding-bottom: 2rem;
+}
+
+/* Card styles */
+.card {
+  margin-bottom: 1.5rem;
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+}
+
+.card-body {
+  padding: 1.5rem;
+}
+
+.card-title {
+  margin-bottom: 1.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
