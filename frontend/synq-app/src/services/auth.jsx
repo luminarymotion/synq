@@ -7,10 +7,11 @@ import {
     createUserWithEmailAndPassword,
     signInWithEmailAndPassword,
 } from "firebase/auth";
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, query, getDocs, where, collection } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { createUserProfile } from './firebaseOperations';
 import locationTrackingService from './locationTrackingService';
+import { checkUserMigrationStatus } from './migration';
 
 const UserAuthContext = createContext();
 
@@ -36,12 +37,45 @@ export function UserAuthContextProvider({ children }) {
             }
             
             const userData = userDoc.data();
-            const needsSetup = !userData.displayName || !userData.phoneNumber;
-            console.log('Profile setup check result:', { needsSetup, userData });
+            
+            // First check if profile needs migration
+            const migrationStatus = await checkUserMigrationStatus(user.uid);
+            if (migrationStatus.needsMigration) {
+                console.log('Profile needs migration, needs setup');
+                return true;
+            }
+
+            // Only check setupComplete flag - if it's true, consider setup complete
+            if (userData.profile?.setupComplete === true) {
+                console.log('Profile setup marked as complete in Firestore');
+                return false;
+            }
+
+            // If setupComplete is not true, check required fields
+            const needsSetup = !userData.profile?.displayName || 
+                              !userData.profile?.phoneNumber;
+            
+            console.log('Profile setup check result:', { 
+                needsSetup, 
+                hasDisplayName: !!userData.profile?.displayName,
+                hasPhoneNumber: !!userData.profile?.phoneNumber,
+                setupComplete: !!userData.profile?.setupComplete,
+                migrationStatus: migrationStatus
+            });
+
+            // If profile is complete, mark it in Firestore
+            if (!needsSetup) {
+                await updateDoc(doc(db, 'users', user.uid), {
+                    'profile.setupComplete': true,
+                    updatedAt: new Date().toISOString()
+                });
+                console.log('Marked profile setup as complete in Firestore');
+            }
+
             return needsSetup;
         } catch (error) {
             console.error('Error checking profile setup:', error);
-            setError(error);
+            setError(error.message || 'An error occurred during profile setup check');
             return false;
         }
     };
@@ -55,6 +89,7 @@ export function UserAuthContextProvider({ children }) {
 
         try {
             console.log('Ensuring user profile exists for:', user.uid);
+            
             // Check if user profile exists
             const userDoc = await getDoc(doc(db, 'users', user.uid));
             
@@ -62,13 +97,61 @@ export function UserAuthContextProvider({ children }) {
                 console.log('Creating basic profile for:', user.uid);
                 // Create basic profile if it doesn't exist
                 const profileData = {
-                    email: user.email,
-                    displayName: user.displayName || user.email?.split('@')[0],
-                    photoURL: user.photoURL,
-                    phoneNumber: null, // Will be set during profile setup
-                    preferences: {
-                        notifications: true,
-                        locationSharing: false
+                    profile: {
+                        email: user.email,
+                        displayName: user.displayName || user.email?.split('@')[0],
+                        photoURL: user.photoURL,
+                        phoneNumber: null,
+                        bio: '',
+                        location: null,
+                        setupComplete: false, // Explicitly set to false for new profiles
+                        social: {
+                            interests: [],
+                            preferredRoutes: [],
+                            availability: {
+                                monday: [],
+                                tuesday: [],
+                                wednesday: [],
+                                thursday: [],
+                                friday: [],
+                                saturday: [],
+                                sunday: []
+                            }
+                        }
+                    },
+                    settings: {
+                        privacy: {
+                            profileVisibility: 'friends',
+                            showOnlineStatus: true,
+                            showRideHistory: true,
+                            allowRideInvites: true,
+                            allowFriendRequests: true,
+                            allowCommunityInvites: true
+                        },
+                        notifications: {
+                            friendRequests: true,
+                            rideInvites: true,
+                            communityUpdates: true,
+                            friendActivity: true
+                        },
+                        ridePreferences: {
+                            music: true,
+                            conversation: true,
+                            carType: 'any',
+                            smoking: false,
+                            pets: false,
+                            maxPassengers: 4
+                        }
+                    },
+                    reputation: {
+                        trustScore: 0,
+                        rideCount: 0,
+                        rating: 0,
+                        badges: [],
+                        verification: {
+                            email: true,
+                            phone: false
+                        }
                     }
                 };
 
@@ -76,20 +159,42 @@ export function UserAuthContextProvider({ children }) {
                 console.log('Created basic profile for:', user.uid);
                 setNeedsProfileSetup(true);
             } else {
-                // Check if profile needs setup
-                console.log('Checking if profile needs setup for:', user.uid);
-                const needsSetup = await checkProfileSetup(user);
+                const userData = userDoc.data();
+                
+                // First check if profile needs migration
+                const migrationStatus = await checkUserMigrationStatus(user.uid);
+                console.log('Migration status:', migrationStatus);
+
+                if (migrationStatus.needsMigration) {
+                    console.log('Profile needs migration, redirecting to profile setup');
+                    setNeedsProfileSetup(true);
+                    return;
+                }
+
+                // Check setupComplete flag first
+                if (userData.profile?.setupComplete === true) {
+                    console.log('Profile setup is complete');
+                    setNeedsProfileSetup(false);
+                    return;
+                }
+
+                // If setupComplete is not true, check required fields
+                const needsSetup = !userData.profile?.displayName || 
+                                 !userData.profile?.phoneNumber;
+                
+                console.log('Profile setup check:', {
+                    needsSetup,
+                    hasDisplayName: !!userData.profile?.displayName,
+                    hasPhoneNumber: !!userData.profile?.phoneNumber,
+                    setupComplete: !!userData.profile?.setupComplete
+                });
+
                 setNeedsProfileSetup(needsSetup);
             }
         } catch (error) {
             console.error('Error ensuring user profile:', error);
-            setError(error);
+            setError(error.message || 'Failed to set up user profile');
         }
-    };
-
-    const logIn = async (email, password) => {
-        // TODO: Implement login logic
-        console.log('Login attempt with:', email, password);
     };
 
     const signUp = async (email, password, displayName) => {
@@ -99,9 +204,27 @@ export function UserAuthContextProvider({ children }) {
     };
 
     const login = async (email, password) => {
-        const result = await signInWithEmailAndPassword(auth, email, password);
-        await ensureUserProfile(result.user);
-        return result;
+        try {
+            // First check if user exists in Firestore
+            const userQuery = query(collection(db, 'users'), where('profile.email', '==', email));
+            const querySnapshot = await getDocs(userQuery);
+            
+            if (querySnapshot.empty) {
+                throw new Error('No account found with this email. Please sign up first.');
+            }
+
+            // If user exists in Firestore, proceed with Firebase Auth sign in
+            const result = await signInWithEmailAndPassword(auth, email, password);
+            await ensureUserProfile(result.user);
+            return result;
+        } catch (error) {
+            console.error('Error during login:', error);
+            // If the error is from Firebase Auth, provide a more user-friendly message
+            if (error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') {
+                throw new Error('Invalid email or password. Please try again.');
+            }
+            throw error;
+        }
     };
 
     const logOut = async () => {
@@ -120,10 +243,81 @@ export function UserAuthContextProvider({ children }) {
         const provider = new GoogleAuthProvider();
         try {
             const result = await signInWithPopup(auth, provider);
+            
+            // Check if user exists in Firestore
+            const userDoc = await getDoc(doc(db, 'users', result.user.uid));
+            
+            if (!userDoc.exists()) {
+                // If user doesn't exist, create a new profile
+                console.log('Creating new profile for Google user:', result.user.uid);
+                const profileData = {
+                    profile: {
+                        email: result.user.email,
+                        displayName: result.user.displayName || result.user.email?.split('@')[0],
+                        photoURL: result.user.photoURL,
+                        phoneNumber: result.user.phoneNumber || null,
+                        bio: '',
+                        location: null,
+                        setupComplete: false,
+                        social: {
+                            interests: [],
+                            preferredRoutes: [],
+                            availability: {
+                                monday: [],
+                                tuesday: [],
+                                wednesday: [],
+                                thursday: [],
+                                friday: [],
+                                saturday: [],
+                                sunday: []
+                            }
+                        }
+                    },
+                    settings: {
+                        privacy: {
+                            profileVisibility: 'friends',
+                            showOnlineStatus: true,
+                            showRideHistory: true,
+                            allowRideInvites: true,
+                            allowFriendRequests: true,
+                            allowCommunityInvites: true
+                        },
+                        notifications: {
+                            friendRequests: true,
+                            rideInvites: true,
+                            communityUpdates: true,
+                            friendActivity: true
+                        },
+                        ridePreferences: {
+                            music: true,
+                            conversation: true,
+                            carType: 'any',
+                            smoking: false,
+                            pets: false,
+                            maxPassengers: 4
+                        }
+                    },
+                    reputation: {
+                        trustScore: 0,
+                        rideCount: 0,
+                        rating: 0,
+                        badges: [],
+                        verification: {
+                            email: true,
+                            phone: false
+                        }
+                    }
+                };
+
+                await createUserProfile(result.user.uid, profileData);
+                console.log('Created new profile for Google user');
+            }
+            
             await ensureUserProfile(result.user);
             return result;
         } catch (error) {
             console.error('Error signing in with Google:', error);
+            setError(error.message || 'Failed to sign in with Google');
             throw error;
         }
     };
@@ -168,7 +362,7 @@ export function UserAuthContextProvider({ children }) {
                 setUser(currentUser);
             } catch (error) {
                 console.error('Error in auth state change handler:', error);
-                setError(error);
+                setError(error.message || 'An error occurred during authentication');
             } finally {
                 setLoading(false);
             }
@@ -182,7 +376,6 @@ export function UserAuthContextProvider({ children }) {
 
     const value = {
         user,
-        logIn,
         signUp,
         login,
         logOut,
@@ -209,7 +402,7 @@ export function UserAuthContextProvider({ children }) {
             <div className="auth-error">
                 <div className="alert alert-danger" role="alert">
                     <h4 className="alert-heading">Authentication Error</h4>
-                    <p>{error.message}</p>
+                    <p>{error}</p>
                     <button 
                         className="btn btn-outline-danger mt-2"
                         onClick={() => window.location.reload()}

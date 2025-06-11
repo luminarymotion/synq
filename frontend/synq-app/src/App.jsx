@@ -4,7 +4,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
 import RouteOptimizer from './pages/RouteOptimizer';
-import ProfileSetup from './pages/ProfileSetup';
+import Settings from './pages/Settings';
 import Dashboard from './pages/Dashboard';
 import Friends from './components/Friends';
 import Rides from './pages/Rides';
@@ -24,18 +24,19 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// Separate component that uses the auth context
-function AppRoutes() {
+// Component that uses the auth context
+const AppContent = () => {
   const { user, needsProfileSetup } = useUserAuth();
 
   return (
     <div className="App">
       <Header />
       <Routes>
+        {/* Root path - redirect based on auth and profile status */}
         <Route path="/" element={
           user ? (
             needsProfileSetup ? (
-              <Navigate to="/profile-setup" />
+              <Navigate to="/settings" />
             ) : (
               <Navigate to="/dashboard" />
             )
@@ -43,10 +44,12 @@ function AppRoutes() {
             <Navigate to="/login" />
           )
         } />
+
+        {/* Auth routes - redirect to settings if needed */}
         <Route path="/login" element={
           user ? (
             needsProfileSetup ? (
-              <Navigate to="/profile-setup" />
+              <Navigate to="/settings" />
             ) : (
               <Navigate to="/dashboard" />
             )
@@ -55,26 +58,24 @@ function AppRoutes() {
         <Route path="/signup" element={
           user ? (
             needsProfileSetup ? (
-              <Navigate to="/profile-setup" />
+              <Navigate to="/settings" />
             ) : (
               <Navigate to="/dashboard" />
             )
           ) : <SignUp />
         } />
-        <Route path="/profile-setup" element={
-          user ? (
-            needsProfileSetup ? (
-              <ProfileSetup />
-            ) : (
-              <Navigate to="/dashboard" />
-            )
-          ) : (
-            <Navigate to="/login" />
-          )
+
+        {/* Settings route - includes profile setup */}
+        <Route path="/settings" element={
+          <ProtectedRoute>
+            <Settings />
+          </ProtectedRoute>
         } />
+
+        {/* Protected routes */}
         <Route path="/dashboard" element={
           <ProtectedRoute>
-            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Dashboard />}
+            <Dashboard />
           </ProtectedRoute>
         } />
         <Route path="/create-group" element={
@@ -89,39 +90,29 @@ function AppRoutes() {
         } />
         <Route path="/friends" element={
           <ProtectedRoute>
-            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Friends />}
+            <Friends />
           </ProtectedRoute>
         } />
         <Route path="/rides" element={
           <ProtectedRoute>
-            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <Rides />}
+            <Rides />
           </ProtectedRoute>
         } />
         <Route path="/rides/:rideId" element={
           <ProtectedRoute>
-            {needsProfileSetup ? <Navigate to="/profile-setup" /> : <LiveRideView />}
-          </ProtectedRoute>
-        } />
-        <Route path="/profile" element={
-          <ProtectedRoute>
-            <div>Profile Settings (Coming Soon)</div>
-          </ProtectedRoute>
-        } />
-        <Route path="/account" element={
-          <ProtectedRoute>
-            <div>Account Settings (Coming Soon)</div>
+            <LiveRideView />
           </ProtectedRoute>
         } />
       </Routes>
     </div>
   );
-}
+};
 
 // Main App component that provides the auth context
 function App() {
   return (
     <UserAuthContextProvider>
-      <AppRoutes />
+      <AppContent />
     </UserAuthContextProvider>
   );
 }

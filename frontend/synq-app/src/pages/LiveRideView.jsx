@@ -126,7 +126,7 @@ function LiveRideView() {
           } catch (error) {
             console.error('Error optimizing route:', error);
           }
-        }
+          }
 
         // Start location tracking if user is the driver
         if (rideData.driver?.uid === user.uid && !isTracking) {
@@ -139,7 +139,7 @@ function LiveRideView() {
         setError('Ride not found');
         navigate('/rides');
       }
-      setLoading(false);
+        setLoading(false);
     });
 
     return () => {
@@ -346,23 +346,23 @@ function LiveRideView() {
           </div>
 
           <div className="sidebar-content">
-            <div className="ride-info">
-              <h2>
-                <span className="badge bg-primary me-2">{ride.id}</span>
-                {ride.destination?.address}
-              </h2>
+        <div className="ride-info">
+          <h2>
+            <span className="badge bg-primary me-2">{ride.id}</span>
+            {ride.destination?.address}
+          </h2>
               <div className="ride-status-info">
                 <span className={`badge bg-${currentStatusMeta?.color || 'secondary'} me-2`}>
                   <i className={`fas ${currentStatusMeta?.icon || 'fa-question-circle'} me-1`}></i>
                   {currentStatusMeta?.label || 'Unknown Status'}
                 </span>
                 <small className="text-muted">
-                  Started {new Date(ride.createdAt?.toDate()).toLocaleString()}
+            Started {new Date(ride.createdAt?.toDate()).toLocaleString()}
                 </small>
               </div>
-            </div>
+        </div>
 
-            <div className="ride-actions">
+        <div className="ride-actions">
               {getAvailableTransitions().length > 0 && (
                 <div className="status-actions">
                   {getAvailableTransitions().map(({ status, label, icon, color }) => (
@@ -388,32 +388,32 @@ function LiveRideView() {
                 </div>
               )}
               <div className="action-buttons">
-                <button 
-                  className="btn btn-outline-primary me-2"
-                  onClick={handleShareRide}
-                  disabled={isSharing}
-                >
-                  {isSharing ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                      Sharing...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-share me-1"></i>
-                      Share Ride
-                    </>
-                  )}
-                </button>
-                <button 
-                  className="btn btn-outline-danger"
-                  onClick={handleLeaveRide}
-                >
-                  <i className="bi bi-box-arrow-right me-1"></i>
-                  Leave Ride
-                </button>
-              </div>
-            </div>
+          <button 
+            className="btn btn-outline-primary me-2"
+            onClick={handleShareRide}
+            disabled={isSharing}
+          >
+            {isSharing ? (
+              <>
+                <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                Sharing...
+              </>
+            ) : (
+              <>
+                <i className="bi bi-share me-1"></i>
+                Share Ride
+              </>
+            )}
+          </button>
+          <button 
+            className="btn btn-outline-danger"
+            onClick={handleLeaveRide}
+          >
+            <i className="bi bi-box-arrow-right me-1"></i>
+            Leave Ride
+          </button>
+        </div>
+      </div>
 
             <div className="ride-details">
               <div className="status-history">
@@ -441,16 +441,16 @@ function LiveRideView() {
                   ))}
                 </div>
               </div>
-            </div>
+        </div>
 
-            <div className="participants-list">
-              <h6>Participants</h6>
-              <ul className="list-group">
-                {participants.map((participant, index) => (
-                  <li 
-                    key={participant.uid || index} 
-                    className="list-group-item d-flex justify-content-between align-items-center"
-                  >
+              <div className="participants-list">
+                <h6>Participants</h6>
+                <ul className="list-group">
+                  {participants.map((participant, index) => (
+                    <li 
+                      key={participant.uid || index} 
+                      className="list-group-item d-flex justify-content-between align-items-center"
+                    >
                     <div className="d-flex align-items-center">
                       <span className="badge bg-primary me-2">
                         {participant.role || 'passenger'}
@@ -463,37 +463,37 @@ function LiveRideView() {
                           </small>
                         )}
                       </div>
-                    </div>
-                    {participant.status && (
-                      <span className={`badge ${
-                        participant.status === 'active' ? 'bg-success' : 'bg-secondary'
-                      }`}>
-                        {participant.status}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
+                      </div>
+                      {participant.status && (
+                        <span className={`badge ${
+                          participant.status === 'active' ? 'bg-success' : 'bg-secondary'
+                        }`}>
+                          {participant.status}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
 
             {optimizedRoute && (
               <div className="route-info">
-                <h6>Route Information</h6>
-                <div className="route-stats">
-                  <div className="stat-item">
-                    <i className="bi bi-arrow-right-circle"></i>
+                  <h6>Route Information</h6>
+                  <div className="route-stats">
+                    <div className="stat-item">
+                      <i className="bi bi-arrow-right-circle"></i>
                     <span>Distance: {formatDistance(optimizedRoute.totalDistance)}</span>
-                  </div>
-                  <div className="stat-item">
-                    <i className="bi bi-clock"></i>
+                    </div>
+                    <div className="stat-item">
+                      <i className="bi bi-clock"></i>
                     <span>Duration: {formatDuration(optimizedRoute.totalDuration)}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
       <style jsx>{`
         .live-ride-container {

@@ -1,20 +1,24 @@
 import React, { useState } from 'react';
 import '../styles/UserTable.css';
-import { sendRideInvitation } from '../services/firebaseOperations';
 import { useUserAuth } from '../services/auth';
+import { 
+  sendFriendRequest,
+  checkFriendshipStatus
+} from '../services/firebaseOperations';
 
-function UserTable({ users, onDelete, onRoleChange, onInvitationResponse, rideId, onResendInvitation }) {
+function UserTable({ users, onDelete, onRoleChange, rideId }) {
   const { user } = useUserAuth();
-  const [resendingInvitation, setResendingInvitation] = useState(null);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(null);
+  const [friendRequestStatus, setFriendRequestStatus] = useState({});
 
   const getStatusBadge = (user) => {
-    const status = user.invitationStatus || 'pending';
+    // Update status to use friend system
+    const status = user.friendStatus || 'not_friend';
     const statusConfig = {
-      pending: { class: 'status-pending', icon: 'fa-clock', text: 'Pending Response' },
-      accepted: { class: 'status-accepted', icon: 'fa-check', text: 'Accepted' },
-      declined: { class: 'status-declined', icon: 'fa-times', text: 'Declined' },
-      maybe: { class: 'status-maybe', icon: 'fa-question', text: 'Maybe' }
+      not_friend: { class: 'status-pending', icon: 'fa-user-plus', text: 'Not Friends' },
+      pending: { class: 'status-pending', icon: 'fa-clock', text: 'Friend Request Pending' },
+      accepted: { class: 'status-accepted', icon: 'fa-check', text: 'Friends' },
+      declined: { class: 'status-declined', icon: 'fa-times', text: 'Request Declined' }
     };
 
     const config = statusConfig[status];
@@ -26,62 +30,54 @@ function UserTable({ users, onDelete, onRoleChange, onInvitationResponse, rideId
     );
   };
 
-  const getInvitationActions = (user) => {
-    // If this is the current user and they haven't responded yet
-    if (user.id === user.uid && user.invitationStatus === 'pending') {
-      return (
-        <div className="invitation-actions">
-          <button
-            className="action-button accept"
-            onClick={() => onInvitationResponse(user.id, 'accepted')}
-            title="Accept"
+  const getFriendActions = (user) => {
+    if (user.id === user.uid) return null; // Don't show actions for current user
+
+    const status = friendRequestStatus[user.id] || user.friendStatus || 'not_friend';
+    
+    switch (status) {
+      case 'not_friend':
+        return (
+          <button 
+            className="add-friend-button"
+            onClick={() => handleAddFriend(user)}
+            disabled={friendRequestStatus[user.id] === 'pending'}
           >
-            <i className="fas fa-check"></i> Accept
+            <i className="fas fa-user-plus"></i>
+            Add Friend
           </button>
-          <button
-            className="action-button maybe"
-            onClick={() => onInvitationResponse(user.id, 'maybe')}
-            title="Maybe"
+        );
+      case 'pending':
+        return (
+          <span className="pending-status">
+            <i className="fas fa-clock"></i>
+            Request Sent
+          </span>
+        );
+      case 'accepted':
+        return (
+          <span className="friends-status">
+            <i className="fas fa-check"></i>
+            Friends
+          </span>
+        );
+      case 'declined':
+        return (
+          <button 
+            className="retry-friend-button"
+            onClick={() => handleAddFriend(user)}
           >
-            <i className="fas fa-question"></i> Maybe
+            <i className="fas fa-redo"></i>
+            Try Again
           </button>
-          <button
-            className="action-button decline"
-            onClick={() => onInvitationResponse(user.id, 'declined')}
-            title="Decline"
-          >
-            <i className="fas fa-times"></i> Decline
-          </button>
-        </div>
-      );
+        );
+      default:
+        return null;
     }
-    // If this is the inviter and the invitation is pending
-    else if (user.id !== user.uid && user.invitationStatus === 'pending') {
-      return (
-        <button
-          className="resend-button"
-          onClick={() => handleResendInvitation(user.id)}
-          disabled={resendingInvitation === user.id}
-          title="Resend invitation"
-        >
-          {resendingInvitation === user.id ? (
-            <i className="fas fa-spinner fa-spin"></i>
-          ) : (
-            <i className="fas fa-paper-plane"></i>
-          )}
-          Resend
-        </button>
-      );
-    }
-    return null;
   };
 
   const getRoleSelect = (user) => {
-    // Only show role select if:
-    // 1. This is the current user
-    // 2. They have accepted the invitation
-    // 3. They haven't been assigned a role yet
-    if (user.id === user.uid && user.invitationStatus === 'accepted' && !user.role) {
+    if (user.id === user.uid && !user.role) {
       return (
         <select
           value={user.role || ''}
@@ -94,7 +90,6 @@ function UserTable({ users, onDelete, onRoleChange, onInvitationResponse, rideId
         </select>
       );
     }
-    // Show role if it's been set
     else if (user.role) {
       return (
         <span className={`role-badge ${user.role}`}>
@@ -106,27 +101,39 @@ function UserTable({ users, onDelete, onRoleChange, onInvitationResponse, rideId
     return null;
   };
 
-  const handleResendInvitation = async (userId) => {
+  const handleAddFriend = async (userToAdd) => {
+    if (!user) return;
+
     try {
-      setResendingInvitation(userId);
-      await sendRideInvitation({
-        rideId,
-        inviterId: user.uid,
-        inviteeId: userId,
-        inviterName: user.displayName,
-        inviterPhotoURL: user.photoURL
-      });
-      // Show success notification
-      if (onResendInvitation) {
-        onResendInvitation(userId, 'success');
+      // Check if already friends
+      const statusResult = await checkFriendshipStatus(user.uid, userToAdd.id);
+      if (statusResult.success && statusResult.areFriends) {
+        setFriendRequestStatus(prev => ({
+          ...prev,
+          [userToAdd.id]: 'accepted'
+        }));
+        return;
+      }
+
+      // Send friend request
+      setFriendRequestStatus(prev => ({
+        ...prev,
+        [userToAdd.id]: 'pending'
+      }));
+
+      const result = await sendFriendRequest(user.uid, userToAdd.id, "Let's be friends!");
+      if (!result.success) {
+        setFriendRequestStatus(prev => ({
+          ...prev,
+          [userToAdd.id]: 'declined'
+        }));
       }
     } catch (error) {
-      console.error('Error resending invitation:', error);
-      if (onResendInvitation) {
-        onResendInvitation(userId, 'error');
-      }
-    } finally {
-      setResendingInvitation(null);
+      console.error('Error sending friend request:', error);
+      setFriendRequestStatus(prev => ({
+        ...prev,
+        [userToAdd.id]: 'declined'
+      }));
     }
   };
 
@@ -175,7 +182,7 @@ function UserTable({ users, onDelete, onRoleChange, onInvitationResponse, rideId
                 {getStatusBadge(user)}
               </td>
               <td className="actions-cell">
-                {getInvitationActions(user)}
+                {getFriendActions(user)}
                 {!user.isCreator && user.id !== user.uid && (
                 <button 
                     className="remove-button"

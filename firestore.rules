@@ -45,7 +45,37 @@ service cloud.firestore {
       }
     }
 
-    // Relationships collection
+    // Friend Requests
+    match /friendRequests/{requestId} {
+      // Allow read if user is either sender or receiver
+      allow read: if isAuthenticated() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.receiverId == request.auth.uid
+      );
+      
+      // Allow create if user is the sender and not sending to themselves
+      allow create: if isAuthenticated() && 
+        request.resource.data.senderId == request.auth.uid &&
+        request.resource.data.receiverId != request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.metadata.createdAt is timestamp &&
+        request.resource.data.metadata.updatedAt is timestamp;
+      
+      // Allow update if user is the receiver and only updating status
+      allow update: if isAuthenticated() && 
+        resource.data.receiverId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'metadata.updatedAt']) &&
+        request.resource.data.status in ['accepted', 'rejected', 'pending'];
+      
+      // Allow delete if user is either sender or receiver
+      allow delete: if isAuthenticated() && (
+        resource.data.senderId == request.auth.uid ||
+        resource.data.receiverId == request.auth.uid
+      );
+    }
+
+    // Relationships (Friendships)
     match /relationships/{relationshipId} {
       // Allow read if user is part of the relationship
       allow read: if isAuthenticated() && (
@@ -72,23 +102,32 @@ service cloud.firestore {
         request.auth.uid in resource.data.users;
     }
 
-    // Counters collection - allow authenticated users to read and write
+    // Counters collection
     match /counters/{counterId} {
       allow read, write: if isAuthenticated();
     }
 
     // Rides collection
     match /rides/{rideId} {
+      // Allow reading if user is driver or passenger
       allow read: if isAuthenticated() && (
         resource.data.driver.uid == request.auth.uid ||
         request.auth.uid in resource.data.passengerUids
       );
-      allow create: if isAuthenticated();
+      
+      // Allow creating new rides
+      allow create: if isAuthenticated() && 
+        request.resource.data.driver.uid == request.auth.uid;
+      
+      // Allow updating if user is driver or passenger
       allow update: if isAuthenticated() && (
         resource.data.driver.uid == request.auth.uid ||
         request.auth.uid in resource.data.passengerUids
       );
-      allow delete: if isAuthenticated() && resource.data.driver.uid == request.auth.uid;
+      
+      // Allow deleting if user is driver
+      allow delete: if isAuthenticated() && 
+        resource.data.driver.uid == request.auth.uid;
     }
 
     // Ride invitations
@@ -106,25 +145,16 @@ service cloud.firestore {
 
     // Notifications
     match /notifications/{notificationId} {
-      allow read, write: if isAuthenticated() && resource.data.userId == request.auth.uid;
-    }
-
-    // Friend requests
-    match /friendRequests/{requestId} {
-      allow read: if isAuthenticated() && (
-        resource.data.senderId == request.auth.uid ||
-        resource.data.receiverId == request.auth.uid
-      );
-      allow create: if isAuthenticated() && request.resource.data.senderId == request.auth.uid;
-      allow update: if isAuthenticated() && (
-        resource.data.senderId == request.auth.uid ||
-        resource.data.receiverId == request.auth.uid
-      );
-    }
-
-    // Messages
-    match /messages/{messageId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && 
+        resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && 
+        request.resource.data.userId is string;
+      allow update: if isAuthenticated() && 
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['read', 'readAt']);
+      allow delete: if isAuthenticated() && 
+        resource.data.userId == request.auth.uid;
     }
   }
-}
+} 

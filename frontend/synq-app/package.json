@@ -23,6 +23,7 @@
     "firebase": "^10.7.0",
     "firebase-admin": "^11.11.0",
     "framer-motion": "^12.10.4",
+    "libphonenumber-js": "^1.12.8",
     "ol": "^10.5.0",
     "postcss": "^8.5.3",
     "react": "^19.0.0",

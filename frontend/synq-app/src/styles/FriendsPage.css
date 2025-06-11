@@ -1,0 +1,63 @@
+/* Friends Page Layout */
+.friends-page {
+  padding-top: 80px; /* Space for fixed header */
+  min-height: 100vh;
+  background-color: #f8f9fa;
+}
+
+.friends-page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+/* Section Styles */
+.friends-section {
+  margin-bottom: 2rem;
+}
+
+.friends-section:last-child {
+  margin-bottom: 0;
+}
+
+/* Card Styles */
+.card {
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  border-radius: 12px;
+  background-color: white;
+}
+
+.card-body {
+  padding: 1.5rem;
+}
+
+.card-title {
+  margin-bottom: 1.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+/* Responsive Layout */
+@media (min-width: 768px) {
+  .friends-page-container {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2rem;
+  }
+
+  .friends-section:first-child {
+    grid-column: 1 / -1; /* Friend requests span full width */
+  }
+}
+
+@media (min-width: 1200px) {
+  .friends-page-container {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .friends-section:first-child {
+    grid-column: 1 / -1; /* Friend requests span full width */
+  }
+} 

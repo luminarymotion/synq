@@ -45,7 +45,6 @@ function Login() {
 
     try {
       await googleSignIn();
-      navigate('/dashboard'); // Redirect to dashboard after successful login
     } catch (error) {
       console.error('Error signing in with Google:', error);
       setError(error.message);

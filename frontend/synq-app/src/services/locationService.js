@@ -69,7 +69,7 @@ export const getCurrentLocation = () => {
         break;
       default:
                 errorMessage = 'An unknown error occurred while getting location. Please try again.';
-            }
+    }
             reject(new Error(errorMessage));
           } else {
             // If high accuracy fails, try fallback
@@ -258,7 +258,7 @@ export const getAddressFromCoords = async (lat, lng) => {
   } catch (error) {
     console.error('Error getting address from coordinates:', error);
     return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
-  }
+    }
 };
 
 /**
