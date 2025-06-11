@@ -88,7 +88,12 @@ function UserSearch() {
       }
 
       // Send friend request
-      const result = await sendFriendRequest(user.uid, userId, "Let's be friends!");
+      const result = await sendFriendRequest({
+        senderId: user.uid,
+        receiverId: userId,
+        message: "Let's be friends!"
+      });
+      
       if (result.success) {
         setSearchResults(prev => 
           prev.map(u => 

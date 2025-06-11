@@ -1,4 +1,4 @@
-rules_version = '2';
+rules_version = '3';
 service cloud.firestore {
   match /databases/{database}/documents {
     // Helper functions
@@ -7,7 +7,7 @@ service cloud.firestore {
     }
     
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isAuthenticated() && request.auth.uid.trim() == userId.trim();
     }
 
     function isValidProfileData() {
@@ -47,49 +47,84 @@ service cloud.firestore {
 
     // Friend Requests
     match /friendRequests/{requestId} {
+      // Basic validation function
+      function isValidFriendRequest() {
+        let data = request.resource.data;
+        
+        // Log everything for debugging
+        debug('=== Friend Request Validation START ===');
+        debug('Request Method:', request.method);
+        debug('Auth UID (raw):', request.auth.uid);
+        debug('Auth UID (trimmed):', request.auth.uid.trim());
+        debug('Data Sender ID (raw):', data.senderId);
+        debug('Data Sender ID (trimmed):', data.senderId.trim());
+        debug('Auth Email:', request.auth.token.email);
+        debug('Data Receiver ID:', data.receiverId);
+        debug('Data Message:', data.message);
+        
+        // Check each condition separately
+        let isAuthenticated = request.auth != null;
+        let senderMatchesAuth = data.senderId.trim() == request.auth.uid.trim();
+        let hasValidFields = data.senderId is string && 
+                           data.receiverId is string && 
+                           data.message is string;
+        
+        debug('Validation Checks:', {
+          isAuthenticated: isAuthenticated,
+          senderMatchesAuth: senderMatchesAuth,
+          hasValidFields: hasValidFields,
+          senderIdType: typeof data.senderId,
+          receiverIdType: typeof data.receiverId,
+          messageType: typeof data.message,
+          uidComparison: {
+            authUid: request.auth.uid.trim(),
+            senderId: data.senderId.trim(),
+            areEqual: data.senderId.trim() == request.auth.uid.trim()
+          }
+        });
+        
+        let isValid = isAuthenticated && senderMatchesAuth && hasValidFields;
+        
+        debug('Final Validation Result:', {
+          isValid: isValid,
+          failedChecks: {
+            isAuthenticated: !isAuthenticated,
+            senderMatchesAuth: !senderMatchesAuth,
+            hasValidFields: !hasValidFields
+          }
+        });
+        
+        debug('=== Friend Request Validation END ===');
+        return isValid;
+      }
+
       // Allow read if user is either sender or receiver
       allow read: if isAuthenticated() && (
-        resource.data.senderId == request.auth.uid ||
-        resource.data.receiverId == request.auth.uid
+        resource.data.senderId.trim() == request.auth.uid.trim() ||
+        resource.data.receiverId.trim() == request.auth.uid.trim()
       );
       
-      // Allow create if user is the sender and not sending to themselves
-      allow create: if isAuthenticated() && 
-        request.resource.data.senderId == request.auth.uid &&
-        request.resource.data.receiverId != request.auth.uid &&
-        request.resource.data.status == 'pending' &&
-        request.resource.data.metadata.createdAt is timestamp &&
-        request.resource.data.metadata.updatedAt is timestamp;
+      // Allow create with basic validation
+      allow create: if isValidFriendRequest();
       
-      // Allow update if user is the receiver and only updating status
+      // Allow update if user is the receiver
       allow update: if isAuthenticated() && 
-        resource.data.receiverId == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['status', 'metadata.updatedAt']) &&
-        request.resource.data.status in ['accepted', 'rejected', 'pending'];
+        resource.data.receiverId.trim() == request.auth.uid.trim();
       
       // Allow delete if user is either sender or receiver
       allow delete: if isAuthenticated() && (
-        resource.data.senderId == request.auth.uid ||
-        resource.data.receiverId == request.auth.uid
+        resource.data.senderId.trim() == request.auth.uid.trim() ||
+        resource.data.receiverId.trim() == request.auth.uid.trim()
       );
     }
 
-    // Relationships (Friendships)
+    // Relationships
     match /relationships/{relationshipId} {
       // Allow read if user is part of the relationship
-      allow read: if isAuthenticated() && (
-        // Allow reading if user is in the users array
-        request.auth.uid in resource.data.users ||
-        // Allow querying relationships where user is a member
-        (request.query != null && 
-         request.query.filters.size() > 0 && 
-         request.query.filters[0].op == 'array-contains' && 
-         request.query.filters[0].path == 'users' && 
-         request.query.filters[0].value == request.auth.uid)
-      );
+      allow read: if isAuthenticated() && 
+        request.auth.uid in resource.data.users;
       
-      // Allow create if user is part of the users array
+      // Allow create if user is part of the relationship
       allow create: if isAuthenticated() && 
         request.auth.uid in request.resource.data.users;
       
@@ -145,16 +180,35 @@ service cloud.firestore {
 
     // Notifications
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && 
-        resource.data.userId == request.auth.uid;
-      allow create: if isAuthenticated() && 
-        request.resource.data.userId is string;
-      allow update: if isAuthenticated() && 
-        resource.data.userId == request.auth.uid &&
-        request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['read', 'readAt']);
-      allow delete: if isAuthenticated() && 
-        resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && (
+        // Allow creating notifications for yourself
+        request.resource.data.userId == request.auth.uid ||
+        // Allow creating friend request notifications
+        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added'] &&
+         (
+           // For friend requests, sender can create notification for receiver
+           (request.resource.data.type == 'friend_request' && 
+            request.resource.data.data.senderId == request.auth.uid) ||
+           // For friend request responses, receiver can create notification for sender
+           (request.resource.data.type in ['friend_request_accepted', 'friend_request_rejected'] && 
+            request.resource.data.data.receiverId == request.auth.uid) ||
+           // For friend added, either user can create notification
+           (request.resource.data.type == 'friend_added' && 
+            (request.resource.data.data.senderId == request.auth.uid || 
+             request.resource.data.data.receiverId == request.auth.uid))
+         ))
+      );
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // Recent Rides
+    match /recentRides/{rideId} {
+      allow read: if isAuthenticated() && (
+        resource.data.creatorId == request.auth.uid ||
+        request.auth.uid in resource.data.participants
+      );
     }
   }
 } 

@@ -606,7 +606,12 @@ function UserForm({ form, onChange, onSubmit, onDestinationChange, onUserLocatio
       }
 
       // Send friend request
-      const result = await sendFriendRequest(user.uid, friend.id, "Let's be friends!");
+      const result = await sendFriendRequest({
+        senderId: user.uid,
+        receiverId: friend.id,
+        message: "Let's be friends!"
+      });
+      
       if (result.success) {
         console.log('Friend request sent successfully');
         // You might want to show a success notification here

@@ -17,9 +17,8 @@ import '../styles/Dashboard.css';
 import { Link } from 'react-router-dom';
 import RideHistory from '../components/RideHistory';
 import { 
-  getFriendsList,
-  subscribeToFriendRequests,
-  subscribeToFriendsList
+  subscribeToFriendsList,
+  getUserRideHistory
 } from '../services/firebaseOperations';
 
 function Dashboard() {
@@ -27,7 +26,6 @@ function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [activeRides, setActiveRides] = useState([]);
   const [friends, setFriends] = useState([]);
-  const [friendRequests, setFriendRequests] = useState([]);
   const [isLoadingFriends, setIsLoadingFriends] = useState(false);
   const [friendError, setFriendError] = useState(null);
   const mapRefs = useRef({});
@@ -167,23 +165,15 @@ function Dashboard() {
   useEffect(() => {
     if (!user) return;
 
-    // Subscribe to friend requests
-    const unsubscribeRequests = subscribeToFriendRequests(user.uid, (result) => {
-      if (result.success) {
-        setFriendRequests(result.requests);
-      }
-    });
-
-    // Subscribe to friends list
+    // Subscribe to friends list only
     const unsubscribeFriends = subscribeToFriendsList(user.uid, (result) => {
       if (result.success) {
         setFriends(result.friends);
       }
     });
 
-    // Cleanup subscriptions
+    // Cleanup subscription
     return () => {
-      unsubscribeRequests();
       unsubscribeFriends();
     };
   }, [user]);
@@ -441,8 +431,11 @@ function Dashboard() {
         </div>
 
         <div className="card">
-          <div className="card-header">
+          <div className="card-header d-flex justify-content-between align-items-center">
             <h2>Friends</h2>
+            <Link to="/friends" className="btn btn-outline-primary btn-sm">
+              Manage Friends
+            </Link>
           </div>
           <div className="card-body">
             {isLoadingFriends ? (
@@ -450,78 +443,41 @@ function Dashboard() {
             ) : friendError ? (
               <div className="friend-error">{friendError}</div>
             ) : (
-              <>
-                {/* Friend Requests */}
-                {friendRequests.length > 0 && (
-                  <div className="friend-requests">
-                    <h4>Friend Requests</h4>
-                    {friendRequests.map(request => (
-                      <div key={request.id} className="friend-request-item">
-                        <div className="request-info">
-                          <img 
-                            src={request.senderProfile.photoURL || '/default-avatar.png'} 
-                            alt={request.senderProfile.displayName} 
-                            className="request-avatar"
-                          />
-                          <div className="request-details">
-                            <span className="request-name">{request.senderProfile.displayName}</span>
-                            <span className="request-email">{request.senderProfile.email}</span>
-                            {request.message && (
-                              <p className="request-message">{request.message}</p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="request-actions">
-                          <button 
-                            className="accept-button"
-                            onClick={() => handleFriendRequest(request.id, 'accepted')}
-                          >
-                            Accept
-                          </button>
-                          <button 
-                            className="reject-button"
-                            onClick={() => handleFriendRequest(request.id, 'rejected')}
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+              <div className="friends-list">
+                {friends.length === 0 ? (
+                  <div className="no-friends">
+                    <p>No friends yet</p>
+                    <Link to="/friends" className="btn btn-primary">
+                      Find Friends
+                    </Link>
                   </div>
-                )}
-
-                {/* Friends List */}
-                <div className="friends-list">
-                  {friends.length === 0 ? (
-                    <div className="no-friends">No friends yet</div>
-                  ) : (
-                    friends.map(friend => (
-                      <div key={friend.id} className="friend-item">
-                        <div className="friend-info">
-                          <img 
-                            src={friend.profile.photoURL || '/default-avatar.png'} 
-                            alt={friend.profile.displayName} 
-                            className="friend-avatar"
-                          />
-                          <div className="friend-details">
-                            <span className="friend-name">{friend.profile.displayName}</span>
-                            <span className="friend-email">{friend.profile.email}</span>
-                          </div>
-                        </div>
-                        <div className="friend-status">
-                          {friend.isOnline ? (
-                            <span className="status-online">Online</span>
-                          ) : (
-                            <span className="status-offline">
-                              Last seen: {friend.lastSeen?.toDate().toLocaleString()}
-                            </span>
-                          )}
+                ) : (
+                  friends.map(friend => (
+                    <div key={friend.id} className="friend-item">
+                      <div className="friend-info">
+                        <img 
+                          src={friend.profile.photoURL || '/default-avatar.png'} 
+                          alt={friend.profile.displayName} 
+                          className="friend-avatar"
+                        />
+                        <div className="friend-details">
+                          <span className="friend-name">{friend.profile.displayName}</span>
+                          <span className="friend-email">{friend.profile.email}</span>
                         </div>
                       </div>
-                    ))
-                  )}
-                </div>
-              </>
+                      <div className="friend-status">
+                        {friend.isOnline ? (
+                          <span className="status-online">Online</span>
+                        ) : (
+                          <span className="status-offline">
+                            Last seen: {friend.lastSeen?.toDate().toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             )}
           </div>
         </div>
