@@ -20,11 +20,12 @@ import {
   subscribeToFriendsList,
   getUserRideHistory
 } from '../services/firebaseOperations';
+import SimpleLoading from '../components/SimpleLoading';
 
 function Dashboard() {
   const { user } = useUserAuth();
   const [loading, setLoading] = useState(true);
-  const [activeRides, setActiveRides] = useState([]);
+  const [allRides, setAllRides] = useState([]);
   const [friends, setFriends] = useState([]);
   const [isLoadingFriends, setIsLoadingFriends] = useState(false);
   const [friendError, setFriendError] = useState(null);
@@ -32,168 +33,111 @@ function Dashboard() {
   const [mapsInitialized, setMapsInitialized] = useState({});
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    if (!user) return;
-
-    // Calculate timestamp for 24 hours ago
-    const twentyFourHoursAgo = new Date();
-    twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
-
-    // Query for active rides where user is driver
-    const driverActiveQuery = query(
-      collection(db, 'rides'),
-      where('driver.uid', '==', user.uid),
-      where('status', '==', 'active')
-    );
-
-    // Query for active rides where user is passenger
-    const passengerActiveQuery = query(
-      collection(db, 'rides'),
-      where('passengerUids', 'array-contains', user.uid),
-      where('status', '==', 'active')
-    );
-
-    // Query for recent rides (within 24 hours) where user is driver
-    const driverRecentQuery = query(
-      collection(db, 'rides'),
-      where('driver.uid', '==', user.uid),
-      where('createdAt', '>=', twentyFourHoursAgo),
-      where('status', '==', 'created')
-    );
-
-    // Query for recent rides (within 24 hours) where user is passenger
-    const passengerRecentQuery = query(
-      collection(db, 'rides'),
-      where('passengerUids', 'array-contains', user.uid),
-      where('createdAt', '>=', twentyFourHoursAgo),
-      where('status', '==', 'created')
-    );
-
-    console.log('Setting up ride listeners for dashboard');
-    const unsubscribeDriverActive = onSnapshot(driverActiveQuery, (snapshot) => {
-      console.log('Driver active rides snapshot:', snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      const driverActiveRides = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        type: 'active'
-      }));
-
-      const unsubscribePassengerActive = onSnapshot(passengerActiveQuery, (passengerSnapshot) => {
-        console.log('Passenger active rides snapshot:', passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        const passengerActiveRides = passengerSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-          type: 'active'
-        }));
-
-        const unsubscribeDriverRecent = onSnapshot(driverRecentQuery, (recentSnapshot) => {
-          console.log('Driver recent rides snapshot:', recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-          const driverRecentRides = recentSnapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-            type: 'recent'
-          }));
-
-          const unsubscribePassengerRecent = onSnapshot(passengerRecentQuery, (finalSnapshot) => {
-            console.log('Passenger recent rides snapshot:', finalSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-            const passengerRecentRides = finalSnapshot.docs.map(doc => ({
-              id: doc.id,
-              ...doc.data(),
-              type: 'recent'
-            }));
-
-            // Combine all rides
-            const allRides = [
-              ...driverActiveRides,
-              ...passengerActiveRides,
-              ...driverRecentRides,
-              ...passengerRecentRides
-            ];
-
-            // Deduplicate and sort rides
-            const seenIds = new Set();
-            const uniqueRides = allRides
-              .filter(ride => {
-                if (seenIds.has(ride.id)) {
-                  return false;
-                }
-                seenIds.add(ride.id);
-                return true;
-              })
-              .sort((a, b) => {
-              // First sort by type (active rides first)
-              if (a.type !== b.type) {
-                return a.type === 'active' ? -1 : 1;
-              }
-              // Then sort by creation time
-              if (a.createdAt && b.createdAt) {
-                return b.createdAt.toDate() - a.createdAt.toDate();
-              }
-              return b.id.localeCompare(a.id);
-            });
-
-            console.log('Final unique rides for dashboard:', uniqueRides);
-            setActiveRides(uniqueRides);
-            setLoading(false);
-          }, (error) => {
-            console.error('Error fetching passenger recent rides:', error);
-            handleQueryError(error);
-          });
-
-          return () => unsubscribePassengerRecent();
-        }, (error) => {
-          console.error('Error fetching driver recent rides:', error);
-          handleQueryError(error);
-        });
-
-        return () => unsubscribeDriverRecent();
-      }, (error) => {
-        console.error('Error fetching passenger active rides:', error);
-        handleQueryError(error);
-      });
-
-      return () => unsubscribePassengerActive();
-    }, (error) => {
-      console.error('Error fetching driver active rides:', error);
-      handleQueryError(error);
-    });
-
-    return () => unsubscribeDriverActive();
-  }, [user]);
-
-  // Load friends when component mounts
-  useEffect(() => {
-    if (!user) return;
-
-    // Subscribe to friends list only
-    const unsubscribeFriends = subscribeToFriendsList(user.uid, (result) => {
-      if (result.success) {
-        setFriends(result.friends);
-      }
-    });
-
-    // Cleanup subscription
-    return () => {
-      unsubscribeFriends();
-    };
-  }, [user]);
-
   // Helper function to handle query errors
   const handleQueryError = (error) => {
+    console.error('Query error:', error);
     if (error.code === 'failed-precondition') {
-      console.log('Index not available, fetching without orderBy');
       setError('Please wait while we update our database indexes');
-      setActiveRides([]);
     } else {
       setError('Failed to load rides');
     }
     setLoading(false);
   };
 
-  // Separate useEffect for map initialization
+  // Helper function to format time
+  const formatTime = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    const date = timestamp.toDate();
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Helper function to calculate ETA
+  const calculateETA = (createdAt) => {
+    if (!createdAt) return 'N/A';
+    const startTime = createdAt.toDate();
+    const now = new Date();
+    const duration = Math.round((now - startTime) / 1000 / 60); // in minutes
+    return `${duration} min ago`;
+  };
+
+  // Main ride fetching effect
   useEffect(() => {
-    if (!loading && activeRides.length > 0) {
-      activeRides.forEach(ride => {
+    if (!user) return;
+
+    console.log('Setting up ride listeners for dashboard');
+
+    // Simple queries that should work with existing indexes
+    const queries = [];
+
+    // Query for rides where user is driver
+    const driverQuery = query(
+      collection(db, 'rides'),
+      where('driver.uid', '==', user.uid)
+    );
+    queries.push({ query: driverQuery, type: 'driver' });
+
+    // Query for rides where user is passenger
+    const passengerQuery = query(
+      collection(db, 'rides'),
+      where('passengerUids', 'array-contains', user.uid)
+    );
+    queries.push({ query: passengerQuery, type: 'passenger' });
+
+    // Set up subscriptions
+    const unsubscribes = [];
+
+    queries.forEach(({ query: firestoreQuery, type }) => {
+      const unsubscribe = onSnapshot(firestoreQuery, 
+        (snapshot) => {
+          const rides = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            userType: type
+          }));
+          console.log(`${type} rides:`, rides);
+
+          // Update all rides state
+          setAllRides(prevRides => {
+            // Remove rides from this type and add new ones
+            const filteredRides = prevRides.filter(ride => ride.userType !== type);
+            return [...filteredRides, ...rides];
+          });
+            setLoading(false);
+        },
+        handleQueryError
+      );
+      unsubscribes.push(unsubscribe);
+    });
+
+    // Cleanup function
+    return () => {
+      unsubscribes.forEach(unsubscribe => unsubscribe());
+    };
+  }, [user]);
+
+  // Friends loading effect
+  useEffect(() => {
+    if (!user) return;
+
+    setIsLoadingFriends(true);
+    const unsubscribeFriends = subscribeToFriendsList(user.uid, (result) => {
+      if (result.success) {
+        setFriends(result.friends);
+      } else {
+        setFriendError(result.error);
+      }
+      setIsLoadingFriends(false);
+    });
+
+    return () => {
+      unsubscribeFriends();
+    };
+  }, [user]);
+
+  // Map initialization effect
+  useEffect(() => {
+    if (!loading && allRides.length > 0) {
+      allRides.forEach(ride => {
         if (!mapsInitialized[ride.id]) {
           // Use requestAnimationFrame to ensure DOM is ready
           requestAnimationFrame(() => {
@@ -203,8 +147,9 @@ function Dashboard() {
         }
       });
     }
-  }, [loading, activeRides, mapsInitialized]);
+  }, [loading, allRides, mapsInitialized]);
 
+  // Map initialization function
   const initializeMap = (ride) => {
     const mapElement = document.getElementById(`map-${ride.id}`);
     if (!mapElement) {
@@ -262,6 +207,7 @@ function Dashboard() {
       }
 
       // Add passenger locations
+      if (ride.passengers) {
       ride.passengers.forEach((passenger, index) => {
         if (passenger.location) {
           console.log(`Adding passenger ${index} location:`, passenger.location);
@@ -278,6 +224,7 @@ function Dashboard() {
           features.push(passengerFeature);
         }
       });
+      }
 
       // Add destination
       if (ride.destination?.location) {
@@ -314,25 +261,52 @@ function Dashboard() {
     }
   };
 
-  const formatTime = (timestamp) => {
-    if (!timestamp) return 'N/A';
-    const date = timestamp.toDate();
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  // Process and sort rides
+  const seenIds = new Set();
+  const uniqueRides = allRides
+    .filter(ride => {
+      if (seenIds.has(ride.id)) {
+        return false;
+      }
+      seenIds.add(ride.id);
+      
+      // Filter out rides where user has declined invitation
+      if (ride.invitations && ride.invitations[user?.uid]) {
+        const userInvitation = ride.invitations[user.uid];
+        if (userInvitation.status === 'declined') {
+          console.log('Filtering out declined ride:', ride.id);
+          return false;
+        }
+      }
+      
+      return true;
+    })
+    .sort((a, b) => {
+      // Sort by status priority (active first, then created, then others)
+      const statusOrder = { active: 0, created: 1, forming: 2, cancelled: 3 };
+      const aOrder = statusOrder[a.status] || 4;
+      const bOrder = statusOrder[b.status] || 4;
+      
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      
+      // Then sort by creation time (newest first)
+      if (a.createdAt && b.createdAt) {
+        return b.createdAt.toDate() - a.createdAt.toDate();
+      }
+      
+      return b.id.localeCompare(a.id);
+    });
 
-  const calculateETA = (createdAt) => {
-    if (!createdAt) return 'N/A';
-    const startTime = createdAt.toDate();
-    const now = new Date();
-    const duration = Math.round((now - startTime) / 1000 / 60); // in minutes
-    return `${duration} min ago`;
-  };
+  console.log('Final unique rides for dashboard:', uniqueRides);
 
   if (loading) {
     return (
-      <div className="dashboard-container">
-        <div className="loading-spinner"></div>
-      </div>
+      <SimpleLoading 
+        message="Loading your dashboard..."
+        size="large"
+      />
     );
   }
 
@@ -343,38 +317,41 @@ function Dashboard() {
       </div>
       
       <div className="dashboard-content">
+        {/* Rides Section */}
         <div className="card">
           <div className="card-header d-flex justify-content-between align-items-center">
-            <h2>Your Active Rides</h2>
+            <h2>Your Rides</h2>
             <Link to="/rides" className="btn btn-outline-primary btn-sm">
               View All Rides
             </Link>
           </div>
           <div className="card-body">
-            {activeRides.length === 0 ? (
+            {error ? (
+              <div className="alert alert-warning">{error}</div>
+            ) : uniqueRides.length === 0 ? (
               <div className="text-center py-4">
-                <p className="text-muted mb-3">No active rides at the moment</p>
+                <p className="text-muted mb-3">No rides at the moment</p>
                 <Link to="/create-group" className="btn btn-primary">
                   <i className="bi bi-plus-circle me-2"></i>
-                  Create New Ride
+                  Create New Group
                 </Link>
               </div>
             ) : (
               <div className="rides-grid">
-                {activeRides.map((ride) => (
+                {uniqueRides.map((ride) => (
                   <Link 
                     to={`/rides/${ride.id}`} 
                     key={ride.id} 
-                    className={`ride-card text-decoration-none ${ride.type === 'recent' ? 'recent-ride' : ''}`}
+                    className={`ride-card text-decoration-none ${ride.status === 'created' ? 'recent-ride' : ''}`}
                   >
                     <div className="card h-100">
-                      <div className={`card-body ${ride.type === 'recent' ? 'border-start border-info border-4' : ''}`}>
+                      <div className={`card-body ${ride.status === 'created' ? 'border-start border-info border-4' : ''}`}>
                         <div className="d-flex justify-content-between align-items-start mb-3">
                           <div>
                             <h5 className="card-title mb-1">
                               <span className="badge bg-primary me-2">{ride.id}</span>
-                              {ride.destination?.address}
-                              {ride.type === 'recent' && (
+                              {ride.destination?.address || 'Unknown Destination'}
+                              {ride.status === 'created' && (
                                 <span className="badge bg-info ms-2">New</span>
                               )}
                             </h5>
@@ -384,20 +361,24 @@ function Dashboard() {
                           </div>
                           <div className="d-flex gap-2">
                             <span className={`badge ${
-                              ride.status === 'active' ? 'bg-success' : 'bg-secondary'
+                              ride.status === 'active' ? 'bg-success' : 
+                              ride.status === 'created' ? 'bg-warning' : 
+                              ride.status === 'forming' ? 'bg-info' : 'bg-secondary'
                             }`}>
                               {ride.status}
                             </span>
-                            {ride.type === 'recent' && (
-                              <span className="badge bg-info">Recent</span>
-                            )}
+                            <span className={`badge ${
+                              ride.userType === 'driver' ? 'bg-primary' : 'bg-secondary'
+                            }`}>
+                              {ride.userType === 'driver' ? 'Driver' : 'Passenger'}
+                            </span>
                           </div>
                         </div>
 
                         <div className="ride-info">
                           <div className="info-item">
                             <i className="bi bi-person-fill me-2"></i>
-                            <span>{ride.driver?.name}</span>
+                            <span>{ride.driver?.name || 'Unknown Driver'}</span>
                           </div>
                           <div className="info-item">
                             <i className="bi bi-people-fill me-2"></i>
@@ -409,16 +390,33 @@ function Dashboard() {
                           </div>
                         </div>
 
+                        {/* Map Preview */}
+                        <div className="map-preview">
+                          <div 
+                            id={`map-${ride.id}`} 
+                            className="ride-map"
+                            style={{ height: '120px', width: '100%', borderRadius: '8px' }}
+                          ></div>
+                        </div>
+
                         <div className="mt-3">
                           <div className="progress" style={{ height: '4px' }}>
                             <div 
-                              className={`progress-bar ${ride.type === 'recent' ? 'bg-info' : 'bg-success'}`}
+                              className={`progress-bar ${
+                                ride.status === 'active' ? 'bg-success' : 
+                                ride.status === 'created' ? 'bg-warning' : 'bg-info'
+                              }`}
                               role="progressbar" 
-                              style={{ width: ride.type === 'recent' ? '10%' : '25%' }}
+                              style={{ 
+                                width: ride.status === 'active' ? '75%' : 
+                                       ride.status === 'created' ? '25%' : '50%' 
+                              }}
                             ></div>
                           </div>
                           <small className="text-muted mt-2 d-block">
-                            {ride.type === 'recent' ? 'Ride created' : 'Ride in progress'}
+                            {ride.status === 'active' ? 'Ride in progress' : 
+                             ride.status === 'created' ? 'Ride created' : 
+                             ride.status === 'forming' ? 'Forming group' : 'Ride status'}
                           </small>
                         </div>
                       </div>
@@ -430,6 +428,7 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* Friends Section */}
         <div className="card">
           <div className="card-header d-flex justify-content-between align-items-center">
             <h2>Friends</h2>
@@ -614,24 +613,6 @@ function Dashboard() {
           100% { transform: rotate(360deg); }
         }
 
-        @media (max-width: 768px) {
-          .rides-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .dashboard-container {
-            padding: 1rem;
-          }
-
-          .card-header {
-            padding: 1rem;
-          }
-
-          .card-body {
-            padding: 1rem;
-          }
-        }
-
         .recent-ride .card {
           border-color: #0dcaf0;
         }
@@ -653,37 +634,91 @@ function Dashboard() {
           background-color: #0dcaf0 !important;
         }
 
-          .friend-requests {
-            margin-bottom: 2rem;
+        .friends-list {
+          display: grid;
+          gap: 1rem;
           }
 
-          .friend-request-item {
+        .friend-item {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 1rem;
             background: #f8f9fa;
             border-radius: 8px;
-            padding: 1rem;
-            transition: all 0.2s;
+          transition: background-color 0.2s;
           }
 
-          .friend-request-item:hover {
+        .friend-item:hover {
             background: #e9ecef;
           }
 
-          .request-info {
+        .friend-info {
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
+          align-items: center;
             gap: 1rem;
           }
 
-          .request-avatar {
+        .friend-avatar {
             width: 48px;
             height: 48px;
             border-radius: 50%;
             object-fit: cover;
           }
 
-          .request-details {
-            flex: 1;
+        .friend-details {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .friend-name {
+          font-weight: 600;
+          color: #333;
+        }
+
+        .friend-email {
+          font-size: 0.9rem;
+          color: #666;
+        }
+
+        .friend-status {
+          text-align: right;
+        }
+
+        .status-online {
+          color: #28a745;
+          font-weight: 600;
+        }
+
+        .status-offline {
+          color: #6c757d;
+          font-size: 0.9rem;
+        }
+
+        .map-preview {
+          margin: 1rem 0;
+        }
+
+        .ride-map {
+          border: 1px solid #ddd;
+        }
+
+        @media (max-width: 768px) {
+          .rides-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .dashboard-container {
+            padding: 1rem;
+          }
+
+          .card-header {
+            padding: 1rem;
+          }
+
+          .card-body {
+            padding: 1rem;
+          }
           }
         `}
       </style>

@@ -1,51 +1,50 @@
-.user-table-wrapper {
+.user-cards-wrapper {
   width: 100%;
-  overflow-x: auto;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  background: transparent;
 }
 
-.user-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-
-.user-table th {
-  background-color: #f8f9fa;
-  padding: 12px;
-  text-align: left;
-  font-weight: 600;
-  color: #495057;
-  border-bottom: 2px solid #dee2e6;
-}
-
-.user-table td {
-  padding: 12px;
-  border-bottom: 1px solid #dee2e6;
-  vertical-align: middle;
-}
-
-.user-row:hover {
-  background-color: #f8f9fa;
-}
-
-.user-info {
+.user-cards-container {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0;
 }
 
-.user-avatar {
-  width: 40px;
-  height: 40px;
+.user-card {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  padding: 1.25rem;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+}
+
+.user-card:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.user-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.875rem;
+  flex: 1;
+}
+
+.user-card-avatar {
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
+  border: 2px solid rgba(255, 255, 255, 0.5);
 }
 
-.user-avatar img {
+.user-card-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -54,186 +53,159 @@
 .avatar-placeholder {
   width: 100%;
   height: 100%;
-  background-color: #e9ecef;
-  color: #6c757d;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.2rem;
+  font-size: 1rem;
   font-weight: 600;
 }
 
-.user-details {
+.user-card-info {
   display: flex;
   flex-direction: column;
+  gap: 0.375rem;
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
 }
 
-.user-name {
+.user-card-name {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.user-card-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
   font-weight: 500;
-  color: #212529;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  width: fit-content;
+  line-height: 1;
 }
 
-.user-email {
+.user-card-status.accepted {
+  background-color: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+}
+
+.user-card-status.pending {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+.user-card-status.not_friend {
+  background-color: rgba(107, 114, 128, 0.1);
+  color: #6b7280;
+}
+
+.user-card-status i {
+  font-size: 0.65rem;
+}
+
+.user-card-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.625rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  margin-top: auto;
+}
+
+.user-card-role {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.user-card-remove {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
   font-size: 0.8rem;
-  color: #6c757d;
+  flex-shrink: 0;
 }
 
+.user-card-remove:hover {
+  background: #dc2626;
+  color: white;
+  transform: scale(1.1);
+}
+
+/* Role styles for cards */
 .role-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 12px;
-  font-size: 0.8rem;
-  font-weight: 500;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  white-space: nowrap;
+  line-height: 1;
+  height: fit-content;
 }
 
 .role-badge.driver {
-  background-color: #e3f2fd;
-  color: #1976d2;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: white;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
 }
 
 .role-badge.passenger {
-  background-color: #f3e5f5;
-  color: #7b1fa2;
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+  color: white;
+  box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
 }
 
 .role-badge i {
-  font-size: 0.8rem;
-}
-
-.action-button {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.action-button i {
-  font-size: 0.9rem;
-}
-
-.action-button.accept {
-  background-color: #28a745;
-  color: white;
-}
-
-.action-button.maybe {
-  background-color: #17a2b8;
-  color: white;
-}
-
-.action-button.decline {
-  background-color: #dc3545;
-  color: white;
-}
-
-.action-button:hover {
-  opacity: 0.9;
-  transform: scale(1.02);
-}
-
-.resend-button {
-  padding: 6px 12px;
-  border: none;
-  border-radius: 4px;
-  background-color: #007bff;
-  color: white;
-  font-size: 0.9rem;
-  font-weight: 500;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.2s ease;
-}
-
-.resend-button i {
-  font-size: 0.9rem;
-}
-
-.resend-button:hover {
-  background-color: #0056b3;
-}
-
-.resend-button:disabled {
-  background-color: #6c757d;
-  cursor: not-allowed;
+  font-size: 0.7rem;
+  flex-shrink: 0;
 }
 
 .role-select {
-  padding: 6px 12px;
-  border: 1px solid #ced4da;
-  border-radius: 4px;
-  background-color: white;
-  font-size: 0.9rem;
-  color: #495057;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 0.75rem;
+  color: #4b5563;
   cursor: pointer;
-  min-width: 120px;
+  width: 100%;
+  max-width: 100px;
+  transition: all 0.2s ease;
+  height: fit-content;
+  line-height: 1;
+}
+
+.role-select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
 }
 
 .role-select:disabled {
-  background-color: #e9ecef;
+  background: rgba(255, 255, 255, 0.4);
   cursor: not-allowed;
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 12px;
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-
-.status-badge i {
-  font-size: 0.9rem;
-}
-
-.status-pending {
-  background-color: #fff3cd;
-  color: #856404;
-}
-
-.status-accepted {
-  background-color: #d4edda;
-  color: #155724;
-}
-
-.status-declined {
-  background-color: #f8d7da;
-  color: #721c24;
-}
-
-.status-maybe {
-  background-color: #cce5ff;
-  color: #004085;
-}
-
-.invitation-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.remove-button {
-  padding: 4px 8px;
-  border: none;
-  border-radius: 4px;
-  background-color: #dc3545;
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.remove-button:hover {
-  background-color: #c82333;
 }
 
 /* Modal styles */
@@ -305,20 +277,24 @@
 
 /* Empty state */
 .empty-state {
-  padding: 48px 24px;
   text-align: center;
-  color: #6c757d;
+  padding: 2rem 1rem;
+  color: #6b7280;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  margin: 1rem;
 }
 
 .empty-state i {
   font-size: 2rem;
-  margin-bottom: 12px;
-  color: #adb5bd;
+  margin-bottom: 0.5rem;
+  color: #9ca3af;
 }
 
 .empty-state p {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
 }
 
 /* Notification styles */
@@ -355,26 +331,17 @@
 
 /* Responsive styles */
 @media (max-width: 768px) {
-  .user-table th,
-  .user-table td {
-    padding: 8px;
-  }
-
-  .user-info {
-    gap: 8px;
-  }
-
-  .user-avatar {
-    width: 32px;
-    height: 32px;
-  }
-
-  .invitation-actions {
+  .user-cards-container {
+    flex-direction: row;
     flex-wrap: wrap;
   }
 
-  .action-button {
-    width: 28px;
-    height: 28px;
+  .user-card {
+    width: calc(50% - 0.75rem);
+  }
+
+  .user-card-avatar {
+    width: 32px;
+    height: 32px;
   }
 } 

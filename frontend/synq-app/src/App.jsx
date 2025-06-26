@@ -1,6 +1,7 @@
 import './App.css';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import 'bootstrap/dist/css/bootstrap.min.css';
+import { Toaster } from 'react-hot-toast';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
 import RouteOptimizer from './pages/RouteOptimizer';
@@ -10,12 +11,28 @@ import Friends from './components/Friends';
 import Rides from './pages/Rides';
 import LiveRideView from './pages/LiveRideView';
 import Header from './components/Header';
+import GlobalLoading from './components/GlobalLoading';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
 import './styles/theme.css';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
-  const { user } = useUserAuth();
+  const { user, loading } = useUserAuth();
+  
+  if (loading) {
+    return (
+      <GlobalLoading 
+        title="Authenticating"
+        subtitle="Verifying your account"
+        icon="fas fa-shield-alt"
+        steps={[
+          "Checking credentials",
+          "Loading profile",
+          "Preparing dashboard"
+        ]}
+      />
+    );
+  }
   
   if (!user) {
     return <Navigate to="/login" />;
@@ -26,7 +43,23 @@ const ProtectedRoute = ({ children }) => {
 
 // Component that uses the auth context
 const AppContent = () => {
-  const { user, needsProfileSetup } = useUserAuth();
+  const { user, loading, needsProfileSetup } = useUserAuth();
+
+  // Show global loading during authentication
+  if (loading) {
+    return (
+      <GlobalLoading 
+        title="Welcome to SynqRoute"
+        subtitle="Setting up your ride-sharing experience"
+        icon="fas fa-car"
+        steps={[
+          "Initializing app",
+          "Checking authentication",
+          "Loading your profile"
+        ]}
+      />
+    );
+  }
 
   return (
     <div className="App">
@@ -80,12 +113,12 @@ const AppContent = () => {
         } />
         <Route path="/create-group" element={
           <ProtectedRoute>
-            <RouteOptimizer />
+            <RouteOptimizer mode="create" />
           </ProtectedRoute>
         } />
         <Route path="/join-group" element={
           <ProtectedRoute>
-            <RouteOptimizer />
+            <RouteOptimizer mode="join" />
           </ProtectedRoute>
         } />
         <Route path="/friends" element={
@@ -112,6 +145,34 @@ const AppContent = () => {
 function App() {
   return (
     <UserAuthContextProvider>
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 3000,
+          style: {
+            background: '#363636',
+            color: '#fff',
+          },
+          success: {
+            duration: 3000,
+            style: {
+              background: '#4CAF50',
+            },
+          },
+          error: {
+            duration: 4000,
+            style: {
+              background: '#f44336',
+            },
+          },
+          info: {
+            duration: 3000,
+            style: {
+              background: '#2196F3',
+            },
+          },
+        }}
+      />
       <AppContent />
     </UserAuthContextProvider>
   );

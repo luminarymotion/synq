@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 import { updateUserLocation } from './firebaseOperations';
 import { getAddressFromCoords } from './locationService';
@@ -69,7 +69,10 @@ class LocationTrackingService {
       userId,
       options,
       currentStatus: this.isTracking,
-      config: this.config
+      config: this.config,
+      geolocationSupported: 'geolocation' in navigator,
+      protocol: location.protocol,
+      hostname: location.hostname
     });
 
     if (this.isTracking) {
@@ -90,52 +93,55 @@ class LocationTrackingService {
     this.updateFirebase = options.updateFirebase ?? false;
 
     try {
-      // Check if geolocation is supported
-      if (!navigator.geolocation) {
-        console.error('Geolocation not supported');
-        throw new Error('Geolocation is not supported by your browser');
-      }
-
-      // Request permission explicitly
-      console.log('Requesting geolocation permission...');
-      try {
-        // First try to get current position to trigger permission prompt
-        await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(
-            resolve,
-            reject,
-            { timeout: 10000 }
-          );
-        });
-        console.log('Geolocation permission granted');
-      } catch (error) {
-        if (error.code === error.PERMISSION_DENIED) {
-          console.error('Geolocation permission denied by user');
-          throw new Error('Location permission denied. Please enable location access in your browser settings and reload the page.');
-        }
-        // For other errors, continue with the normal flow
-        console.log('Initial position request failed, but continuing:', error.message);
-      }
-
       console.log('Getting initial position...');
-      // Get initial position
-      const position = await this.getCurrentPosition();
-      console.log('Initial position received:', {
-        coords: position.coords,
-        timestamp: position.timestamp ? new Date(position.timestamp).toISOString() : 'No timestamp'
-      });
-      
-      await this.handleLocationUpdate(position);
+      // Get initial position with more lenient settings for office networks
+      let initialPosition = null;
+      try {
+        console.log('Calling getCurrentPosition...');
+        initialPosition = await this.getCurrentPosition();
+        console.log('Initial position received:', {
+          coords: initialPosition.coords,
+          timestamp: initialPosition.timestamp ? new Date(initialPosition.timestamp).toISOString() : 'No timestamp'
+        });
+        
+        // Only call handleLocationUpdate if we have a valid position
+        if (initialPosition && initialPosition.coords) {
+          console.log('Processing initial position...');
+          try {
+            await this.handleLocationUpdate(initialPosition);
+            console.log('Initial position processed successfully');
+          } catch (error) {
+            console.error('Error processing initial position:', error);
+            // Don't fail the entire tracking start if initial position processing fails
+            // The watchPosition will still work
+          }
+        }
+      } catch (positionError) {
+        console.warn('Failed to get initial position - likely blocked by office network:', {
+          error: positionError.message,
+          code: positionError.code,
+          stack: positionError.stack
+        });
+        
+        // For office networks, we'll start tracking in "manual mode"
+        // The user can manually set their location
+        this.isTracking = true;
+        this.onStatusChange?.('manual');
+        this.onError?.('Location tracking blocked by network. You can manually set your location.');
+        console.log('Started location tracking in manual mode due to network restrictions');
+        return true; // Return true to indicate "success" but in manual mode
+      }
 
+      // Only set up watchPosition if we successfully got initial position
       console.log('Setting up position watch...');
-      // Start watching position
+      // Start watching position with more lenient settings
       this.watchId = navigator.geolocation.watchPosition(
         this.handleLocationUpdate.bind(this),
         this.handleLocationError.bind(this),
         {
-          enableHighAccuracy: true,
-          timeout: this.config.maxAge,
-          maximumAge: this.config.maxAge
+          enableHighAccuracy: false, // Use low accuracy for better compatibility
+          timeout: 30000, // 30 second timeout for office networks
+          maximumAge: 300000 // Accept cached location up to 5 minutes old
         }
       );
       console.log('Position watch set up with ID:', this.watchId);
@@ -148,20 +154,39 @@ class LocationTrackingService {
       window.addEventListener('online', this.handleOnline.bind(this));
       window.addEventListener('offline', this.handleOffline.bind(this));
 
+      console.log('About to return true from startTracking');
       return true;
     } catch (error) {
       console.error('Error in startTracking:', {
         error: error.message,
         code: error.code,
-        stack: error.stack
+        stack: error.stack,
+        networkInfo: {
+          protocol: location.protocol,
+          hostname: location.hostname,
+          userAgent: navigator.userAgent
+        }
       });
-      this.handleLocationError(error);
+      
+      // Provide more specific error messages for office networks
+      let userFriendlyError = error?.message || 'Unknown error';
+      const errorMsg = error?.message || 'Unknown error';
+      if (errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('blocked')) {
+        userFriendlyError = 'Location tracking failed. Please enter your location manually';
+      }
+      
+      this.onError?.(userFriendlyError);
+      this.onStatusChange?.('error');
       return false;
     }
+    
+    // Fallback return - this should never be reached, but ensures we always return a value
+    console.warn('Unexpected fallback return in startTracking');
+    return false;
   }
 
   // Stop location tracking
-  stopTracking() {
+  stopTracking(skipStatusChange = false) {
     if (this.watchId) {
       navigator.geolocation.clearWatch(this.watchId);
       this.watchId = null;
@@ -181,10 +206,13 @@ class LocationTrackingService {
     window.removeEventListener('online', this.handleOnline.bind(this));
     window.removeEventListener('offline', this.handleOffline.bind(this));
 
+    // Only call status change if not skipping it (for error cases)
+    if (!skipStatusChange) {
     this.onStatusChange?.('inactive');
+    }
   }
 
-  // Get current position with retry
+  // Get current position with retry and fallback
   async getCurrentPosition() {
     console.log('Getting current position...');
     return new Promise((resolve, reject) => {
@@ -202,19 +230,59 @@ class LocationTrackingService {
           (error) => {
             console.error(`Position error on attempt ${attempt}:`, {
               code: error.code,
-              message: error.message
+              message: error.message,
+              networkInfo: {
+                protocol: location.protocol,
+                hostname: location.hostname
+              }
             });
+            
+            // Provide more specific error messages
+            if (error.code === error.TIMEOUT) {
+              console.warn('Position request timed out - possible office network restriction');
+            } else if (error.code === error.POSITION_UNAVAILABLE) {
+              console.warn('Position unavailable - device location services may be disabled');
+            }
+            
             if (attempt < this.config.retryAttempts) {
               console.log(`Retrying in ${this.config.retryDelay}ms...`);
               setTimeout(() => tryGetPosition(attempt + 1), this.config.retryDelay);
             } else {
-              reject(error);
+              // Try to get cached location as fallback
+              console.log('Attempting to get cached location as fallback...');
+              navigator.geolocation.getCurrentPosition(
+                (cachedPosition) => {
+                  console.log('Cached position received as fallback:', {
+                    coords: cachedPosition.coords,
+                    timestamp: new Date(cachedPosition.timestamp).toISOString()
+                  });
+                  resolve(cachedPosition);
+                },
+                (fallbackError) => {
+                  console.error('Fallback position also failed:', fallbackError);
+                  // Provide user-friendly error message
+                  let userFriendlyError = 'Failed to get location';
+                  if (error.code === error.TIMEOUT) {
+                    userFriendlyError = 'Location tracking failed. Please enter your location manually';
+                  } else if (error.code === error.POSITION_UNAVAILABLE) {
+                    userFriendlyError = 'Location unavailable. Please check your device\'s location services.';
+                  } else if (error.code === error.PERMISSION_DENIED) {
+                    userFriendlyError = 'Location permission denied. Please enable location access.';
+                  }
+                  reject(new Error(userFriendlyError));
+                },
+                {
+                  enableHighAccuracy: false,
+                  timeout: 10000,
+                  maximumAge: 600000 // Accept cached location up to 10 minutes old
+                }
+              );
             }
           },
           {
-            enableHighAccuracy: true,
-            timeout: this.config.maxAge,
-            maximumAge: this.config.maxAge
+            enableHighAccuracy: false, // Use low accuracy for better compatibility
+            timeout: 30000, // 30 second timeout for office networks
+            maximumAge: 300000 // Accept cached location up to 5 minutes old
           }
         );
       };
@@ -236,8 +304,8 @@ class LocationTrackingService {
 
       // If we have valid coordinates, clear any error state
       if (latitude && longitude) {
-        this.onError?.(null);
-        this.onStatusChange?.('active');
+        // Don't automatically clear errors or change status here
+        // Let the parent component handle this based on its error state
       }
 
       // Check if enough time has passed since last update
@@ -268,7 +336,7 @@ class LocationTrackingService {
         } catch (error) {
           // Don't log address lookup errors unless they're persistent
           if (this.retryCount === 0) {
-            console.warn('Address lookup failed:', error.message);
+            console.warn('Address lookup failed:', error?.message || 'Unknown error');
           }
         }
       }
@@ -300,7 +368,15 @@ class LocationTrackingService {
 
       // Update Firebase if enabled
       if (this.updateFirebase) {
-        await this.updateLocationInFirebase(locationData);
+        console.log('About to update Firebase...');
+        try {
+          await this.updateLocationInFirebase(locationData);
+          console.log('Firebase update completed in handleLocationUpdate');
+        } catch (error) {
+          console.error('Firebase update failed in handleLocationUpdate:', error);
+          // Don't re-throw the error, just log it
+          // The location tracking should continue even if Firebase update fails
+        }
       }
 
       // Notify callback if provided
@@ -308,7 +384,7 @@ class LocationTrackingService {
     } catch (error) {
       // Only log errors if they're not transient
       if (!this.lastLocation?.latitude || !this.lastLocation?.longitude) {
-        console.error('Location update error:', error.message);
+        console.error('Location update error:', error?.message || 'Unknown error');
         this.handleLocationError(error);
       }
     }
@@ -320,23 +396,25 @@ class LocationTrackingService {
 
     // Don't report errors if we have a valid location
     if (this.lastLocation?.latitude && this.lastLocation?.longitude) {
-      console.warn('Ignoring error while we have a valid location:', error.message);
+      console.warn('Ignoring error while we have a valid location:', error?.message || 'Unknown error');
       return;
     }
 
     let errorMessage = 'Failed to track location. ';
-    switch (error.code) {
-      case error.PERMISSION_DENIED:
+    const errorMsg = error?.message || 'Unknown error';
+    
+    switch (error?.code) {
+      case error?.PERMISSION_DENIED:
         errorMessage += 'Location permission denied. Please enable location access in your browser settings.';
         break;
-      case error.POSITION_UNAVAILABLE:
+      case error?.POSITION_UNAVAILABLE:
         errorMessage += 'Location information is unavailable. Please check your device\'s location services.';
         break;
-      case error.TIMEOUT:
+      case error?.TIMEOUT:
         errorMessage += 'Location request timed out. Please check your internet connection.';
         break;
       default:
-        errorMessage += `Error: ${error.message}`;
+        errorMessage += `Error: ${errorMsg}`;
     }
 
     this.onError?.(errorMessage);
@@ -346,20 +424,84 @@ class LocationTrackingService {
   // Update location in Firebase with retry
   async updateLocationInFirebase(locationData) {
     try {
+      console.log('Updating location in Firebase:', {
+        userId: this.userId,
+        updateFirebase: this.updateFirebase,
+        locationData: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: locationData.accuracy
+        }
+      });
+      
+      // For driver location tracking, we need to update the ride document
+      // with currentLocation instead of location to avoid overwriting pickup location
+      if (this.userId && this.updateFirebase) {
+        // Find active rides where this user is the driver
+        const ridesRef = collection(db, 'rides');
+        const driverRidesQuery = query(
+          ridesRef,
+          where('driver.uid', '==', this.userId),
+          where('status', 'in', ['active', 'created', 'forming'])
+        );
+        
+        const driverRidesSnapshot = await getDocs(driverRidesQuery);
+        console.log('Found active rides for driver:', driverRidesSnapshot.size);
+        
+        if (!driverRidesSnapshot.empty) {
+          // Update all active rides where user is driver
+          const updatePromises = driverRidesSnapshot.docs.map(docSnapshot => {
+            const rideRef = doc(db, 'rides', docSnapshot.id);
+            return updateDoc(rideRef, {
+              'driver.currentLocation': {
+                lat: locationData.latitude,
+                lng: locationData.longitude,
+                accuracy: locationData.accuracy,
+                address: locationData.address,
+                lastUpdated: serverTimestamp()
+              }
+            });
+          });
+          
+          await Promise.all(updatePromises);
+          console.log(`Updated currentLocation for ${updatePromises.length} active rides`);
+        }
+      }
+      
+      // Also update user's general location (for backward compatibility)
+      console.log('Updating user location...');
       const result = await updateUserLocation(this.userId, locationData);
+      console.log('User location update result:', result);
+      
       if (!result.success) {
         throw new Error(result.error);
       }
+      
       this.retryCount = 0;
+      console.log('Firebase update completed successfully');
     } catch (error) {
+      console.error('Firebase update error:', {
+        error: error?.message || 'Unknown error',
+        code: error?.code,
+        stack: error?.stack
+      });
+      
+      // Check if it's a permission error
+      if (error?.message && error.message.includes('permission')) {
+        console.warn('Permission denied for location update - stopping tracking:', error.message);
+        this.stopTracking();
+        return; // Don't retry permission errors
+      }
+      
       if (this.retryCount < this.config.retryAttempts) {
         this.retryCount++;
         // Use exponential backoff for retries
         const delay = this.config.retryDelay * Math.pow(2, this.retryCount - 1);
+        console.log(`Retrying Firebase update in ${delay}ms (attempt ${this.retryCount})`);
         setTimeout(() => this.updateLocationInFirebase(locationData), delay);
       } else {
         // Only log persistent errors
-        console.error('Failed to update location after retries:', error.message);
+        console.error('Failed to update location after retries:', error?.message || 'Unknown error');
         throw error;
       }
     }
@@ -397,7 +539,7 @@ class LocationTrackingService {
           });
         });
       } catch (error) {
-        console.error('Error syncing offline updates:', error.message);
+        console.error('Error syncing offline updates:', error?.message || 'Unknown error');
         // Put the failed batch back in the queue
         this.offlineQueue.unshift(...batch);
         break;
@@ -436,6 +578,42 @@ class LocationTrackingService {
       isOnline: navigator.onLine,
       queueSize: this.offlineQueue.length
     };
+  }
+
+  // Set location manually (for office networks where geolocation is blocked)
+  setManualLocation(latitude, longitude, address = null) {
+    console.log('Setting manual location:', { latitude, longitude, address });
+    
+    const locationData = {
+      latitude,
+      longitude,
+      accuracy: 100, // Manual location has lower accuracy
+      address,
+      timestamp: Date.now(),
+      isManual: true
+    };
+
+    this.lastLocation = locationData;
+    this.lastUpdate = Date.now();
+
+    // Notify listeners
+    if (this.listeners.size > 0) {
+      requestAnimationFrame(() => {
+        this.listeners.forEach(listener => listener(locationData));
+      });
+    }
+
+    // Update Firebase if enabled
+    if (this.updateFirebase) {
+      this.updateLocationInFirebase(locationData);
+    }
+
+    // Notify callback if provided
+    this.onLocationUpdate?.(locationData);
+    
+    // Clear any error state
+    this.onError?.(null);
+    this.onStatusChange?.('manual');
   }
 }
 
@@ -549,16 +727,20 @@ export const useLocation = ({ preset = 'default', updateFirebase = false, onLoca
       if (!success) {
         throw new Error('Failed to start location tracking');
       }
+      
+      return success; // Return the success value
     } catch (error) {
       setError(error.message);
       throw error;
     }
   }, [preset, updateFirebase, onLocationUpdate, onError, onStatusChange]);
 
-  const stopTracking = useCallback(() => {
-    locationTrackingService.stopTracking();
+  const stopTracking = useCallback((skipStatusChange = false) => {
+    locationTrackingService.stopTracking(skipStatusChange);
     setIsTracking(false);
+    if (!skipStatusChange) {
     setStatus('inactive');
+    }
   }, []);
 
   return {
@@ -568,6 +750,7 @@ export const useLocation = ({ preset = 'default', updateFirebase = false, onLoca
     status,
     startTracking,
     stopTracking,
+    setManualLocation: locationTrackingService.setManualLocation.bind(locationTrackingService),
     getCurrentPosition: locationTrackingService.getCurrentPosition.bind(locationTrackingService)
   };
 };

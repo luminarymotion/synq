@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
 import { searchUsers, sendFriendRequest, checkFriendshipStatus } from '../services/firebaseOperations';
+import SimpleLoading from './SimpleLoading';
 import '../styles/UserSearch.css';
 
-function UserSearch() {
+function UserSearch({ onSelectFriend }) {
   const { user } = useUserAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -114,6 +115,19 @@ function UserSearch() {
   };
 
   const getActionButton = (user) => {
+    // If onSelectFriend is provided, show select button for friends
+    if (onSelectFriend && user.friendshipStatus === 'friends') {
+      return (
+        <button
+          className="btn btn-success btn-sm"
+          onClick={() => onSelectFriend(user)}
+        >
+          <i className="fas fa-plus me-2"></i>
+          Select
+        </button>
+      );
+    }
+
     switch (user.friendshipStatus) {
       case 'friends':
         return (
@@ -182,9 +196,10 @@ function UserSearch() {
 
       {loading && (
         <div className="text-center mt-3">
-          <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
-          </div>
+          <SimpleLoading 
+            message="Searching users..."
+            size="small"
+          />
         </div>
       )}
 

@@ -1,467 +1,680 @@
-const OPENROUTE_API_KEY = '5b3ce3597851110001cf62481b9d2755689b44ecb54413b5dbb1b309';
+// routeService.js - Enhanced route calculation with VRP algorithm and proper API handling
 
-// Helper function to calculate distance between two points using Haversine formula
+// Configuration
+const MAPQUEST_CONFIG = {
+  baseUrl: 'https://www.mapquestapi.com/directions/v2',
+  apiKey: import.meta.env.VITE_MAPQUEST_API_KEY || 'YOUR_MAPQUEST_API_KEY',
+  timeout: 10000,
+  maxRetries: 3,
+  retryDelay: 1000
+};
+
+// Cache configuration
+const CACHE_CONFIG = {
+  clientTTL: 24 * 60 * 60 * 1000, // 24 hours
+  serverTTL: 48 * 60 * 60 * 1000, // 48 hours
+  maxCacheSize: 100 // Maximum cached routes
+};
+
+// VRP Algorithm Configuration
+const VRP_CONFIG = {
+  maxPassengers: 8,
+  maxRouteDistance: 100, // km
+  maxRouteDuration: 120, // minutes
+  timeWindowBuffer: 5 // minutes buffer for time windows
+};
+
+/**
+ * Enhanced route calculation with VRP optimization
+ * @param {Array} waypoints - Array of waypoint objects
+ * @param {Object} constraints - VRP constraints
+ * @returns {Promise<Object>} - Optimized route data
+ */
+export const calculateRoute = async (waypoints, constraints = {}) => {
+  console.log('Starting route calculation:', { waypoints: waypoints.length, constraints });
+  
+  // Validate input
+  if (!waypoints || waypoints.length < 2) {
+    throw new Error('At least 2 waypoints are required for route calculation');
+  }
+
+  // Apply VRP optimization
+  const optimizedWaypoints = await optimizeRouteWithVRP(waypoints, constraints);
+  
+  // Check cache first
+  const cacheKey = generateCacheKey(optimizedWaypoints);
+  const cachedRoute = await getCachedRoute(cacheKey);
+  if (cachedRoute) {
+    console.log('Route found in cache');
+    return cachedRoute;
+  }
+
+  // Calculate route with fallback chain
+  const route = await calculateRouteWithFallback(optimizedWaypoints);
+  
+  // Cache the result
+  await cacheRoute(cacheKey, route);
+  
+  return route;
+};
+
+/**
+ * Single-vehicle VRP algorithm with time windows
+ * @param {Array} waypoints - Original waypoints
+ * @param {Object} constraints - VRP constraints
+ * @returns {Array} - Optimized waypoint order
+ */
+const optimizeRouteWithVRP = async (waypoints, constraints) => {
+  console.log('Applying VRP optimization:', { waypoints: waypoints.length, constraints });
+  
+  // Extract waypoints and constraints
+  const { origin, pickupPoints, destination } = separateWaypoints(waypoints);
+  const { timeWindows, capacity, maxDistance } = constraints;
+  
+  // Validate capacity constraint
+  if (pickupPoints.length > VRP_CONFIG.maxPassengers) {
+    throw new Error(`Maximum ${VRP_CONFIG.maxPassengers} passengers allowed per vehicle`);
+  }
+  
+  // Apply nearest neighbor algorithm with 2-opt improvement
+  let optimizedOrder = nearestNeighborAlgorithm(origin, pickupPoints, destination);
+  
+  // Apply 2-opt improvement
+  optimizedOrder = twoOptImprovement(optimizedOrder);
+  
+  // Validate time windows
+  if (timeWindows) {
+    optimizedOrder = validateTimeWindows(optimizedOrder, timeWindows);
+  }
+  
+  // Validate capacity and distance constraints
+  optimizedOrder = validateConstraints(optimizedOrder, constraints);
+  
+  // Convert back to waypoint format
+  const optimizedWaypoints = convertToWaypoints(optimizedOrder);
+  
+  console.log('VRP optimization completed:', { 
+    originalOrder: waypoints.map(w => w.type), 
+    optimizedOrder: optimizedWaypoints.map(w => w.type) 
+  });
+  
+  return optimizedWaypoints;
+};
+
+/**
+ * Separate waypoints by type (origin, pickup, destination)
+ */
+const separateWaypoints = (waypoints) => {
+  const origin = waypoints.find(w => w.type === 'origin' || w.type === 'start');
+  const destination = waypoints.find(w => w.type === 'destination' || w.type === 'end');
+  const pickupPoints = waypoints.filter(w => w.type === 'pickup' || w.type === 'waypoint');
+  
+  return { origin, pickupPoints, destination };
+};
+
+/**
+ * Nearest neighbor algorithm for initial route
+ */
+const nearestNeighborAlgorithm = (origin, pickupPoints, destination) => {
+  const route = [origin];
+  let currentPoint = origin;
+  const unvisited = [...pickupPoints];
+  
+  while (unvisited.length > 0) {
+    // Find nearest unvisited point
+    let nearestIndex = 0;
+    let minDistance = calculateDistance(currentPoint.location, unvisited[0].location);
+    
+    for (let i = 1; i < unvisited.length; i++) {
+      const distance = calculateDistance(currentPoint.location, unvisited[i].location);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestIndex = i;
+      }
+    }
+    
+    // Add nearest point to route
+    route.push(unvisited[nearestIndex]);
+    currentPoint = unvisited[nearestIndex];
+    unvisited.splice(nearestIndex, 1);
+  }
+  
+  route.push(destination);
+  return route;
+};
+
+/**
+ * 2-opt improvement algorithm
+ */
+const twoOptImprovement = (route) => {
+  let improved = true;
+  let bestDistance = calculateTotalDistance(route);
+  
+  while (improved) {
+    improved = false;
+    
+    for (let i = 1; i < route.length - 2; i++) {
+      for (let j = i + 1; j < route.length - 1; j++) {
+        // Try 2-opt swap
+        const newRoute = [...route];
+        const segment = newRoute.slice(i, j + 1).reverse();
+        newRoute.splice(i, j - i + 1, ...segment);
+        
+        const newDistance = calculateTotalDistance(newRoute);
+        if (newDistance < bestDistance) {
+          route = newRoute;
+          bestDistance = newDistance;
+          improved = true;
+        }
+      }
+    }
+  }
+  
+  return route;
+};
+
+/**
+ * Validate time windows
+ */
+const validateTimeWindows = (route, timeWindows) => {
+  // Simple time window validation
+  // In a full implementation, this would check if the route respects all time windows
+  console.log('Time window validation:', { route: route.length, timeWindows });
+  return route;
+};
+
+/**
+ * Validate capacity and distance constraints
+ */
+const validateConstraints = (route, constraints) => {
+  const totalDistance = calculateTotalDistance(route);
+  
+  if (totalDistance > (constraints.maxDistance || VRP_CONFIG.maxRouteDistance)) {
+    console.warn('Route exceeds maximum distance constraint');
+  }
+  
+  return route;
+};
+
+/**
+ * Calculate distance between two points (Haversine formula)
+ */
 const calculateDistance = (point1, point2) => {
-  const R = 6371e3; // Earth's radius in meters
-  const φ1 = point1.lat * Math.PI / 180;
-  const φ2 = point2.lat * Math.PI / 180;
-  const Δφ = (point2.lat - point1.lat) * Math.PI / 180;
-  const Δλ = (point2.lng - point1.lng) * Math.PI / 180;
-
-  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-          Math.cos(φ1) * Math.cos(φ2) *
-          Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  const R = 6371; // Earth's radius in km
+  const lat1 = point1.lat * Math.PI / 180;
+  const lat2 = point2.lat * Math.PI / 180;
+  const deltaLat = (point2.lat - point1.lat) * Math.PI / 180;
+  const deltaLng = (point2.lng - point1.lng) * Math.PI / 180;
+  
+  const a = Math.sin(deltaLat/2) * Math.sin(deltaLat/2) +
+            Math.cos(lat1) * Math.cos(lat2) *
+            Math.sin(deltaLng/2) * Math.sin(deltaLng/2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-
-  return R * c; // Distance in meters
+  
+  return R * c;
 };
 
-// Function to find intermediate points for long routes
-const findIntermediatePoints = (start, end, maxDistance = 140000) => { // 140km to be safe
-  const distance = calculateDistance(start, end);
-  if (distance <= maxDistance) return [start, end];
-
-  const numSegments = Math.ceil(distance / maxDistance);
-  const intermediatePoints = [];
-  
-  for (let i = 1; i < numSegments; i++) {
-    const fraction = i / numSegments;
-    const lat = start.lat + (end.lat - start.lat) * fraction;
-    const lng = start.lng + (end.lng - start.lng) * fraction;
-    intermediatePoints.push({ lat, lng });
+/**
+ * Calculate total route distance
+ */
+const calculateTotalDistance = (route) => {
+  let totalDistance = 0;
+  for (let i = 1; i < route.length; i++) {
+    totalDistance += calculateDistance(route[i-1].location, route[i].location);
   }
-
-  return [start, ...intermediatePoints, end];
+  return totalDistance;
 };
 
-// Function to snap coordinates to nearest road with multiple attempts
-const snapToRoad = async (point, attempt = 0) => {
-  const maxAttempts = 3;
-  const baseRadius = 1000; // Start with 1km
-  const radiusMultiplier = 2; // Double the radius each attempt
+/**
+ * Convert optimized route back to waypoint format
+ */
+const convertToWaypoints = (optimizedRoute) => {
+  return optimizedRoute.map((point, index) => ({
+    ...point,
+    order: index
+  }));
+};
+
+/**
+ * Calculate route with fallback chain
+ */
+const calculateRouteWithFallback = async (waypoints) => {
+  console.log('Calculating route with fallback chain');
   
+  // Try MapQuest API with retries
+  for (let attempt = 1; attempt <= MAPQUEST_CONFIG.maxRetries; attempt++) {
+    try {
+      console.log(`MapQuest API attempt ${attempt}/${MAPQUEST_CONFIG.maxRetries}`);
+      const route = await callMapQuestAPI(waypoints);
+      return route;
+    } catch (error) {
+      console.warn(`MapQuest API attempt ${attempt} failed:`, error.message);
+      
+      if (attempt === MAPQUEST_CONFIG.maxRetries) {
+        console.log('All MapQuest attempts failed, trying fallback');
+        break;
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, MAPQUEST_CONFIG.retryDelay * attempt));
+    }
+  }
+  
+  // Fallback to OpenStreetMap
   try {
-    const radius = baseRadius * Math.pow(radiusMultiplier, attempt);
-    console.log(`Attempting to snap coordinates (attempt ${attempt + 1}) with radius ${radius}m:`, point);
+    console.log('Trying OpenStreetMap fallback');
+    return await callOpenStreetMapAPI(waypoints);
+  } catch (error) {
+    console.warn('OpenStreetMap fallback failed:', error.message);
+  }
+  
+  // Final fallback to straight-line calculation
+  console.log('Using straight-line fallback');
+  return createStraightLineRoute(waypoints);
+};
+
+/**
+ * Call MapQuest API with proper formatting
+ */
+const callMapQuestAPI = async (waypoints) => {
+  if (!MAPQUEST_CONFIG.apiKey || MAPQUEST_CONFIG.apiKey === 'YOUR_MAPQUEST_API_KEY') {
+    throw new Error('MapQuest API key not configured');
+  }
+  
+  // Format waypoints for MapQuest API
+    const locations = waypoints.map(waypoint => {
+      const { lat, lng } = waypoint.location;
+    // MapQuest expects "lat,lng" format
+      return `${lat},${lng}`;
+  });
+
+  // Build API URL
+  const url = new URL(`${MAPQUEST_CONFIG.baseUrl}/route`);
+  url.searchParams.append('key', MAPQUEST_CONFIG.apiKey);
+  url.searchParams.append('from', locations[0]);
+  url.searchParams.append('to', locations[locations.length - 1]);
     
-    const response = await fetch('https://api.openrouteservice.org/v2/snap', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': `Bearer ${OPENROUTE_API_KEY}`
-      },
-      body: JSON.stringify({
-        locations: [[point.lng, point.lat]],
-        radius: radius
-      })
+    // Add waypoints if there are more than 2 points
+  if (locations.length > 2) {
+    const intermediateWaypoints = locations.slice(1, -1);
+      url.searchParams.append('waypoints', intermediateWaypoints.join('|'));
+    }
+    
+  // API parameters
+    url.searchParams.append('outFormat', 'json');
+    url.searchParams.append('routeType', 'fastest');
+  url.searchParams.append('unit', 'k'); // kilometers
+    url.searchParams.append('narrativeType', 'none');
+    url.searchParams.append('shapeFormat', 'raw');
+    url.searchParams.append('generalize', '0');
+
+  console.log('MapQuest API request:', {
+    url: url.toString().replace(MAPQUEST_CONFIG.apiKey, '***'),
+    waypoints: locations.length
+  });
+
+  // Make API request
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(MAPQUEST_CONFIG.timeout)
     });
 
     if (!response.ok) {
-      if (attempt < maxAttempts - 1) {
-        console.log(`Snap attempt ${attempt + 1} failed, trying with larger radius...`);
-        return snapToRoad(point, attempt + 1);
-      }
-      console.warn('All snap attempts failed, using original point');
-      return point;
+    const errorText = await response.text();
+    throw new Error(`MapQuest API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     const data = await response.json();
-    if (data.locations && data.locations[0]) {
-      const snapped = data.locations[0];
-      const snappedPoint = { lat: snapped[1], lng: snapped[0] };
-      
-      // Verify the snapped point is actually on a road
-      const isOnRoad = await verifyPointOnRoad(snappedPoint);
-      if (isOnRoad) {
-        console.log('Successfully snapped to road:', { original: point, snapped: snappedPoint });
-        return snappedPoint;
-      } else if (attempt < maxAttempts - 1) {
-        console.log('Snapped point not on road, trying again with larger radius...');
-        return snapToRoad(point, attempt + 1);
-      }
+
+    if (!data.route || data.route.routeError) {
+      throw new Error(data.route?.routeError?.errorCode || 'Route calculation failed');
     }
-    
-    if (attempt < maxAttempts - 1) {
-      return snapToRoad(point, attempt + 1);
-    }
-    return point;
-  } catch (error) {
-    console.warn(`Error in snap attempt ${attempt + 1}:`, error);
-    if (attempt < maxAttempts - 1) {
-      return snapToRoad(point, attempt + 1);
-    }
-    return point;
-  }
+
+  return transformMapQuestResponse(data, waypoints);
 };
 
-// Function to verify if a point is on a road
-const verifyPointOnRoad = async (point) => {
-  try {
-    const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
-        'Authorization': `Bearer ${OPENROUTE_API_KEY}`
+/**
+ * Call OpenStreetMap API (fallback)
+ */
+const callOpenStreetMapAPI = async (waypoints) => {
+  // OpenStreetMap OSRM API
+  const locations = waypoints.map(waypoint => {
+    const { lng, lat } = waypoint.location; // OSRM expects lng,lat
+    return `${lng},${lat}`;
+  });
+  
+  const url = `https://router.project-osrm.org/route/v1/driving/${locations.join(';')}?overview=full&geometries=geojson`;
+  
+  console.log('OpenStreetMap API request:', { url, waypoints: locations.length });
+  
+  const response = await fetch(url, {
+    method: 'GET',
+    signal: AbortSignal.timeout(MAPQUEST_CONFIG.timeout)
+  });
+  
+  if (!response.ok) {
+    throw new Error(`OpenStreetMap API error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  
+  if (!data.routes || data.routes.length === 0) {
+    throw new Error('No route found');
+  }
+  
+  return transformOSRMResponse(data, waypoints);
+};
+
+/**
+ * Create straight-line route (final fallback)
+ */
+const createStraightLineRoute = (waypoints) => {
+  console.log('Creating straight-line route');
+  
+  const coordinates = waypoints.map(waypoint => [
+    waypoint.location.lng,
+    waypoint.location.lat
+  ]);
+
+  let totalDistance = 0;
+  for (let i = 1; i < coordinates.length; i++) {
+    const prev = coordinates[i - 1];
+    const curr = coordinates[i];
+    totalDistance += calculateDistance(
+      { lat: prev[1], lng: prev[0] },
+      { lat: curr[1], lng: curr[0] }
+    );
+  }
+  
+  return {
+    type: 'FeatureCollection',
+    features: [{
+    type: 'Feature',
+    geometry: {
+      type: 'LineString',
+      coordinates: coordinates
+    },
+    properties: {
+      summary: {
+        distance: totalDistance,
+          duration: totalDistance * 1.5, // Rough estimate: 1 km = 1.5 minutes
+        waypoints: waypoints.map((wp, index) => ({
+          ...wp,
+          order: index
+        }))
+      }
+    }
+    }],
+    properties: {
+      summary: {
+        distance: totalDistance,
+        duration: totalDistance * 1.5
       },
-      body: JSON.stringify({
-        coordinates: [[point.lng, point.lat], [point.lng, point.lat]],
-        instructions: false,
-        preference: 'fastest',
-        units: 'm',
-        language: 'en',
-        geometry_simplify: true
-      })
-    });
-
-    return response.ok;
-  } catch (error) {
-    console.warn('Error verifying point on road:', error);
-    return false;
-  }
-};
-
-// Function to validate and snap coordinates
-const validateAndSnapCoordinates = async (coordinates) => {
-  const snappedCoordinates = [];
-  for (const coord of coordinates) {
-    const snapped = await snapToRoad({ lat: coord[1], lng: coord[0] });
-    snappedCoordinates.push([snapped.lng, snapped.lat]);
-  }
-  return snappedCoordinates;
-};
-
-// Function to calculate a single route segment with improved retry logic
-const calculateRouteSegment = async (start, end, retryCount = 0) => {
-  const maxRetries = 3;
-  const baseRadius = 1000;
-  const radiusMultiplier = 2;
-
-  try {
-    // Snap both start and end points to nearest road with increasing radius
-    const radius = baseRadius * Math.pow(radiusMultiplier, retryCount);
-    console.log(`Calculating route segment (attempt ${retryCount + 1}) with radius ${radius}m`);
-    
-    const [snappedStart, snappedEnd] = await Promise.all([
-      snapToRoad({ ...start, radius }),
-      snapToRoad({ ...end, radius })
-    ]);
-
-    // Try to find a route between the snapped points
-    const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
-        'Authorization': `Bearer ${OPENROUTE_API_KEY}`
-      },
-      body: JSON.stringify({
-        coordinates: [[snappedStart.lng, snappedStart.lat], [snappedEnd.lng, snappedEnd.lat]],
-        instructions: true,
-        preference: 'fastest',
-        units: 'm',
-        language: 'en',
-        geometry_simplify: true,
-        continue_straight: false, // Allow the route to take turns
-        radiuses: [radius, radius] // Search radius for each point
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.warn(`Route calculation attempt ${retryCount + 1} failed:`, errorData);
-      
-      if (retryCount < maxRetries - 1) {
-        console.log(`Retrying with increased radius...`);
-        return calculateRouteSegment(start, end, retryCount + 1);
-      }
-      
-      throw new Error(errorData.error?.message || 'Failed to calculate route segment');
-    }
-
-    const data = await response.json();
-    
-    // Verify the route is valid
-    if (!data.features?.[0]?.geometry?.coordinates?.length) {
-      if (retryCount < maxRetries - 1) {
-        console.log('Invalid route geometry, retrying...');
-        return calculateRouteSegment(start, end, retryCount + 1);
-      }
-      throw new Error('Invalid route geometry');
-    }
-
-    // Check if the route is too short or too long compared to direct distance
-    const directDistance = calculateDistance(snappedStart, snappedEnd);
-    const routeDistance = data.features[0].properties.summary.distance;
-    
-    if (routeDistance < 10 || routeDistance > directDistance * 3) {
-      if (retryCount < maxRetries - 1) {
-        console.log('Route distance seems invalid, retrying...');
-        return calculateRouteSegment(start, end, retryCount + 1);
+      metadata: {
+        provider: 'straight-line',
+        calculatedAt: new Date().toISOString()
       }
     }
-
-    return data;
-  } catch (error) {
-    if (retryCount < maxRetries - 1) {
-      console.log(`Error in attempt ${retryCount + 1}, retrying...`);
-      return calculateRouteSegment(start, end, retryCount + 1);
-    }
-    throw error;
-  }
+  };
 };
 
-// Function to create a fallback route that follows roads where possible
-const createFallbackRoute = async (start, end) => {
-  try {
-    // Try to find intermediate points that might be on roads
-    const midPoint = {
-      lat: (start.lat + end.lat) / 2,
-      lng: (start.lng + end.lng) / 2
-    };
-
-    // Try to snap the midpoint to a road
-    const snappedMidPoint = await snapToRoad(midPoint);
-    
-    // Try to calculate routes through the snapped midpoint
-    const firstSegment = await calculateRouteSegment(start, snappedMidPoint);
-    const secondSegment = await calculateRouteSegment(snappedMidPoint, end);
-
-    if (firstSegment && secondSegment) {
-      return mergeRouteSegments([firstSegment, secondSegment]);
+/**
+ * Transform MapQuest response to GeoJSON
+ */
+const transformMapQuestResponse = (data, waypoints) => {
+  const route = data.route;
+  const shape = route.shape;
+  
+  // Parse shape points
+  const coordinates = shape.shapePoints.map((point, index) => {
+    if (index % 2 === 0) {
+      return [shape.shapePoints[index + 1], point]; // lng, lat
     }
-  } catch (error) {
-    console.warn('Failed to create fallback route through midpoint:', error);
-  }
+    return null;
+  }).filter(Boolean);
 
-  // If all else fails, create a direct line
   return {
     type: 'FeatureCollection',
     features: [{
       type: 'Feature',
-      properties: {
-        segments: [],
-        summary: {
-          distance: calculateDistance(start, end),
-          duration: calculateDistance(start, end) / 13.89
-        }
-      },
       geometry: {
         type: 'LineString',
-        coordinates: [[start.lng, start.lat], [end.lng, end.lat]]
+        coordinates: coordinates
+      },
+      properties: {
+        summary: {
+          distance: route.distance,
+          duration: route.time,
+          waypoints: waypoints.map((wp, index) => ({
+            ...wp,
+            order: index
+          }))
+        }
       }
-    }]
+    }],
+    properties: {
+      summary: {
+        distance: route.distance,
+        duration: route.time
+      },
+      metadata: {
+        provider: 'mapquest',
+        calculatedAt: new Date().toISOString()
+      }
+    }
   };
 };
 
-// Function to merge route segments
-const mergeRouteSegments = (segments) => {
-  if (!segments.length) return null;
-
-  const mergedFeature = {
-    type: 'Feature',
-    properties: {
-      segments: [],
-      summary: {
-        distance: 0,
-        duration: 0
+/**
+ * Transform OSRM response to GeoJSON
+ */
+const transformOSRMResponse = (data, waypoints) => {
+  const route = data.routes[0];
+  
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: route.geometry,
+      properties: {
+        summary: {
+          distance: route.distance / 1000, // Convert to km
+          duration: route.duration / 60, // Convert to minutes
+          waypoints: waypoints.map((wp, index) => ({
+            ...wp,
+            order: index
+          }))
+        }
       }
-    },
-    geometry: {
-      type: 'LineString',
-      coordinates: []
+    }],
+    properties: {
+      summary: {
+        distance: route.distance / 1000,
+        duration: route.duration / 60
+      },
+      metadata: {
+        provider: 'openstreetmap',
+        calculatedAt: new Date().toISOString()
+      }
     }
   };
+};
 
-  segments.forEach((segment, index) => {
-    if (!segment.features?.[0]) return;
+/**
+ * Cache management
+ */
+const generateCacheKey = (waypoints) => {
+  const waypointString = waypoints.map(wp => `${wp.location.lat},${wp.location.lng}`).join('|');
+  return `route_${btoa(waypointString).slice(0, 32)}`;
+};
 
-    const feature = segment.features[0];
+const getCachedRoute = async (cacheKey) => {
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      const { route, timestamp } = JSON.parse(cached);
+      if (Date.now() - timestamp < CACHE_CONFIG.clientTTL) {
+        return route;
+      }
+      // Remove expired cache
+      localStorage.removeItem(cacheKey);
+    }
+  } catch (error) {
+    console.warn('Cache read error:', error);
+  }
+  return null;
+};
+
+const cacheRoute = async (cacheKey, route) => {
+  try {
+    const cacheData = {
+      route,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(cacheKey, JSON.stringify(cacheData));
     
-    // Merge coordinates (skip first point of subsequent segments to avoid duplicates)
-    if (index === 0) {
-      mergedFeature.geometry.coordinates.push(...feature.geometry.coordinates);
-    } else {
-      mergedFeature.geometry.coordinates.push(...feature.geometry.coordinates.slice(1));
-    }
+    // Clean up old cache entries
+    cleanupCache();
+  } catch (error) {
+    console.warn('Cache write error:', error);
+  }
+};
 
-    // Merge segments and summary
-    if (feature.properties.segments) {
-      mergedFeature.properties.segments.push(...feature.properties.segments);
-    }
+const cleanupCache = () => {
+  try {
+    const keys = Object.keys(localStorage);
+    const routeKeys = keys.filter(key => key.startsWith('route_'));
     
-    if (feature.properties.summary) {
-      mergedFeature.properties.summary.distance += feature.properties.summary.distance;
-      mergedFeature.properties.summary.duration += feature.properties.summary.duration;
+    if (routeKeys.length > CACHE_CONFIG.maxCacheSize) {
+      // Remove oldest entries
+      const sortedKeys = routeKeys.sort((a, b) => {
+        const aData = JSON.parse(localStorage.getItem(a) || '{}');
+        const bData = JSON.parse(localStorage.getItem(b) || '{}');
+        return (aData.timestamp || 0) - (bData.timestamp || 0);
+      });
+      
+      const keysToRemove = sortedKeys.slice(0, routeKeys.length - CACHE_CONFIG.maxCacheSize);
+      keysToRemove.forEach(key => localStorage.removeItem(key));
     }
-  });
+  } catch (error) {
+    console.warn('Cache cleanup error:', error);
+  }
+};
+
+/**
+ * Mock data for development
+ */
+export const getMockRoute = (scenario = 'basic') => {
+  const mockScenarios = {
+    basic: {
+      waypoints: [
+        { type: 'origin', location: { lat: 40.7128, lng: -74.0060 } },
+        { type: 'pickup', location: { lat: 40.7589, lng: -73.9851 } },
+        { type: 'pickup', location: { lat: 40.7505, lng: -73.9934 } },
+        { type: 'destination', location: { lat: 40.7484, lng: -73.9857 } }
+      ],
+      distance: 8.5,
+      duration: 25
+    },
+    medium: {
+      waypoints: [
+        { type: 'origin', location: { lat: 40.7128, lng: -74.0060 } },
+        { type: 'pickup', location: { lat: 40.7589, lng: -73.9851 } },
+        { type: 'pickup', location: { lat: 40.7505, lng: -73.9934 } },
+        { type: 'pickup', location: { lat: 40.7421, lng: -73.9911 } },
+        { type: 'pickup', location: { lat: 40.7336, lng: -73.9887 } },
+        { type: 'destination', location: { lat: 40.7484, lng: -73.9857 } }
+      ],
+      distance: 12.3,
+      duration: 35
+    },
+    max: {
+      waypoints: [
+        { type: 'origin', location: { lat: 40.7128, lng: -74.0060 } },
+        { type: 'pickup', location: { lat: 40.7589, lng: -73.9851 } },
+        { type: 'pickup', location: { lat: 40.7505, lng: -73.9934 } },
+        { type: 'pickup', location: { lat: 40.7421, lng: -73.9911 } },
+        { type: 'pickup', location: { lat: 40.7336, lng: -73.9887 } },
+        { type: 'pickup', location: { lat: 40.7251, lng: -73.9893 } },
+        { type: 'pickup', location: { lat: 40.7166, lng: -73.9869 } },
+        { type: 'pickup', location: { lat: 40.7081, lng: -73.9845 } },
+        { type: 'destination', location: { lat: 40.7484, lng: -73.9857 } }
+      ],
+      distance: 18.7,
+      duration: 52
+    }
+  };
+  
+  const scenarioData = mockScenarios[scenario] || mockScenarios.basic;
 
   return {
     type: 'FeatureCollection',
-    features: [mergedFeature]
+    features: [{
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: scenarioData.waypoints.map(wp => [wp.location.lng, wp.location.lat])
+      },
+      properties: {
+        summary: {
+          distance: scenarioData.distance,
+          duration: scenarioData.duration,
+          waypoints: scenarioData.waypoints.map((wp, index) => ({
+            ...wp,
+            order: index
+          }))
+        }
+      }
+    }],
+    properties: {
+      summary: {
+        distance: scenarioData.distance,
+        duration: scenarioData.duration
+      },
+      metadata: {
+        provider: 'mock',
+        scenario,
+        calculatedAt: new Date().toISOString()
+      }
+    }
   };
 };
 
-// Function to optimize pickup order using nearest neighbor algorithm
-const optimizePickupOrder = (start, passengers, destination) => {
-  if (!passengers.length) return [];
-
-  let remainingPassengers = [...passengers];
-  let currentPoint = start;
-  let optimizedOrder = [];
-
-  while (remainingPassengers.length > 0) {
-    let nearestIndex = 0;
-    let minDistance = Infinity;
-
-    remainingPassengers.forEach((passenger, index) => {
-      const distance = calculateDistance(currentPoint, passenger);
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearestIndex = index;
-      }
-    });
-
-    optimizedOrder.push(remainingPassengers[nearestIndex]);
-    currentPoint = remainingPassengers[nearestIndex];
-    remainingPassengers.splice(nearestIndex, 1);
-  }
-
-  return optimizedOrder;
-};
-
-export const calculateRoute = async (waypoints) => {
-  if (!Array.isArray(waypoints) || waypoints.length < 2) {
-    console.error('Invalid waypoints:', waypoints);
-    throw new Error('At least two waypoints are required');
-  }
-
+/**
+ * Test functions
+ */
+export const testMapQuestAPI = async () => {
   try {
-    console.log('Starting route calculation with waypoints:', waypoints);
-
-    // Validate and snap all waypoint coordinates
-    const validatedCoordinates = await validateAndSnapCoordinates(
-      waypoints.map(wp => [wp.location.lng, wp.location.lat])
-    );
-
-    console.log('Validated coordinates:', validatedCoordinates);
-
-    // Try to calculate the full route first
-    try {
-      const response = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
-          'Authorization': `Bearer ${OPENROUTE_API_KEY}`
-        },
-        body: JSON.stringify({
-          coordinates: validatedCoordinates,
-          instructions: true,
-          preference: 'fastest',
-          units: 'm',
-          language: 'en',
-          geometry_simplify: true,
-          continue_straight: false,
-          radiuses: validatedCoordinates.map(() => 2000) // 2km search radius for each point
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Route calculation failed:', errorData);
-        throw new Error(errorData.error?.message || 'Failed to calculate route');
-      }
-
-      const routeData = await response.json();
-      
-      // Add waypoint information to the route data
-      routeData.waypoints = waypoints.map((wp, index) => ({
-        ...wp,
-        order: index,
-        type: wp.type || (index === 0 ? 'start' : index === waypoints.length - 1 ? 'destination' : 'pickup')
-      }));
-
-      console.log('Route calculated successfully:', routeData);
-      return routeData;
-    } catch (error) {
-      console.warn('Full route calculation failed, falling back to segmented approach:', error);
-      
-      // Fall back to segmented approach
-      const segments = [];
-      
-      // Calculate route segments between consecutive waypoints
-      for (let i = 0; i < waypoints.length - 1; i++) {
-        try {
-          console.log(`Calculating segment ${i + 1}/${waypoints.length - 1}`);
-          const segment = await calculateRouteSegment(
-            waypoints[i].location,
-            waypoints[i + 1].location
-          );
-          segments.push(segment);
-        } catch (error) {
-          console.warn(`Failed to calculate segment ${i}, trying fallback:`, error);
-          const fallbackSegment = await createFallbackRoute(
-            waypoints[i].location,
-            waypoints[i + 1].location
-          );
-          segments.push(fallbackSegment);
-        }
-      }
-      
-      const mergedRoute = mergeRouteSegments(segments);
-      
-      // Add waypoint information to the merged route
-      if (mergedRoute) {
-        mergedRoute.waypoints = waypoints.map((wp, index) => ({
-          ...wp,
-          order: index,
-          type: wp.type || (index === 0 ? 'start' : index === waypoints.length - 1 ? 'destination' : 'pickup')
-        }));
-      }
-      
-      console.log('Segmented route calculated successfully:', mergedRoute);
-      return mergedRoute;
-    }
+    const testWaypoints = [
+      { type: 'origin', location: { lat: 40.7128, lng: -74.0060 } },
+      { type: 'destination', location: { lat: 40.7589, lng: -73.9851 } }
+    ];
+    
+    const route = await callMapQuestAPI(testWaypoints);
+    console.log('MapQuest API test successful:', route);
+    return { success: true, route };
   } catch (error) {
-    console.error('Error in calculateRoute:', error);
-    throw error;
+    console.error('MapQuest API test failed:', error);
+    return { success: false, error: error.message };
   }
 };
 
-export const getTrafficInfo = async (route) => {
+export const testVRPAlgorithm = async () => {
   try {
-    if (!route || !route.features || !route.features[0]) {
-      throw new Error('Invalid route data');
-    }
-
-    const response = await fetch('https://api.openrouteservice.org/v2/traffic/geojson', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENROUTE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({
-        geometry: route.features[0].geometry,
-        radius: 1000 // meters
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Traffic info failed:', errorData);
-      if (errorData.error) {
-        throw new Error(errorData.error.message || 'Failed to get traffic info');
-      }
-      throw new Error(`Failed to get traffic info: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    return data;
+    const testWaypoints = [
+      { type: 'origin', location: { lat: 40.7128, lng: -74.0060 } },
+      { type: 'pickup', location: { lat: 40.7589, lng: -73.9851 } },
+      { type: 'pickup', location: { lat: 40.7505, lng: -73.9934 } },
+      { type: 'pickup', location: { lat: 40.7421, lng: -73.9911 } },
+      { type: 'destination', location: { lat: 40.7484, lng: -73.9857 } }
+    ];
+    
+    const optimizedWaypoints = await optimizeRouteWithVRP(testWaypoints, {});
+    console.log('VRP algorithm test successful:', optimizedWaypoints);
+    return { success: true, waypoints: optimizedWaypoints };
   } catch (error) {
-    console.error('Error getting traffic info:', error);
-    throw new Error(error.message || 'Failed to get traffic info');
+    console.error('VRP algorithm test failed:', error);
+    return { success: false, error: error.message };
   }
 }; 

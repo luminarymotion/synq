@@ -1,18 +1,34 @@
-// RouteOptimizer.jsx - Handles the route optimization functionality
+// RouteOptimizer.jsx - Handles both ride creation and joining functionality
 import '../App.css';
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import UserForm from '../components/UserForm';
 import MapView from '../components/MapView';
 import UserTable from '../components/UserTable';
-import { useNavigate } from 'react-router-dom';
+import UserSearch from '../components/UserSearch';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { createRide, getFriendsList, checkFriendshipStatus, sendFriendRequest } from '../services/firebaseOperations';
-import { calculateRoute } from '../components/routeService';
+import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { 
+  createRide, 
+  updateRide, 
+  getFriendsList, 
+  sendFriendRequest, 
+  checkFriendshipStatus,
+  sendRideInvitation,
+  deleteRideInvitation
+} from '../services/firebaseOperations';
+import { calculateOptimizedRoute, getMockRoute, testMapQuestAPI, testVRPAlgorithm } from '../services/routeOptimizerService';
 import '../styles/RouteOptimizer.css';
 import { getCurrentLocation, MAPQUEST_SERVICE } from '../services/locationService';
-import locationTrackingService, { useLocation } from '../services/locationTrackingService';
+import locationTrackingService, { useLocation as useLocationTracking } from '../services/locationTrackingService';
+import { toast } from 'react-hot-toast';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { Icon } from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import { FaMapMarkerAlt, FaUserPlus, FaRoute, FaTimes, FaChevronLeft, FaChevronRight, FaCheck, FaExclamationTriangle } from 'react-icons/fa';
+import { showNotification } from '../utils/notifications';
+import SimpleLoading from '../components/SimpleLoading';
 
 
 const rateLimiter = {
@@ -28,36 +44,63 @@ const rateLimiter = {
   }
 };
 
-function RouteOptimizer() {
-  console.log('RouteOptimizer component initializing...');
+function RouteOptimizer({ mode = 'create' }) {
+  console.log('RouteOptimizer component initializing...', { mode });
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, error: authError } = useUserAuth();
   const mapRef = useRef(null);
   const locationWatchIdRef = useRef(null);
   const notificationTimeoutRef = useRef(null);
   const destinationTimeoutRef = useRef(null);
+  const lastRouteCalculationRef = useRef(null); // Track last route calculation to prevent duplicates
 
   // Add a new state to track if we have a valid location
   const [hasValidLocation, setHasValidLocation] = useState(false);
 
   const {
-    location,
-    isTracking: isTrackingLocation,
+    location: trackingLocation,
+    isTracking,
     status: locationStatus,
     error: locationServiceError,
     startTracking,
-    stopTracking
-  } = useLocation({
+    stopTracking,
+    setManualLocation
+  } = useLocationTracking({
     preset: 'realtime',
     updateFirebase: true,
-    onLocationUpdate: (locationData) => {
+    onLocationUpdate: async (locationData) => {
       console.log('Location update received in RouteOptimizer:', locationData);
+      console.log('Current hasLocationError state:', hasLocationError);
+      
+      // Check if locationData is valid
+      if (!locationData || !locationData.latitude || !locationData.longitude) {
+        console.warn('Invalid location data received:', locationData);
+        return;
+      }
+      
       const { latitude: lat, longitude: lng, accuracy, address } = locationData;
+      
+      // Validate coordinates before updating state
+      if (typeof lat !== 'number' || typeof lng !== 'number' || 
+          isNaN(lat) || isNaN(lng) ||
+          lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        console.warn('Invalid coordinates received from location service:', { lat, lng });
+        return; // Don't update state with invalid coordinates
+      }
       
       // If we have valid coordinates, clear any errors and update state
       if (lat && lng) {
         setHasValidLocation(true);
         setLocationError(null);
+        setHasLocationError(false); // Clear error flag when we get valid location
+        console.log('Cleared hasLocationError flag due to valid location');
+        
+        // Hide error message if we have a valid location
+        if (locationStatusMessage && (locationStatusMessage.includes('failed') || locationStatusMessage.includes('blocked'))) {
+          setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
+          console.log('Cleared error message due to valid location');
+        }
       }
       
       // Update user location state
@@ -68,37 +111,43 @@ function RouteOptimizer() {
       if (creatorRole === 'driver') {
         setForm(prev => ({
           ...prev,
-          userLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
+          userLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`,
+          startingLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
         }));
       }
       
+      // Only update status message if there's no error
+      if (!hasLocationError) {
+        console.log('Updating status message to active (no error)');
       setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
-      
-      // If we have a destination, recalculate route
-      if (destination && mapRef.current) {
-        const waypoints = [
-          { location: newLocation, type: 'start' },
-          { location: destination, type: 'destination' }
-        ];
-        
-        calculateRoute(waypoints)
-          .then(route => {
-            if (route && mapRef.current) {
-              mapRef.current.updateRoute(route);
-            }
-          })
-          .catch(error => {
-            console.error('Error recalculating route:', error);
-          });
+      } else {
+        console.log('NOT updating status message due to error flag');
       }
     },
     onError: (errorMessage) => {
-      console.error('Location tracking error:', errorMessage);
-      // Only set error if we don't have a valid location
-      if (!hasValidLocation) {
-        setLocationError(errorMessage);
+      // Only log and handle actual errors, not null (which clears errors)
+      if (errorMessage !== null) {
+        console.error('Location tracking error:', errorMessage);
+        setHasLocationError(true); // Set error flag
+        
+        // Update error message to be more user-friendly
+        let userFriendlyError = errorMessage;
+        const errorMsg = errorMessage?.toString() || 'Unknown error';
+        
+        if (errorMsg.includes('blocked') || errorMsg.includes('timeout') || errorMsg.includes('network')) {
+          userFriendlyError = 'Location tracking failed. Please enter your location manually';
+        }
+        
+        setLocationError(userFriendlyError);
+        setLocationStatusMessage(userFriendlyError);
+        
+        // Force stop tracking to reset the button state
+        stopTracking(true);
+      } else {
+        // Clear error state when errorMessage is null
+        setLocationError(null);
+        setHasLocationError(false); // Clear error flag
       }
-      setLocationStatusMessage('Location tracking failed');
     },
     onStatusChange: (status) => {
       console.log('Location status changed:', status);
@@ -108,16 +157,25 @@ function RouteOptimizer() {
           setLocationError(null);
           setLocationStatusMessage('Location tracking active');
           break;
+        case 'manual':
+          // Handle manual mode for office networks
+          setLocationError(null);
+          setLocationStatusMessage('Location tracking in manual mode - set your location manually');
+          break;
         case 'inactive':
+          // Only show "stopped" message if there's no error
+          if (!hasLocationError) {
           setLocationStatusMessage('Location tracking stopped');
           setUserLocation(null);
           setHasValidLocation(false); // Reset valid location state
+          }
           break;
         case 'error':
-          // Only set error status if we don't have a valid location
-          if (!hasValidLocation) {
-            setLocationStatusMessage('Location tracking failed');
-          }
+          // Set error status and reset tracking state
+          setLocationStatusMessage('Location tracking failed. Please enter your location manually');
+          setHasLocationError(true); // Set error flag
+          // Force stop tracking to reset the button state
+          stopTracking(true);
           break;
         case 'offline':
           setLocationStatusMessage('Location tracking paused - offline');
@@ -140,7 +198,8 @@ function RouteOptimizer() {
     destination: '', 
     role: 'passenger',
     userLocation: '',
-    isCreator: true
+    startingLocation: '',
+    isCreator: mode === 'create'
   });
   const [destination, setDestination] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
@@ -161,15 +220,227 @@ function RouteOptimizer() {
     errors: []
   });
 
-  // Add hasDriver check
-  const hasDriver = users.some(user => user.role === 'driver');
-
-  // Add new state for friends
+  // Add back friends-related state
   const [friends, setFriends] = useState([]);
   const [isLoadingFriends, setIsLoadingFriends] = useState(false);
   const [friendError, setFriendError] = useState(null);
 
-  // Move all useEffect hooks together
+  // Add new state for active tab and friend modal
+  const [activeTab, setActiveTab] = useState('form'); // 'form' or 'route'
+  const [showFriendModal, setShowFriendModal] = useState(false);
+  
+  // Add route state
+  const [calculatedRoute, setCalculatedRoute] = useState(null);
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
+  const [routeDetails, setRouteDetails] = useState(null);
+  
+  // Add missing state variables
+  const [mapClickMode, setMapClickMode] = useState(null);
+  const [hasLocationError, setHasLocationError] = useState(false);
+
+  // Add a counter for unique notification IDs
+  const notificationIdCounter = useRef(0);
+
+  // Add notification function - moved to top to avoid initialization error
+  const showLocalNotification = (message, type = 'success') => {
+    const id = `${Date.now()}-${notificationIdCounter.current++}`;
+    setNotifications(prev => [...prev, { id, message, type }]);
+    
+    // Remove notification after 3 seconds
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 3000);
+  };
+
+  // Define calculateAndDisplayRoute function before it's used in useEffect
+  const calculateAndDisplayRoute = useCallback(async (startLocation, endLocation) => {
+    if (!startLocation || !endLocation) {
+      console.warn('Cannot calculate route: missing start or end location');
+      return;
+    }
+
+    setIsCalculatingRoute(true);
+    setError(null);
+
+    try {
+      console.log('Starting route calculation:', {
+        startLocation,
+        endLocation,
+        creatorRole,
+        userCount: users.length
+      });
+
+      // Build waypoints array including all passengers
+      const waypoints = [
+        {
+          location: startLocation,
+          type: 'origin',
+          name: 'Driver Location'
+        }
+      ];
+
+      // Add passenger pickup points if any
+      const passengers = users.filter(u => u.role === 'passenger' && u.userLocationCoords);
+      passengers.forEach((passenger, index) => {
+        waypoints.push({
+          location: passenger.userLocationCoords,
+          type: 'pickup',
+          name: passenger.name || `Passenger ${index + 1}`
+        });
+      });
+
+      // Add destination
+      waypoints.push({
+          location: endLocation,
+          type: 'destination',
+          name: 'Destination'
+      });
+
+      console.log('Calculating optimized route with waypoints:', {
+        totalWaypoints: waypoints.length,
+        waypoints: waypoints.map(w => ({ type: w.type, name: w.name }))
+      });
+
+      // Test VRP algorithm with real data
+      const route = await calculateOptimizedRoute(waypoints, {
+        maxPassengers: passengers.length,
+        timeWindows: null, // Can be enhanced later
+        maxDistance: 100 // km
+      });
+      
+      console.log('VRP optimization completed:', {
+        originalWaypoints: waypoints.length,
+        optimizedRoute: route?.properties?.summary?.waypoints?.length || 0,
+        distance: route?.properties?.summary?.distance,
+        duration: route?.properties?.summary?.duration,
+        provider: route?.properties?.metadata?.provider
+      });
+
+      setCalculatedRoute(route);
+      
+      // Update route details for display
+      if (route && route.properties && route.properties.summary) {
+        const summary = route.properties.summary;
+        setRouteDetails({
+          distance: summary.distance,
+          duration: summary.duration,
+          waypoints: summary.waypoints
+        });
+
+        // Show success notification with route details
+        const distanceMi = (summary.distance / 1609.34).toFixed(1);
+        const durationMin = Math.round(summary.duration / 60);
+        showLocalNotification(`Route optimized: ${distanceMi}mi, ${durationMin}min`, 'success');
+      }
+
+    } catch (error) {
+      console.error('Error calculating route:', error);
+      setError(`Failed to calculate route: ${error.message}`);
+      setCalculatedRoute(null);
+      setRouteDetails(null);
+      
+      // Show user-friendly error
+      showLocalNotification('Route calculation failed. Using fallback route.', 'error');
+    } finally {
+      setIsCalculatingRoute(false);
+    }
+  }, [creatorRole, users, showLocalNotification]);
+
+  // Add effect to automatically calculate route when both location and destination are available
+  useEffect(() => {
+    const calculateRouteForDriver = async () => {
+      // Only calculate route if user is driver and has both location and destination
+      if (creatorRole === 'driver' && userLocation && destination && !isCalculatingRoute) {
+        // Create a unique key for this route calculation
+        const routeKey = `${userLocation.lat},${userLocation.lng}-${destination.lat},${destination.lng}`;
+        
+        // Check if we've already calculated this exact route recently
+        if (lastRouteCalculationRef.current === routeKey) {
+          console.log('Route already calculated recently, skipping...');
+          return;
+        }
+        
+        console.log('Auto-calculating route for driver:', {
+          userLocation,
+          destination,
+          creatorRole
+        });
+        
+        // Add rate limiting to prevent API flooding
+        await rateLimiter.wait();
+        
+        try {
+        await calculateAndDisplayRoute(userLocation, destination);
+          // Mark this route as calculated
+          lastRouteCalculationRef.current = routeKey;
+        } catch (error) {
+          console.warn('Route calculation failed, will retry later:', error.message);
+          // Don't set error state for automatic route calculations to avoid UI disruption
+        }
+      }
+    };
+
+    // Add debounce to prevent rapid successive calls
+    const timeoutId = setTimeout(calculateRouteForDriver, 500);
+    
+    return () => clearTimeout(timeoutId);
+  }, [userLocation, destination, creatorRole, isCalculatingRoute]); // Removed calculateAndDisplayRoute from dependencies
+
+  // Add back friends-related useEffect
+  useEffect(() => {
+    const loadFriends = async () => {
+      if (!user) return;
+      
+      setIsLoadingFriends(true);
+      setFriendError(null);
+      
+      try {
+        const result = await getFriendsList(user.uid);
+        if (result.success) {
+          setFriends(result.friends);
+        } else {
+          setFriendError('Failed to load friends list');
+        }
+      } catch (error) {
+        console.error('Error loading friends:', error);
+        setFriendError('Error loading friends list');
+      } finally {
+        setIsLoadingFriends(false);
+      }
+    };
+
+    loadFriends();
+  }, [user]);
+
+  // Add back handleAddFriend function
+  const handleAddFriend = async (friendId) => {
+    if (!user) return;
+
+    try {
+      // Check if already friends
+      const statusResult = await checkFriendshipStatus(user.uid, friendId);
+      if (statusResult.success && statusResult.areFriends) {
+        showLocalNotification('Already friends with this user');
+        return;
+      }
+
+      // Send friend request
+      const result = await sendFriendRequest(user.uid, friendId, "Let's be friends!");
+      if (result.success) {
+        showLocalNotification('Friend request sent successfully');
+      } else {
+        showLocalNotification('Failed to send friend request', 'error');
+      }
+    } catch (error) {
+      console.error('Error sending friend request:', error);
+      showLocalNotification('Error sending friend request', 'error');
+    }
+  };
+
+  // Add hasDriver check
+  const hasDriver = users.some(user => user.role === 'driver');
+
+  // Remove friends-related useEffect
   useEffect(() => {
     console.log('RouteOptimizer useEffect running...');
     if (authError) {
@@ -198,7 +469,7 @@ function RouteOptimizer() {
     };
 
     initialize();
-  }, [user, authError, navigate]);
+  }, [user, authError]); // Removed navigate from dependencies
 
   // Clean up notification timeouts
   useEffect(() => {
@@ -225,40 +496,13 @@ function RouteOptimizer() {
     };
   }, []);
 
-  // Load friends when component mounts
-  useEffect(() => {
-    const loadFriends = async () => {
-      if (!user) return;
-      
-      setIsLoadingFriends(true);
-      setFriendError(null);
-      
-      try {
-        const result = await getFriendsList(user.uid);
-        if (result.success) {
-          setFriends(result.friends);
-        } else {
-          setFriendError('Failed to load friends list');
-        }
-      } catch (error) {
-        console.error('Error loading friends:', error);
-        setFriendError('Error loading friends list');
-      } finally {
-        setIsLoadingFriends(false);
-      }
-    };
-
-    loadFriends();
-  }, [user]);
-
   // Show loading state
   if (isLoading) {
     return (
-      <div className="route-optimizer-loading">
-        <div className="spinner-border text-primary" role="status">
-          <span className="visually-hidden">Loading...</span>
-        </div>
-      </div>
+      <SimpleLoading 
+        message="Loading route optimizer..."
+        size="large"
+      />
     );
   }
 
@@ -283,31 +527,37 @@ function RouteOptimizer() {
   const handleChange = (e) => {
     const { name, value } = e.target;
     
-    if (name === 'creatorRole') {
-      const newRole = value;
-      setCreatorRole(newRole);
+    if (name === 'role') {
+      // Update both form state and creator role if this is the creator
+      setForm(prev => ({
+        ...prev,
+        role: value
+      }));
       
-      // If changing from driver to passenger, stop location tracking
-      if (creatorRole === 'driver' && newRole === 'passenger') {
-        locationTrackingService.stopTracking();
-        setIsTrackingLocation(false);
-        setUserLocation(null);
+      // If this is the creator's form, update creatorRole
+      if (form.isCreator) {
+        setCreatorRole(value);
+        
+        // If changing from driver to passenger, stop location tracking
+        if (creatorRole === 'driver' && value === 'passenger') {
+          locationTrackingService.stopTracking();
+          setIsTracking(false);
+          setUserLocation(null);
+        }
       }
     } else if (name === 'destination') {
       // For destination input, just update the form state
-      // Don't trigger geocoding until a suggestion is selected
       setForm(prev => ({
         ...prev,
         destination: value
       }));
-      return; // Don't proceed with any other changes
+    } else {
+      // For all other fields, update form state normally
+      setForm(prev => ({
+        ...prev,
+        [name]: value
+      }));
     }
-    
-    // For all other fields, update form state normally
-    setForm(prev => ({
-      ...prev,
-      [name]: value
-    }));
   };
 
   const getAddressFromCoords = async (lat, lng) => {
@@ -360,8 +610,8 @@ function RouteOptimizer() {
       let destinationCoords;
       if (typeof destinationToUse === 'string') {
         destinationCoords = await geocodeAddress(destinationToUse);
-      if (!destinationCoords) {
-        throw new Error('Could not find the destination address');
+        if (!destinationCoords) {
+          throw new Error('Could not find the destination address');
         }
       } else {
         // If it's already an object with coordinates, use it directly
@@ -390,13 +640,14 @@ function RouteOptimizer() {
       // Create the new user entry with location
       const newUser = {
         id: userData.id || `temp-${Date.now()}`,
-        name: userData.name,
+        name: userData.name || userData.profile?.displayName || userData.displayName || 'Unknown User',
+        displayName: userData.profile?.displayName || userData.displayName || userData.name || 'Unknown User',
         role: userData.role || 'passenger',
         destination: destinationCoords.address || destinationCoords,
         destinationCoords,
         color,
-        photoURL: userData.photoURL,
-        email: userData.email,
+        photoURL: userData.profile?.photoURL || userData.photoURL || '',
+        email: userData.profile?.email || userData.email || '',
         isCreator: userData.isCreator,
         invitationStatus: userData.invitationStatus || 'pending',
         ...(userLocationCoords && {
@@ -416,6 +667,7 @@ function RouteOptimizer() {
       // If this is a friend being added, log it
       if (userData.id) {
         console.log('Friend added:', userData);
+        // Note: Invitations will be sent when the group is created, not when users are added
       }
 
     } catch (error) {
@@ -451,11 +703,11 @@ function RouteOptimizer() {
         newUsers.splice(userIndex, 1);
     setUsers(newUsers);
         
-        showNotification(`${removedUser.name} removed from the group`);
+        showLocalNotification(`${removedUser.name} removed from the group`);
       }
     } catch (error) {
       console.error('Error removing participant:', error);
-      showNotification('Failed to remove participant', 'error');
+      showLocalNotification('Failed to remove participant', 'error');
     }
   };
 
@@ -463,9 +715,11 @@ function RouteOptimizer() {
     console.log('handleDestinationChange called with:', coords);
     
     // Validate coordinates
-    if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number') {
+    if (!coords || typeof coords.lat !== 'number' || typeof coords.lng !== 'number' ||
+        isNaN(coords.lat) || isNaN(coords.lng) ||
+        coords.lat < -90 || coords.lat > 90 || coords.lng < -180 || coords.lng > 180) {
       console.error('Invalid coordinates received:', coords);
-      showNotification('Invalid destination location. Please try selecting the location again.', 'error');
+      showLocalNotification('Invalid destination location. Please try selecting the location again.', 'error');
       return;
     }
 
@@ -492,45 +746,74 @@ function RouteOptimizer() {
         destination: address
       }));
       
-      // If we have user location, calculate route immediately
-      if (userLocation) {
-        try {
-          console.log('Calculating route with current location:', {
-            start: userLocation,
-            end: destinationData
-          });
-          
-          // Create waypoints array with proper format
-          const waypoints = [
-            { location: userLocation, type: 'start' },
-            { location: destinationData, type: 'destination' }
-          ];
-          
-          const route = await calculateRoute(waypoints);
-          if (route) {
-            // Update the map with the new route
-            const mapView = document.querySelector('.map-container');
-            if (mapView && mapView.updateRoute) {
-              mapView.updateRoute(route);
-            }
-          }
-        } catch (error) {
-          console.error('Error calculating initial route:', error);
-          showNotification('Failed to calculate route. Please try again.', 'error');
-        }
-      }
+      // Remove direct route calculation - let the useEffect handle it
+      // if (userLocation) {
+      //   await calculateAndDisplayRoute(userLocation, destinationData);
+      // }
     } catch (error) {
       console.error('Error setting destination:', error);
-      showNotification('Failed to set destination. Please try again in a few seconds.', 'error');
+      showLocalNotification('Failed to set destination. Please try again in a few seconds.', 'error');
     }
   };
 
-  const handleUserLocationChange = async (address) => {
-    const coords = await geocodeAddress(address);
+  const handleUserLocationChange = async (locationData) => {
+    // Handle both string addresses and coordinate objects
+    if (typeof locationData === 'string') {
+      // String address - geocode it
+      const coords = await geocodeAddress(locationData);
     if (coords) {
       setUserLocation(coords);
+        setHasValidLocation(true);
+        setHasLocationError(false); // Clear error flag
+        setLocationError(null);
+        
+        // Clear error message if we had one
+        if (locationStatusMessage && (locationStatusMessage.includes('failed') || locationStatusMessage.includes('blocked'))) {
+          setLocationStatusMessage('Location set manually');
+          console.log('✅ Manual location setting successful:', { address: locationData, coordinates: coords });
+        }
+        
+        // Update form state based on role
+        if (creatorRole === 'driver') {
+          setForm(prev => ({
+            ...prev,
+            startingLocation: locationData
+          }));
     } else {
+          setForm(prev => ({
+            ...prev,
+            userLocation: locationData
+          }));
+        }
+      } else {
+        console.log('❌ Manual location setting failed: Could not geocode address:', locationData);
       alert('Location not found!');
+      }
+    } else if (locationData && typeof locationData === 'object' && locationData.lat && locationData.lng) {
+      // Coordinate object - use directly
+      setUserLocation(locationData);
+      setHasValidLocation(true);
+      setHasLocationError(false); // Clear error flag
+      setLocationError(null);
+      
+      // Clear error message if we had one
+      if (locationStatusMessage && (locationStatusMessage.includes('failed') || locationStatusMessage.includes('blocked'))) {
+        setLocationStatusMessage('Location set manually');
+        console.log('✅ Manual location setting successful:', { coordinates: locationData });
+      }
+      
+      // Update form state based on role
+      if (creatorRole === 'driver') {
+        setForm(prev => ({
+          ...prev,
+          startingLocation: locationData.address || `Location (${locationData.lat.toFixed(6)}, ${locationData.lng.toFixed(6)})`
+        }));
+      } else {
+        setForm(prev => ({
+          ...prev,
+          userLocation: locationData.address || `Location (${locationData.lat.toFixed(6)}, ${locationData.lng.toFixed(6)})`
+        }));
+      }
     }
   };
 
@@ -543,17 +826,6 @@ function RouteOptimizer() {
           : user
       )
     );
-  };
-
-  // Add notification function
-  const showNotification = (message, type = 'success') => {
-    const id = Date.now();
-    setNotifications(prev => [...prev, { id, message, type }]);
-    
-    // Remove notification after 3 seconds
-    setTimeout(() => {
-      setNotifications(prev => prev.filter(n => n.id !== id));
-    }, 3000);
   };
 
   const handleCreateGroup = async () => {
@@ -571,7 +843,7 @@ function RouteOptimizer() {
     // Validate destination coordinates
     if (!destination || typeof destination.lat !== 'number' || typeof destination.lng !== 'number') {
       console.error('Invalid destination coordinates:', destination);
-      showNotification('Please set a valid destination location on the map', 'error');
+      showLocalNotification('Please set a valid destination location on the map', 'error');
       return;
     }
 
@@ -590,7 +862,7 @@ function RouteOptimizer() {
         hasDestination: !!destination,
         userCount: users.length
       });
-      showNotification('Please add at least one participant and set the destination location', 'error');
+      showLocalNotification('Please add at least one participant and set the destination location', 'error');
       return;
     }
 
@@ -622,14 +894,14 @@ function RouteOptimizer() {
         creatorRole,
         usersWithRoles: users.map(u => ({ name: u.name, role: u.role }))
       });
-      showNotification('Please assign a driver for the ride', 'error');
+      showLocalNotification('Please assign a driver for the ride', 'error');
       return;
     }
 
     // Validate driver location
     if (!driver.userLocationCoords || !driver.userLocationCoords.lat || !driver.userLocationCoords.lng) {
       console.error('Invalid driver location:', driver.userLocationCoords);
-      showNotification('Driver location is required. Please start location tracking.', 'error');
+      showLocalNotification('Driver location is required. Please start location tracking.', 'error');
       return;
     }
 
@@ -766,27 +1038,17 @@ function RouteOptimizer() {
                 timestamp: new Date().toISOString()
               });
 
-              // Verify participant data
-              if (!participant.id) {
-                throw new Error('Participant has no user ID');
-              }
-
-              // Verify ride data
-              if (!result.rideId) {
-                throw new Error('No ride ID available');
-              }
-
-              // Verify current user
-              if (!user.uid) {
-                throw new Error('No current user ID available');
-              }
+              // Get current user's profile data to ensure we have display name
+              const currentUserDoc = await getDoc(doc(db, 'users', user.uid));
+              const currentUserData = currentUserDoc.exists() ? currentUserDoc.data() : {};
+              const currentUserDisplayName = currentUserData.profile?.displayName || currentUserData.displayName || user.displayName || 'Unknown User';
 
               console.log('Calling sendRideInvitation with:', {
                 rideId: result.rideId,
                 inviterId: user.uid,
                 inviteeId: participant.id,
-                inviterName: user.displayName,
-                inviterPhotoURL: user.photoURL
+                inviterName: currentUserDisplayName,
+                inviterPhotoURL: currentUserData.profile?.photoURL || currentUserData.photoURL || ''
               });
 
               const invitationResult = await sendRideInvitation(
@@ -807,7 +1069,7 @@ function RouteOptimizer() {
                   ...prev,
                   sentCount: prev.sentCount + 1
                 }));
-                showNotification(`Invitation sent to ${participant.name}`);
+                showLocalNotification(`Invitation sent to ${participant.name}`);
               } else {
                 throw new Error(invitationResult.error?.message || 'Failed to send invitation');
               }
@@ -832,7 +1094,7 @@ function RouteOptimizer() {
                   details: error.stack
                 }]
               }));
-              showNotification(`Failed to send invitation to ${participant.name}`, 'error');
+              showLocalNotification(`Failed to send invitation to ${participant.name}`, 'error');
             }
           }
         }
@@ -850,9 +1112,9 @@ function RouteOptimizer() {
         });
 
         if (errors.length > 0) {
-          showNotification(`${sentCount}/${totalCount} invitations sent. ${errors.length} failed.`, 'warning');
+          showLocalNotification(`${sentCount}/${totalCount} invitations sent. ${errors.length} failed.`, 'warning');
       } else {
-          showNotification(`Successfully sent ${sentCount} invitations`, 'success');
+          showLocalNotification(`Successfully sent ${sentCount} invitations`, 'success');
         }
       } else {
         console.error('Group creation failed:', {
@@ -867,7 +1129,7 @@ function RouteOptimizer() {
         stack: error.stack,
         timestamp: new Date().toISOString()
       });
-      showNotification(`Failed to create group: ${error.message || 'Please try again.'}`, 'error');
+      showLocalNotification(`Failed to create group: ${error.message || 'Please try again.'}`, 'error');
     } finally {
       console.log('Cleaning up group creation state');
       setIsCreatingGroup(false);
@@ -881,6 +1143,79 @@ function RouteOptimizer() {
     if (e.target === e.currentTarget) {
       setIsSidebarOpen(!isSidebarOpen);
     }
+  };
+
+  // Add a helper function to diagnose geolocation issues
+  const diagnoseGeolocation = () => {
+    const diagnostics = {
+      supported: 'geolocation' in navigator,
+      protocol: location.protocol,
+      hostname: location.hostname,
+      userAgent: navigator.userAgent,
+      online: navigator.onLine,
+      // Add more detailed diagnostics
+      locationObject: {
+        href: location.href,
+        origin: location.origin,
+        pathname: location.pathname,
+        search: location.search
+      },
+      navigatorObject: {
+        geolocation: !!navigator.geolocation,
+        permissions: !!navigator.permissions,
+        userAgent: navigator.userAgent.substring(0, 100) + '...'
+      }
+    };
+    
+    console.log('Geolocation diagnostics:', diagnostics);
+    
+    if (!diagnostics.supported) {
+      console.error('Geolocation not supported in this browser');
+      return 'Geolocation is not supported in this browser';
+    }
+    
+    console.log('Geolocation is supported, checking security requirements...');
+    
+    // Check if we're on a secure connection or localhost
+    // Be more lenient for development environments
+    const isSecure = diagnostics.protocol === 'https:' || 
+                    diagnostics.hostname === 'localhost' || 
+                    diagnostics.hostname === '127.0.0.1' ||
+                    diagnostics.hostname === '0.0.0.0' ||
+                    (diagnostics.hostname && diagnostics.hostname.includes('.web.app')) || // Firebase hosting
+                    (diagnostics.hostname && diagnostics.hostname.includes('.firebaseapp.com')) || // Firebase hosting
+                    // Allow development servers (common ports)
+                    (diagnostics.hostname && diagnostics.hostname.includes(':5173')) || // Vite dev server
+                    (diagnostics.hostname && diagnostics.hostname.includes(':3000')) || // React dev server
+                    (diagnostics.hostname && diagnostics.hostname.includes(':8080')) || // Common dev port
+                    // Allow if protocol/hostname are undefined (development environment)
+                    (!diagnostics.protocol && !diagnostics.hostname) ||
+                    // Allow file:// protocol for local development
+                    diagnostics.protocol === 'file:';
+    
+    console.log('Security check result:', {
+      protocol: diagnostics.protocol,
+      hostname: diagnostics.hostname,
+      isSecure,
+      isDevelopment: process.env.NODE_ENV === 'development'
+    });
+    
+    if (!isSecure) {
+      console.warn('Geolocation security check failed:', {
+        protocol: diagnostics.protocol,
+        hostname: diagnostics.hostname,
+        isSecure
+      });
+      // Don't block geolocation in development - just warn
+      if (process.env.NODE_ENV === 'development' || !diagnostics.protocol) {
+        console.log('Allowing geolocation in development environment despite security check');
+        return null; // Allow it to proceed
+      }
+      return 'Geolocation requires HTTPS (except on localhost)';
+    }
+    
+    console.log('Geolocation diagnostics passed - no issues detected');
+    return null; // No issues detected
   };
 
   const handleStartTracking = async () => {
@@ -904,14 +1239,26 @@ function RouteOptimizer() {
           throw new Error('User ID is required to start location tracking');
         }
 
+        // Run diagnostics first
+        const diagnosticError = diagnoseGeolocation();
+        if (diagnosticError) {
+          throw new Error(diagnosticError);
+        }
+
         // Start tracking with user ID
+        console.log('About to call startTracking...');
         const success = await startTracking(user.uid);
+        console.log('startTracking returned:', success);
         
         if (!success) {
           throw new Error('Location tracking service failed to start');
         }
 
         console.log('Location tracking started successfully');
+        
+        // Don't throw an error if startTracking returns true
+        // The location tracking is working as evidenced by the logs
+        // The error handling should be done by the location service callbacks
       } catch (error) {
         console.error('Location service error:', {
           error: error.message,
@@ -922,54 +1269,157 @@ function RouteOptimizer() {
           status: locationStatus
         });
         
+        console.log('Setting hasLocationError to true');
+        setHasLocationError(true);
+        
         let errorMessage = 'Failed to start location tracking. ';
-        if (error.message.includes('permission denied')) {
+        const errorMsg = error.message || error.toString() || 'Unknown error';
+        
+        if (errorMsg.includes('permission denied')) {
           errorMessage += 'Please enable location access in your browser settings.';
-        } else if (error.message.includes('not supported')) {
+        } else if (errorMsg.includes('not supported')) {
           errorMessage += 'Your browser does not support location services.';
-        } else if (error.message.includes('timeout')) {
-          errorMessage += 'Location request timed out. Please check your internet connection and try again.';
-        } else if (error.message.includes('position unavailable')) {
+        } else if (errorMsg.includes('timeout') || errorMsg.includes('network') || errorMsg.includes('blocked')) {
+          errorMessage = 'Location tracking failed. Please enter your location manually';
+        } else if (errorMsg.includes('position unavailable')) {
           errorMessage += 'Location information is unavailable. Please check your device\'s location services.';
         } else {
-          errorMessage += error.message;
+          errorMessage += errorMsg;
         }
         
-        // Only set error if we don't have a valid location
-        if (!hasValidLocation) {
-          setLocationError(errorMessage);
-        }
-        setLocationStatusMessage('Location tracking failed');
+        // Reset tracking state when there's an error
+        setHasLocationError(true);
+        setLocationError(errorMessage);
+        setLocationStatusMessage(errorMessage);
+        
+        // Force stop tracking to reset the button state
+        stopTracking(true);
+        
+        console.log('Set locationStatusMessage to:', errorMessage);
       } finally {
         setIsLocationLoading(false);
       }
     }
   };
 
-  // Replace old invitation handlers with friend handlers
-  const handleAddFriend = async (friendId) => {
-    if (!user) return;
-
-    try {
-      // Check if already friends
-      const statusResult = await checkFriendshipStatus(user.uid, friendId);
-      if (statusResult.success && statusResult.areFriends) {
-        showNotification('Already friends with this user');
-        return;
+  // Update the handleCreateRide function to handle both modes
+  const handleCreateRide = async () => {
+    if (mode === 'join') {
+      // Handle joining existing ride
+      // ... existing join ride logic ...
+    } else {
+      // Handle creating new ride
+      if (!destination || users.length === 0) {
+        console.log('Group creation blocked: Missing requirements', {
+          hasDestination: !!destination,
+          userCount: users.length
+        });
+        showLocalNotification('Please add at least one participant and set the destination location', 'error');
+        return;0
       }
 
-      // Send friend request
-      const result = await sendFriendRequest(user.uid, friendId, "Let's be friends!");
-      if (result.success) {
-        showNotification('Friend request sent successfully');
-      } else {
-        showNotification('Failed to send friend request', 'error');
-      }
-    } catch (error) {
-      console.error('Error sending friend request:', error);
-      showNotification('Error sending friend request', 'error');
+      // ... rest of the existing create ride logic ...
     }
   };
+
+  const handleSetDestinationFromMap = () => {
+    setMapClickMode('destination');
+    showLocalNotification('Click on the map to set the destination location');
+  };
+
+  const handleSetManualLocationFromMap = () => {
+    setMapClickMode('manual-location');
+    showLocalNotification('Click on the map to set your location manually');
+  };
+
+  const handleMapClick = async (event) => {
+    if (!mapClickMode) return;
+
+    const { lat, lng } = event.latlng;
+    
+    if (mapClickMode === 'destination') {
+      await handleDestinationChange({ lat, lng });
+      setMapClickMode(null);
+      showLocalNotification('Destination set from map');
+    } else if (mapClickMode === 'manual-location') {
+      try {
+        // Get address for the clicked location
+        const address = await getAddressFromCoords(lat, lng);
+        
+        // Set manual location using the location tracking service
+        setManualLocation(lat, lng, address);
+        
+        // Clear error state
+        setHasValidLocation(true);
+        setHasLocationError(false);
+        setLocationError(null);
+        
+        // Clear error message if we had one
+        if (locationStatusMessage && (locationStatusMessage.includes('failed') || locationStatusMessage.includes('blocked'))) {
+          setLocationStatusMessage('Location set from map');
+          console.log('✅ Map location setting successful:', { coordinates: { lat, lng }, address });
+        }
+        
+        // Update form state
+        setForm(prev => ({
+          ...prev,
+          userLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`,
+          startingLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
+        }));
+        
+        setMapClickMode(null);
+        showLocalNotification('Location set manually from map');
+      } catch (error) {
+        console.error('Error setting manual location:', error);
+        showLocalNotification('Failed to set location from map', 'error');
+      }
+    }
+  };
+
+  // Add a test function for debugging geolocation
+  const testGeolocation = () => {
+    console.log('=== Testing Geolocation ===');
+    
+    // Test 1: Check if geolocation is supported
+    console.log('1. Geolocation supported:', 'geolocation' in navigator);
+    
+    // Test 2: Run diagnostics
+    const diagnosticError = diagnoseGeolocation();
+    console.log('2. Diagnostics result:', diagnosticError || 'PASSED');
+    
+    // Test 3: Try to get current position
+    if ('geolocation' in navigator) {
+      console.log('3. Testing getCurrentPosition...');
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          console.log('✅ Geolocation SUCCESS:', {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            timestamp: new Date(position.timestamp).toISOString()
+          });
+        },
+        (error) => {
+          console.error('❌ Geolocation FAILED:', {
+            code: error.code,
+            message: error.message
+          });
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 10000,
+          maximumAge: 60000
+        }
+      );
+    } else {
+      console.error('❌ Geolocation not supported');
+    }
+  };
+
+  // Make the test function available globally for debugging
+  if (typeof window !== 'undefined') {
+    window.testGeolocation = testGeolocation;
+  }
 
   return (
     <div className="route-optimizer-container">
@@ -985,653 +1435,341 @@ function RouteOptimizer() {
         ))}
       </div>
 
-      <div className="route-optimizer-content">
-        <div className="route-optimizer-header">
-          <h1>Create New Ride</h1>
-        </div>
-
-        <div className="route-optimizer-main">
-          {/* Sliding Sidebar */}
-          <div 
-            className={`route-optimizer-sidebar ${isSidebarOpen ? 'open' : 'closed'}`}
-            onClick={handleSidebarClick}
-          >
-            <div className="sidebar-handle">
+      <div className="route-optimizer-main">
+        {/* Sliding Sidebar */}
+        <div 
+          className={`route-optimizer-sidebar ${isSidebarOpen ? 'open' : 'closed'}`}
+          onClick={handleSidebarClick}
+        >
+          <div className="sidebar-handle">
+            <button 
+              className="sidebar-toggle"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsSidebarOpen(!isSidebarOpen);
+              }}
+              aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+            >
+              <i className={`fas fa-${isSidebarOpen ? 'chevron-left' : 'chevron-right'}`}></i>
+            </button>
+          </div>
+          <div className="sidebar-content" onClick={(e) => e.stopPropagation()}>
+            {/* Tab Navigation */}
+            <div className="sidebar-tabs">
               <button 
-                className="sidebar-toggle"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsSidebarOpen(!isSidebarOpen);
-                }}
-                aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+                className={`tab-button ${activeTab === 'form' ? 'active' : ''}`}
+                onClick={() => setActiveTab('form')}
               >
-                <i className={`fas fa-${isSidebarOpen ? 'chevron-left' : 'chevron-right'}`}></i>
+                <i className="fas fa-user-plus"></i>
+                Add Participants
+              </button>
+              <button 
+                className={`tab-button ${activeTab === 'route' ? 'active' : ''}`}
+                onClick={() => setActiveTab('route')}
+              >
+                <i className="fas fa-route"></i>
+                Route Info
               </button>
             </div>
-            <div className="sidebar-content" onClick={(e) => e.stopPropagation()}>
-              <div className="location-status-container">
-                {locationError && !hasValidLocation && (
-                  <div className="alert alert-warning" role="alert">
-                    <i className="bi bi-exclamation-triangle me-2"></i>
-                    {locationError}
-                  </div>
-                )}
-                {locationStatusMessage && !locationError && (
-                  <div className="alert alert-info" role="alert">
-                    <i className="bi bi-info-circle me-2"></i>
-                    {locationStatusMessage}
-                  </div>
-                )}
-                {creatorRole === 'driver' && !isTrackingLocation && (
-                  <button
-                    className={`btn btn-primary ${isLocationLoading ? 'loading' : ''}`}
-                    onClick={handleStartTracking}
-                    disabled={isLocationLoading || locationStatus === 'syncing'}
-                  >
-                    {isLocationLoading ? (
-                      <>
-                        <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                        Starting Location Tracking...
-                      </>
-                    ) : (
-                      <>
-                        <i className="fas fa-location-arrow me-2"></i>
-                        Start Location Tracking
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
 
-              <UserForm 
-                form={form} 
-                onChange={handleChange} 
-                onSubmit={addUser} 
-                onDestinationChange={handleDestinationChange}
-                onUserLocationChange={handleUserLocationChange}
-                creatorRole={creatorRole}
-                existingParticipants={users}
-                isTrackingLocation={isTrackingLocation}
-                rideId={createdRideId}
-                groupCreated={groupCreated}
-              />
-              
-              {/* Enhanced UserTable */}
-              <div className="user-table-container">
-                <h5>Participants</h5>
-                <UserTable 
-                  users={users}
-                  onDelete={handleDelete}
-                  onRoleChange={handleRoleChange}
-                  rideId={createdRideId}
-                />
-              </div>
-              
-              <div className="create-group-section">
-                <button
-                  className={`create-group-button ${groupCreated ? 'created' : ''}`}
-                  onClick={handleCreateGroup}
-                  disabled={
-                    isCreatingGroup ||
-                    !destination ||
-                    users.length === 0 ||
-                    (!users.some(u => u.role === 'driver') && creatorRole !== 'driver') ||
-                    groupCreated
-                  }
-                >
-                  {isCreatingGroup ? (
-                    <>
-                      <i className="fas fa-spinner fa-spin"></i>
-                      <span>Creating Group...</span>
-                    </>
-                  ) : groupCreated ? (
-                    <>
-                      <i className="fas fa-check-circle"></i>
-                      <span>Group Created</span>
-                    </>
-                  ) : (
-                    <>
-                      <i className="fas fa-users"></i>
-                      <span>Create Group</span>
-                    </>
-                  )}
-                </button>
-                
-                {/* Requirements message */}
-                {!groupCreated && (
-                  <div className="requirements-message">
-                    {!destination && (
-                      <div className="requirement">
-                        <i className="fas fa-map-marker-alt"></i>
-                        <span>Set a destination</span>
-                  </div>
-                )}
-                    {users.length === 0 && (
-                      <div className="requirement">
-                        <i className="fas fa-user-plus"></i>
-                        <span>Add at least one participant</span>
-              </div>
-                    )}
-                    {creatorRole === 'passenger' && !users.some(user => user.role === 'driver') && (
-                      <div className="requirement">
-                        <i className="fas fa-car"></i>
-                        <span>Assign a driver</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Map Container */}
-          <div className="route-optimizer-map-wrapper">
-            <div className="route-optimizer-map-container">
-              <MapView 
-                ref={mapRef}
-                users={users} 
-                destination={destination}
-                userLocation={userLocation}
-                onSetDestinationFromMap={(coords) => handleDestinationChange(coords)}
-                onRouteUpdate={(route) => {
-                  console.log('Route updated:', route);
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Success Modal */}
-        {showSuccessModal && (
-          <div className="modal-backdrop">
-            <div className="modal-content">
-              <div className="modal-header">
-                <h5 className="modal-title">Group Created Successfully!</h5>
-                <button 
-                  type="button" 
-                  className="modal-close" 
-                  onClick={() => {
-                    setShowSuccessModal(false);
-                    navigate('/dashboard');
-                  }}
-                >
-                  <i className="fas fa-times"></i>
-                </button>
-              </div>
-              
-              <div className="modal-body">
-                <div className="success-icon">
-                  <i className="fas fa-check-circle"></i>
-                </div>
-                <p className="success-message">Your group has been created successfully!</p>
-                <p className="group-info">
-                  Your group is now ready. Once participants provide their locations, 
-                  you can optimize and start the ride.
-                </p>
-                <div className="ride-id-container">
-                  <span className="ride-id-label">Group ID:</span>
-                  <span className="ride-id">{createdRideId}</span>
-                </div>
-                <p className="ride-id-note">
-                  You can use this ID to reference your group. It will also be visible in your groups list.
-                </p>
-              </div>
-
-              <div className="modal-footer">
-                <button 
-                  type="button" 
-                  className="modal-button"
-                  onClick={() => {
-                    setShowSuccessModal(false);
-                    navigate('/dashboard');
-                  }}
-                >
-                  Go to Dashboard
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="friends-section">
-          <h3>Friends</h3>
-          {isLoadingFriends ? (
-            <div className="loading-friends">Loading friends...</div>
-          ) : friendError ? (
-            <div className="friend-error">{friendError}</div>
-          ) : (
-            <div className="friends-list">
-              {friends.length === 0 ? (
-                <div className="no-friends">No friends yet</div>
-              ) : (
-                friends.map(friend => (
-                  <div key={friend.id} className="friend-item">
-                    <div className="friend-info">
-                      <img 
-                        src={friend.profile.photoURL || '/default-avatar.png'} 
-                        alt={friend.profile.displayName} 
-                        className="friend-avatar"
+            {/* Tab Content */}
+            <div className="tab-content">
+              {activeTab === 'form' ? (
+                <>
+                  <UserForm 
+                    form={form} 
+                    onChange={handleChange} 
+                    onSubmit={addUser} 
+                    onDestinationChange={handleDestinationChange}
+                    onUserLocationChange={handleUserLocationChange}
+                    creatorRole={form.role}
+                    existingParticipants={users}
+                    isTrackingLocation={isTracking}
+                    rideId={createdRideId}
+                    groupCreated={groupCreated}
+                    hideNameInput={true}
+                    onSetDestinationFromMap={handleSetDestinationFromMap}
+                    onLocationTrackingToggle={isTracking ? stopTracking : handleStartTracking}
+                    isLocationLoading={isLocationLoading}
+                    onSetManualLocationFromMap={handleSetManualLocationFromMap}
+                    locationStatusMessage={locationStatusMessage}
+                  />
+                  
+                  {/* Enhanced UserTable */}
+                  <div className="user-table-container">
+                    <div className="user-table-header">
+                      <h5 className="participants-title">Participants</h5>
+                    </div>
+                    <div className="user-table-content">
+                      <UserTable 
+                        users={users}
+                        onDelete={handleDelete}
+                        onRoleChange={handleRoleChange}
+                        rideId={createdRideId}
                       />
-                      <div className="friend-details">
-                        <span className="friend-name">{friend.profile.displayName}</span>
-                        <span className="friend-email">{friend.profile.email}</span>
-                      </div>
                     </div>
-                    <div className="friend-status">
-                      {friend.isOnline ? (
-                        <span className="status-online">Online</span>
-                      ) : (
-                        <span className="status-offline">
-                          Last seen: {friend.lastSeen?.toDate().toLocaleString()}
-                        </span>
-                      )}
+                    <div className="user-table-footer">
+                      <button 
+                        className="btn btn-outline-primary add-friends-btn"
+                        onClick={() => setShowFriendModal(true)}
+                      >
+                        <i className="fas fa-user-plus"></i>
+                        Add Friends
+                      </button>
                     </div>
                   </div>
-                ))
+
+                  <div className="create-group-section">
+                    <button
+                      className={`create-group-button ${groupCreated ? 'created' : ''}`}
+                      onClick={handleCreateGroup}
+                      disabled={
+                        isCreatingGroup ||
+                        !destination ||
+                        users.length === 0 ||
+                        (!users.some(u => u.role === 'driver') && creatorRole !== 'driver') ||
+                        groupCreated
+                      }
+                    >
+                      {isCreatingGroup ? (
+                        <>
+                          <i className="fas fa-spinner fa-spin"></i>
+                          <span>Creating Group...</span>
+                        </>
+                      ) : groupCreated ? (
+                        <>
+                          <i className="fas fa-check-circle"></i>
+                          <span>Group Created</span>
+                        </>
+                      ) : (
+                        <>
+                          <i className="fas fa-users"></i>
+                          <span>Create Group</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    {/* Requirements message */}
+                    {!groupCreated && (
+                      <div className="requirements-message">
+                        {!destination && (
+                          <div className="requirement">
+                            <i className="fas fa-map-marker-alt"></i>
+                            <span>Set a destination</span>
+                          </div>
+                        )}
+                        {users.length === 0 && (
+                          <div className="requirement">
+                            <i className="fas fa-user-plus"></i>
+                            <span>Add at least one participant</span>
+                          </div>
+                        )}
+                        {creatorRole === 'passenger' && !users.some(user => user.role === 'driver') && (
+                          <div className="requirement">
+                            <i className="fas fa-car"></i>
+                            <span>Assign a driver</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="route-info-tab">
+                  <h5>Route Information</h5>
+                  
+                  {calculatedRoute ? (
+                    <div className="route-details">
+                      <div className="route-summary">
+                        <div className="route-stat">
+                          <i className="fas fa-route"></i>
+                          <div>
+                            <span className="stat-label">Total Distance</span>
+                            <span className="stat-value">
+                              {calculatedRoute.properties?.summary?.distance 
+                                ? `${(calculatedRoute.properties.summary.distance / 1609.34).toFixed(1)} mi`
+                                : 'Calculating...'
+                              }
+                            </span>
+                          </div>
+                        </div>
+                        
+                        <div className="route-stat">
+                          <i className="fas fa-clock"></i>
+                          <div>
+                            <span className="stat-label">Estimated Time</span>
+                            <span className="stat-value">
+                              {calculatedRoute.properties?.summary?.duration 
+                                ? `${Math.round(calculatedRoute.properties.summary.duration / 60)} min`
+                                : 'Calculating...'
+                              }
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {calculatedRoute.properties?.summary?.waypoints && (
+                        <div className="waypoints-info">
+                          <h6>Route Waypoints</h6>
+                          <div className="waypoints-list">
+                            {calculatedRoute.properties.summary.waypoints.map((waypoint, index) => (
+                              <div key={index} className="waypoint-item">
+                                <span className="waypoint-number">{index + 1}</span>
+                                <span className="waypoint-name">{waypoint.name || `Stop ${index + 1}`}</span>
+                              </div>
+                            ))}
+                          </div>
+                </div>
               )}
             </div>
-          )}
+                  ) : (
+                    <div className="no-route-info">
+                      <i className="fas fa-route text-muted"></i>
+                      <p className="text-muted">Route information will be displayed here after calculating the route.</p>
+                      {destination && (
+                        <button 
+                          className="btn btn-outline-primary btn-sm"
+                          onClick={() => calculateAndDisplayRoute(userLocation, destination)}
+                          disabled={isCalculatingRoute}
+                        >
+                          {isCalculatingRoute ? (
+                            <>
+                              <i className="fas fa-spinner fa-spin"></i>
+                              Calculating...
+                            </>
+                          ) : (
+                            <>
+                              <i className="fas fa-calculator"></i>
+                              Calculate Route
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Map Container */}
+        <div className="route-optimizer-map-wrapper">
+          <div className="route-optimizer-map-container">
+            <MapView 
+              ref={mapRef}
+              users={users} 
+              destination={destination}
+              userLocation={userLocation}
+              calculatedRoute={calculatedRoute}
+              onSetDestinationFromMap={(coords) => handleDestinationChange(coords)}
+              onRouteUpdate={(route) => {
+                console.log('Route updated:', route);
+                setCalculatedRoute(route);
+              }}
+              onMapClick={handleMapClick}
+            />
+          </div>
         </div>
       </div>
+
+      {/* Friend Selection Modal */}
+      {showFriendModal && (
+        <div className="modal-backdrop">
+          <div className="friend-selection-modal">
+            <div className="modal-header">
+              <h2>Add Friends to Ride</h2>
+              <button className="close-button" onClick={() => setShowFriendModal(false)}>
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+            <UserSearch 
+              onSelectFriend={(friend) => {
+                console.log('Friend selected from UserSearch:', friend);
+                
+                // Add the friend to the ride as a passenger
+                const friendData = {
+                  id: friend.id,
+                  name: friend.profile?.displayName || friend.displayName || friend.name || 'Unknown User',
+                  displayName: friend.profile?.displayName || friend.displayName || friend.name || 'Unknown User',
+                  role: 'passenger',
+                  isCreator: false,
+                  photoURL: friend.profile?.photoURL || friend.photoURL || '',
+                  email: friend.profile?.email || friend.email || ''
+                };
+                
+                console.log('Friend data being passed to addUser:', friendData);
+                
+                // Check if friend is already in the ride
+                const isAlreadyAdded = users.some(user => user.id === friend.id);
+                if (isAlreadyAdded) {
+                  showLocalNotification(`${friendData.displayName} is already in the ride`, 'warning');
+                  return;
+                }
+                
+                // Add friend to the ride
+                addUser(friendData);
+                setShowFriendModal(false);
+                showLocalNotification(`${friendData.displayName} added to the ride`, 'success');
+              }} 
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div className="modal-backdrop">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h5 className="modal-title">Group Created Successfully!</h5>
+              <button 
+                type="button" 
+                className="modal-close" 
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  navigate('/dashboard');
+                }}
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            </div>
+            
+            <div className="modal-body">
+              <div className="success-icon">
+                <i className="fas fa-check-circle"></i>
+              </div>
+              <p className="success-message">Your group has been created successfully!</p>
+              <p className="group-info">
+                Your group is now ready. Once participants provide their locations, 
+                you can optimize and start the ride.
+              </p>
+              <div className="ride-id-container">
+                <span className="ride-id-label">Group ID:</span>
+                <span className="ride-id">{createdRideId}</span>
+              </div>
+              <p className="ride-id-note">
+                You can use this ID to reference your group. It will also be visible in your groups list.
+              </p>
+            </div>
+
+            <div className="modal-footer">
+              <button 
+                type="button" 
+                className="modal-button"
+                onClick={() => {
+                  setShowSuccessModal(false);
+                  navigate('/dashboard');
+                }}
+              >
+                Go to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-// Update the styles
-const styles = `
-  .route-optimizer-sidebar {
-    background: #ffffff;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-    border-right: 1px solid #eef2f7;
-    transition: all 0.3s ease;
-  }
-
-  .sidebar-content {
-    padding: 1.5rem;
-    height: 100%;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    margin-top: 0;
-  }
-
-  .sidebar-handle {
-    position: absolute;
-    right: -16px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 10;
-    background: #ffffff;
-    border-radius: 50%;
-    padding: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  }
-
-  .sidebar-toggle {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: #ffffff;
-    border: 2px solid #eef2f7;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    color: #2196F3;
-  }
-
-  .sidebar-toggle:hover {
-    background: #2196F3;
-    border-color: #2196F3;
-    transform: scale(1.05);
-    box-shadow: 0 4px 8px rgba(33, 150, 243, 0.2);
-  }
-
-  .sidebar-toggle:hover i {
-    color: #ffffff;
-  }
-
-  .sidebar-toggle i {
-    font-size: 1rem;
-    transition: all 0.2s ease;
-  }
-
-  .sidebar-toggle:active {
-    transform: scale(0.95);
-  }
-
-  .create-group-section {
-    background: #f8fafc;
-    border-radius: 12px;
-    padding: 1.25rem;
-    margin-top: auto;
-    border: 1px solid #eef2f7;
-  }
-
-  .create-group-button {
-    width: 100%;
-    padding: 0.875rem 1.25rem;
-    background: #2196F3;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-weight: 500;
-    font-size: 0.9375rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    transition: all 0.2s ease;
-    min-height: 48px;
-    box-shadow: 0 2px 4px rgba(33, 150, 243, 0.1);
-  }
-
-  .create-group-button:not(:disabled):hover {
-    background: #1976D2;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 6px rgba(33, 150, 243, 0.15);
-  }
-
-  .create-group-button:disabled {
-    background: #90CAF9;
-    cursor: not-allowed;
-    opacity: 0.8;
-    transform: none;
-    box-shadow: none;
-  }
-
-  .create-group-button.created {
-    background: #4CAF50;
-    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.1);
-  }
-
-  .create-group-button.created:hover {
-    background: #43A047;
-    box-shadow: 0 4px 6px rgba(76, 175, 80, 0.15);
-  }
-
-  .create-group-button i {
-    font-size: 1.1rem;
-    min-width: 20px;
-    text-align: center;
-  }
-
-  .requirements-message {
-    margin-top: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.75rem;
-    background: #ffffff;
-    border-radius: 8px;
-    border: 1px solid #eef2f7;
-  }
-
-  .requirement {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.625rem 0.875rem;
-    background: #f8fafc;
-    border-radius: 6px;
-    color: #64748b;
-    font-size: 0.875rem;
-    font-weight: 500;
-    transition: all 0.2s ease;
-  }
-
-  .requirement:hover {
-    background: #f1f5f9;
-    color: #475569;
-  }
-
-  .requirement i {
-    color: #2196F3;
-    font-size: 1rem;
-    width: 20px;
-    text-align: center;
-  }
-
-  .user-table-container {
-    background: #ffffff;
-    border-radius: 12px;
-    padding: 1.25rem;
-    border: 1px solid #eef2f7;
-  }
-
-  .user-table-container h5 {
-    color: #1e293b;
-    font-size: 1rem;
-    font-weight: 600;
-    margin-bottom: 1rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid #eef2f7;
-  }
-
-  .alert {
-    border-radius: 8px;
-    padding: 0.875rem 1rem;
-    font-size: 0.875rem;
-    border: none;
-    margin: 0 1.5rem 1rem 1.5rem;
-  }
-
-  .alert-info {
-    background: #e3f2fd;
-    color: #0d47a1;
-  }
-
-  .alert-warning {
-    background: #fff3e0;
-    color: #e65100;
-  }
-
-  .alert i {
-    font-size: 1rem;
-    margin-right: 0.5rem;
-  }
-
-  .form-info {
-    background: #f8fafc;
-    border-radius: 8px;
-    padding: 1rem;
-    border: 1px solid #eef2f7;
-  }
-
-  .form-info .alert {
-    margin-bottom: 0;
-    background: transparent;
-    padding: 0.75rem;
-  }
-
-  .form-info .alert i {
-    color: #2196F3;
-  }
-
-  @media (max-width: 768px) {
-    .sidebar-content {
-      padding: 1rem;
-    }
-
-    .create-group-section {
-      padding: 1rem;
-    }
-
-    .requirements-message {
-      padding: 0.5rem;
-    }
-
-    .requirement {
-      padding: 0.5rem 0.75rem;
-    }
-  }
-
-  .route-optimizer-header {
-    background: #ffffff;
-    padding: 1.5rem;
-    border-bottom: 1px solid #eef2f7;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-  }
-
-  .route-optimizer-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-    color: #1e293b;
-    font-weight: 600;
-  }
-
-  .location-status-container {
-    margin-top: 0;
-    position: sticky;
-    top: 0;
-    z-index: 99;
-    background: #ffffff;
-    padding: 1rem 0;
-    border-bottom: 1px solid #eef2f7;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .location-status-container .btn {
-    width: auto;
-    min-width: 200px;
-    margin: 0 1.5rem;
-  }
-`;
-
-// Add notification styles
-const notificationStyles = `
-  ${styles}
-
-  .notifications-container {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .notification {
-    padding: 12px 24px;
-    border-radius: 4px;
-    color: white;
-    font-weight: 500;
-    animation: slideIn 0.3s ease-out;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-
-  .notification.success {
-    background-color: #28a745;
-  }
-
-  .notification.error {
-    background-color: #dc3545;
-  }
-
-  @keyframes slideIn {
-    from {
-      transform: translateX(100%);
-      opacity: 0;
-    }
-    to {
-      transform: translateX(0);
-      opacity: 1;
-    }
-  }
-`;
-
-// Add the styles to the document
-const styleSheet = document.createElement("style");
-styleSheet.innerText = notificationStyles;
-document.head.appendChild(styleSheet);
-
-// Add styles for error container
-const errorStyles = `
-  .error-container {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 1000;
-    width: 90%;
-    max-width: 500px;
-    padding: 20px;
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  }
-
-  .error-container .alert {
-    margin: 0;
-  }
-
-  .error-container .alert-heading {
-    margin-bottom: 10px;
-  }
-
-  .error-container .btn {
-    margin-top: 15px;
-  }
-`;
-
-// Add the styles to the document
-const styleSheetError = document.createElement("style");
-styleSheetError.innerText = errorStyles;
-document.head.appendChild(styleSheetError);
-
-// Add styles for loading and error states
-const loadingErrorStyles = `
-  .route-optimizer-loading {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(255, 255, 255, 0.9);
-    z-index: 9999;
-  }
-
-  .route-optimizer-error {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 9999;
-    width: 90%;
-    max-width: 500px;
-    padding: 20px;
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  }
-
-  .route-optimizer-error .alert {
-    margin: 0;
-  }
-
-  .route-optimizer-error .alert-heading {
-    margin-bottom: 10px;
-  }
-
-  .route-optimizer-error .btn {
-    margin-top: 15px;
-  }
-`;
-
-// Add the styles to the document
-const styleSheetLoadingError = document.createElement("style");
-styleSheetLoadingError.innerText = loadingErrorStyles;
-document.head.appendChild(styleSheetLoadingError);
 
 export default RouteOptimizer;

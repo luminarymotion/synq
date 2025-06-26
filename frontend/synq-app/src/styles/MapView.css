@@ -24,6 +24,11 @@
   left: 0;
   right: 0;
   bottom: 0;
+  min-height: 400px;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 /* Ensure the map container fills its parent */
@@ -41,8 +46,126 @@
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
+  padding: 0 20px;
+}
+
+.route-info {
+  background-color: white;
   padding: 20px;
-  flex-shrink: 0;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.route-info h5 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  color: #333;
+  font-size: 1.2em;
+}
+
+.route-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.last-update {
+  color: #666;
+  font-size: 0.9em;
+}
+
+.updating-badge {
+  background-color: #e3f2fd;
+  color: #2196F3;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.total-info {
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #eee;
+}
+
+.total-info p {
+  margin: 8px 0;
+  font-weight: 500;
+  font-size: 1.1em;
+}
+
+.segments-info {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.segment {
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #eee;
+}
+
+.segment.start {
+  background-color: #e3f2fd;
+  border-color: #2196F3;
+}
+
+.segment h6 {
+  margin: 0 0 10px 0;
+  color: #2196F3;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.segment p {
+  margin: 5px 0;
+  color: #666;
+}
+
+.segment.pickup {
+  border-left: 3px solid #2196F3;
+}
+
+.segment.destination {
+  border-left: 3px solid #4CAF50;
+}
+
+.segment h6 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px 0;
+}
+
+.segment p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+}
+
+.recalculating-message {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(33, 150, 243, 0.9);
+  color: white;
+  padding: 10px 20px;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .error-message,
@@ -66,6 +189,10 @@
 .warning-message {
   background-color: rgba(255, 193, 7, 0.9);
   color: #000;
+}
+
+.error-message.has-warning {
+  top: 60px;
 }
 
 .pickup-popup {
