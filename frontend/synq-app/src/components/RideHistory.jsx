@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useUserAuth } from '../services/auth';
 import { getUserRideHistory } from '../services/firebaseOperations';
 import { Link } from 'react-router-dom';
+import SimpleLoading from './SimpleLoading';
 import '../styles/RideHistory.css';
 
 function RideHistory({ userId }) {
@@ -84,9 +85,10 @@ function RideHistory({ userId }) {
           <h5 className="card-title mb-0">Recent Ride History</h5>
         </div>
         <div className="card-body text-center py-4">
-          <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
-          </div>
+          <SimpleLoading 
+            message="Loading ride history..."
+            size="small"
+          />
         </div>
       </div>
     );

@@ -11,6 +11,7 @@ import {
 } from '../services/firebaseOperations';
 import FriendSuggestions from './FriendSuggestions';
 import UserSearch from './UserSearch';
+import SimpleLoading from './SimpleLoading';
 import '../styles/Friends.css';
 
 function Friends() {
@@ -25,7 +26,6 @@ function Friends() {
   useEffect(() => {
     if (!user) return;
   
-    // Set up real-time subscriptions
     const unsubscribeFriends = subscribeToFriendsList(user.uid, (result) => {
       if (result.success) {
         setFriends(result.friends);
@@ -36,7 +36,6 @@ function Friends() {
       }
     });
   
-    // Set up friend requests subscription
     const unsubscribeRequests = subscribeToFriendRequests(user.uid, (result) => {
       if (result.success) {
         setFriendRequests(result.requests);
@@ -45,25 +44,9 @@ function Friends() {
       }
     });
   
-    // Set up status subscriptions
-    const statusUnsubscribers = friends.map(friend => 
-      subscribeToUserStatus(friend.id, (result) => {
-        if (result.success) {
-          setFriends(prevFriends => 
-            prevFriends.map(f => 
-              f.id === friend.id 
-                ? { ...f, isOnline: result.status.isOnline, lastSeen: result.status.lastSeen }
-                : f
-            )
-          );
-        }
-      })
-    );
-  
     return () => {
       unsubscribeFriends();
       unsubscribeRequests();
-      statusUnsubscribers.forEach(unsubscribe => unsubscribe());
     };
   }, [user]);
 
@@ -135,170 +118,180 @@ function Friends() {
 
   if (loading) {
     return (
-      <div className="friends-page">
-        <div className="friends-container">
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title">Friends</h5>
-              <div className="text-center">
-                <div className="spinner-border" role="status">
-                  <span className="visually-hidden">Loading...</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <SimpleLoading 
+        message="Loading your friends..."
+        size="large"
+      />
     );
   }
 
   return (
     <div className="friends-page">
       <div className="friends-container">
-        {/* User Search Section */}
-        <div className="friends-section">
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title">Search Users</h5>
-              <UserSearch />
-            </div>
+        {error && (
+          <div className="alert alert-danger alert-dismissible fade show" role="alert">
+            {error}
+            <button 
+              type="button" 
+              className="btn-close" 
+              onClick={() => setError(null)}
+              aria-label="Close"
+            ></button>
           </div>
-        </div>
+        )}
 
-        {/* Friend Requests Section */}
-        {friendRequests.length > 0 && (
-          <div className="friends-section">
-            <div className="card">
+        <div className="friends-grid">
+          {/* Search Section */}
+          <div className="friends-section search-section">
+            <div className="card scrollable-card">
               <div className="card-body">
-                <h5 className="card-title">Friend Requests</h5>
-                <div className="list-group">
-                  {friendRequests.map(request => (
-                    <div key={request.id} className="list-group-item">
-                      <div className="d-flex justify-content-between align-items-center">
-                        <div className="d-flex align-items-center">
-                          <div className="position-relative me-3">
-                            <img 
-                              src={request.senderProfile.photoURL || '/default-avatar.png'} 
-                              alt={request.senderProfile.displayName}
-                              className="rounded-circle"
-                              style={{ width: '40px', height: '40px' }}
-                            />
-                          </div>
-                          <div>
-                            <h6 className="mb-0">{request.senderProfile.displayName}</h6>
-                          </div>
-                        </div>
-                        <div className="d-flex gap-2">
-                          <button
-                            className="btn btn-primary btn-sm"
-                            onClick={() => handleFriendRequest(request.id, 'accepted')}
-                            disabled={processingRequest[request.id]}
-                          >
-                            {processingRequest[request.id] ? (
-                              <>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                Processing...
-                              </>
-                            ) : (
-                              'Accept'
-                            )}
-                          </button>
-                          <button
-                            className="btn btn-outline-danger btn-sm"
-                            onClick={() => handleFriendRequest(request.id, 'rejected')}
-                            disabled={processingRequest[request.id]}
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                <h5 className="card-title">
+                  <i className="fas fa-search me-2"></i>
+                  Search Users
+                </h5>
+                <div className="scrollable-content">
+                  <UserSearch />
                 </div>
               </div>
             </div>
           </div>
-        )}
 
-        {/* Friends List Section */}
-        <div className="friends-section">
-          <div className="card">
-            <div className="card-body">
-              <h5 className="card-title">Friends</h5>
-              {error && (
-                <div className="alert alert-danger" role="alert">
-                  {error}
-                  <button 
-                    className="btn btn-link"
-                    onClick={() => setError(null)}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              )}
-              {friends.length === 0 ? (
-                <p className="text-muted">No friends yet. Try adding some friends!</p>
-              ) : (
-                <div className="list-group">
-                  {friends.map(friend => (
-                    <div key={friend.id} className="list-group-item">
-                      <div className="d-flex justify-content-between align-items-center">
-                        <div className="d-flex align-items-center">
-                          <div className="position-relative me-3">
+          {/* Friends List Section */}
+          <div className="friends-section friends-list-section">
+            <div className="card scrollable-card">
+              <div className="card-body">
+                <h5 className="card-title">
+                  <i className="fas fa-users me-2"></i>
+                  Friends
+                  {friends.length > 0 && (
+                    <span className="badge bg-secondary ms-2">{friends.length}</span>
+                  )}
+                </h5>
+                <div className="scrollable-content">
+                  {friends.length === 0 ? (
+                    <div className="empty-state">
+                      <i className="fas fa-user-friends mb-3"></i>
+                      <p>No friends yet</p>
+                      <span className="text-muted">Try adding some friends to get started!</span>
+                    </div>
+                  ) : (
+                    <div className="friends-list">
+                      {friends.map(friend => (
+                        <div key={friend.id} className="friend-item">
+                          <div className="friend-content">
                             <img 
                               src={friend.profile.photoURL || '/default-avatar.png'} 
                               alt={friend.profile.displayName}
-                              className="rounded-circle"
-                              style={{ width: '40px', height: '40px' }}
+                              className="friend-avatar"
                             />
-                            <span 
-                              className={`status-indicator ${friend.isOnline ? 'status-online' : 'status-offline'}`}
-                            />
-                          </div>
-                          <div>
-                            <h6 className="mb-0">{friend.profile.displayName}</h6>
-                            <small className="text-muted">
-                              {friend.isOnline 
-                                ? 'Online' 
-                                : `Last seen ${formatLastSeen(friend.lastSeen)}`}
-                            </small>
-                            {friend.relationship.communityId && (
-                              <div className="mt-1">
+                            <div className="friend-info">
+                              <h6 className="friend-name">{friend.profile.displayName}</h6>
+                              {friend.relationship.communityId && (
                                 <span className="badge bg-info">
                                   {friend.relationship.communityRole || 'Member'}
                                 </span>
-                              </div>
-                            )}
+                              )}
+                            </div>
+                          </div>
+                          <div className="friend-actions">
+                            <button
+                              className="btn btn-outline-danger btn-sm"
+                              onClick={() => handleRemoveFriend(friend.id)}
+                              disabled={removingFriend[friend.id]}
+                            >
+                              {removingFriend[friend.id] ? (
+                                <>
+                                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                  Removing...
+                                </>
+                              ) : (
+                                <>
+                                  <i className="fas fa-user-minus me-1"></i>
+                                  Remove
+                                </>
+                              )}
+                            </button>
                           </div>
                         </div>
-                        <div className="d-flex gap-2">
-                          <button
-                            className="btn btn-outline-danger btn-sm"
-                            onClick={() => handleRemoveFriend(friend.id)}
-                            disabled={removingFriend[friend.id]}
-                          >
-                            {removingFriend[friend.id] ? (
-                              <>
-                                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                Removing...
-                              </>
-                            ) : (
-                              'Remove'
-                            )}
-                          </button>
-                        </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Friend Suggestions Section */}
-        <div className="friends-section">
-          <FriendSuggestions />
+          {/* Friend Suggestions Section */}
+          <div className="friends-section suggestions-section">
+            <div className="card scrollable-card">
+              <div className="card-body">
+                <h5 className="card-title">
+                  <i className="fas fa-lightbulb me-2"></i>
+                  Suggested Friends
+                </h5>
+                <div className="scrollable-content">
+                  <FriendSuggestions />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Friend Requests Section - Moved to bottom */}
+          {friendRequests.length > 0 && (
+            <div className="friends-section requests-section">
+              <div className="card scrollable-card">
+                <div className="card-body">
+                  <h5 className="card-title">
+                    <i className="fas fa-user-plus me-2"></i>
+                    Friend Requests
+                    <span className="badge bg-primary ms-2">{friendRequests.length}</span>
+                  </h5>
+                  <div className="scrollable-content">
+                    <div className="friend-requests-list">
+                      {friendRequests.map(request => (
+                        <div key={request.id} className="friend-request-item">
+                          <div className="friend-request-content">
+                            <img 
+                              src={request.senderProfile.photoURL || '/default-avatar.png'} 
+                              alt={request.senderProfile.displayName}
+                              className="friend-avatar"
+                            />
+                            <div className="friend-request-info">
+                              <h6 className="friend-name">{request.senderProfile.displayName}</h6>
+                              <p className="friend-message text-muted">{request.message}</p>
+                            </div>
+                          </div>
+                          <div className="friend-request-actions">
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => handleFriendRequest(request.id, 'accepted')}
+                              disabled={processingRequest[request.id]}
+                            >
+                              {processingRequest[request.id] ? (
+                                <>
+                                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                  Processing...
+                                </>
+                              ) : (
+                                'Accept'
+                              )}
+                            </button>
+                            <button
+                              className="btn btn-outline-danger btn-sm"
+                              onClick={() => handleFriendRequest(request.id, 'rejected')}
+                              disabled={processingRequest[request.id]}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

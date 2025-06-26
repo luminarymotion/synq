@@ -5,6 +5,7 @@ import {
   sendFriendRequest,
   checkFriendshipStatus
 } from '../services/firebaseOperations';
+import SimpleLoading from './SimpleLoading';
 import '../styles/FriendSuggestions.css';
 
 function FriendSuggestions() {
@@ -144,9 +145,10 @@ function FriendSuggestions() {
         <div className="card-body">
           <h5 className="card-title">Friend Suggestions</h5>
           <div className="text-center">
-            <div className="spinner-border" role="status">
-              <span className="visually-hidden">Loading...</span>
-            </div>
+            <SimpleLoading 
+              message="Loading suggestions..."
+              size="small"
+            />
           </div>
         </div>
       </div>

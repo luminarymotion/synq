@@ -4,6 +4,7 @@ import { db } from '../services/firebase';
 import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
 import { Link, useSearchParams } from 'react-router-dom';
 import { updateRideParticipation } from '../services/firebaseOperations';
+import SimpleLoading from '../components/SimpleLoading';
 import '../styles/Rides.css';
 
 /*
@@ -280,6 +281,12 @@ function Rides() {
       where('status', '==', 'created')
     );
 
+    // Query for rides where user has pending invitations
+    const pendingInvitationsQuery = query(
+      collection(db, 'rides'),
+      where(`invitations.${user.uid}.status`, '==', 'pending')
+    );
+
     console.log('Setting up ride listeners');
     const unsubscribeDriverActive = onSnapshot(driverActiveQuery, (snapshot) => {
       console.log('Driver active rides snapshot:', {
@@ -317,33 +324,62 @@ function Rides() {
               type: 'recent'
             }));
 
-            // Combine all rides
-            const allRides = [
-              ...driverActiveRides,
-              ...passengerActiveRides,
-              ...driverRecentRides,
-              ...passengerRecentRides
-            ];
+            const unsubscribePendingInvitations = onSnapshot(pendingInvitationsQuery, (pendingSnapshot) => {
+              console.log('Pending invitations snapshot:', pendingSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+              const pendingInvitationRides = pendingSnapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                type: 'invitation'
+              }));
 
-            // Deduplicate and sort rides
-            const uniqueRides = Array.from(
-              new Map(allRides.map(ride => [ride.id, ride])).values()
-            ).sort((a, b) => {
-              // First sort by type (active rides first)
-              if (a.type !== b.type) {
-                return a.type === 'active' ? -1 : 1;
-              }
-              // Then sort by creation time
-            if (a.createdAt && b.createdAt) {
-              return b.createdAt.toDate() - a.createdAt.toDate();
-            }
-            return b.id.localeCompare(a.id);
-          });
-        
-            console.log('Final unique rides:', uniqueRides);
-            setError(null);
-        setActiveRides(uniqueRides);
-        setLoading(false);
+              // Combine all rides
+              const allRides = [
+                ...driverActiveRides,
+                ...passengerActiveRides,
+                ...driverRecentRides,
+                ...passengerRecentRides,
+                ...pendingInvitationRides
+              ];
+
+              // Deduplicate and sort rides
+              const uniqueRides = Array.from(
+                new Map(allRides.map(ride => [ride.id, ride])).values()
+              ).filter(ride => {
+                // Filter out rides where user has declined invitation
+                if (ride.invitations && ride.invitations[user.uid]) {
+                  const userInvitation = ride.invitations[user.uid];
+                  if (userInvitation.status === 'declined') {
+                    console.log('Filtering out declined ride:', ride.id);
+                    return false;
+                  }
+                }
+                return true;
+              }).sort((a, b) => {
+                // First sort by type (active rides first, then invitations, then recent)
+                if (a.type !== b.type) {
+                  if (a.type === 'active') return -1;
+                  if (b.type === 'active') return 1;
+                  if (a.type === 'invitation') return -1;
+                  if (b.type === 'invitation') return 1;
+                  return a.type === 'recent' ? -1 : 1;
+                }
+                // Then sort by creation time
+                if (a.createdAt && b.createdAt) {
+                  return b.createdAt.toDate() - a.createdAt.toDate();
+                }
+                return b.id.localeCompare(a.id);
+              });
+            
+              console.log('Final unique rides:', uniqueRides);
+              setError(null);
+              setActiveRides(uniqueRides);
+              setLoading(false);
+            }, (error) => {
+              console.error('Error fetching pending invitations:', error);
+              handleQueryError(error);
+            });
+
+            return () => unsubscribePendingInvitations();
           }, (error) => {
             console.error('Error fetching passenger recent rides:', error);
             handleQueryError(error);
@@ -426,15 +462,10 @@ function Rides() {
   if (loading) {
     console.log('Rendering loading state');
     return (
-      <div className="rides-page-container">
-        <div className="rides-content-wrapper">
-        <div className="text-center">
-          <div className="spinner-border" role="status">
-            <span className="visually-hidden">Loading...</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <SimpleLoading 
+        message="Loading your rides..."
+        size="large"
+      />
     );
   }
 
@@ -462,7 +493,7 @@ function Rides() {
           <h2>Your Rides</h2>
           <Link to="/create-group" className="btn btn-primary">
             <i className="bi bi-plus-circle me-2"></i>
-            Create New Ride
+            Create New Group
           </Link>
         </div>
 
@@ -497,9 +528,9 @@ function Rides() {
             ) : (
               <div className="rides-list">
                 {activeRides.map((ride) => (
-                  <div key={ride.id} id={`ride-${ride.id}`} className={`ride-container mb-4 ${ride.type === 'recent' ? 'recent-ride' : ''}`}>
+                  <div key={ride.id} id={`ride-${ride.id}`} className={`ride-container mb-4 ${ride.type === 'recent' ? 'recent-ride' : ''} ${ride.type === 'invitation' ? 'invitation-ride' : ''}`}>
                     <div className="card">
-                      <div className={`card-header ${ride.type === 'recent' ? 'bg-info bg-opacity-10' : 'bg-light'}`}>
+                      <div className={`card-header ${ride.type === 'recent' ? 'bg-info bg-opacity-10' : ride.type === 'invitation' ? 'bg-warning bg-opacity-10' : 'bg-light'}`}>
                         <div className="d-flex justify-content-between align-items-center">
                           <h4 className="mb-0">
                             <Link to={`/rides/${ride.id}`} className="text-decoration-none">
@@ -508,43 +539,46 @@ function Rides() {
                               {ride.type === 'recent' && (
                                 <span className="badge bg-info ms-2">New</span>
                               )}
+                              {ride.type === 'invitation' && (
+                                <span className="badge bg-warning ms-2">Invitation</span>
+                              )}
                             </Link>
                           </h4>
                           <div className="d-flex align-items-center gap-2">
                             <span className={`badge ${ride.status === 'active' ? 'bg-success' : 'bg-secondary'}`}>
                               {ride.status}
                             </span>
-                            {(ride.status === 'active' || ride.type === 'recent') && (
+                            {(ride.status === 'active' || ride.type === 'recent' || ride.type === 'invitation') && (
                               <>
                                 <Link 
                                   to={`/rides/${ride.id}`}
                                   className="btn btn-outline-primary btn-sm"
                                 >
                                   <i className="bi bi-map me-2"></i>
-                                  View Live
+                                  {ride.type === 'invitation' ? 'Respond' : 'View Live'}
                                 </Link>
-                            {ride.status === 'active' && (
-                              <button
-                                className={`btn btn-outline-danger btn-sm ${leavingRideId === ride.id ? 'disabled' : ''}`}
-                                onClick={() => {
-                                  if (window.confirm(`Are you sure you want to leave ride ${ride.id}?`)) {
-                                    handleLeaveRide(ride.id);
-                                  }
-                                }}
-                                disabled={leavingRideId === ride.id}
-                              >
-                                {leavingRideId === ride.id ? (
-                                  <>
+                                {ride.status === 'active' && ride.type !== 'invitation' && (
+                                  <button
+                                    className={`btn btn-outline-danger btn-sm ${leavingRideId === ride.id ? 'disabled' : ''}`}
+                                    onClick={() => {
+                                      if (window.confirm(`Are you sure you want to leave ride ${ride.id}?`)) {
+                                        handleLeaveRide(ride.id);
+                                      }
+                                    }}
+                                    disabled={leavingRideId === ride.id}
+                                  >
+                                    {leavingRideId === ride.id ? (
+                                      <>
                                         <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                                    Leaving...
-                                  </>
-                                ) : (
-                                  <>
+                                        Leaving...
+                                      </>
+                                    ) : (
+                                      <>
                                         <i className="bi bi-box-arrow-right me-1"></i>
-                                    Leave Ride
-                                  </>
-                                )}
-                              </button>
+                                        Leave Ride
+                                      </>
+                                    )}
+                                  </button>
                                 )}
                               </>
                             )}
@@ -650,6 +684,14 @@ function Rides() {
 
           .highlight-ride {
             animation: highlight 2s ease-out;
+          }
+
+          .invitation-ride {
+            border-left: 4px solid #ffc107;
+          }
+
+          .invitation-ride .card-header {
+            background: linear-gradient(135deg, #fff3cd, #ffeaa7);
           }
 
           @keyframes highlight {

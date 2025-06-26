@@ -3,7 +3,25 @@ import { useNavigate } from 'react-router-dom';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useUserAuth } from '../services/auth';
-import '../styles/Settings.css';
+import SimpleLoading from '../components/SimpleLoading';
+import { formatPhoneNumberToE164, validatePhoneNumber } from '../utils/phoneNumberFormatter';
+// MUI imports
+import Container from '@mui/material/Container';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Typography from '@mui/material/Typography';
+import TextField from '@mui/material/TextField';
+import Button from '@mui/material/Button';
+import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
+import Stack from '@mui/material/Stack';
+import Divider from '@mui/material/Divider';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import PersonIcon from '@mui/icons-material/Person';
 
 function Settings() {
   const { user, needsProfileSetup, setNeedsProfileSetup } = useUserAuth();
@@ -18,11 +36,9 @@ function Settings() {
 
   useEffect(() => {
     if (!user) {
-      console.log('No user, redirecting to login');
       navigate('/login');
       return;
     }
-
     // Load existing profile data
     const loadProfile = async () => {
       try {
@@ -36,41 +52,36 @@ function Settings() {
           }));
         }
       } catch (err) {
-        console.error('Error loading profile:', err);
+        // Silent fail
       }
     };
-
     loadProfile();
   }, [user, navigate]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
     try {
-      console.log('Starting profile update...');
       if (!formData.displayName || !formData.phoneNumber) {
         throw new Error('Please fill in all required fields');
       }
-
-      // Format phone number to ensure it's just digits
-      const formattedPhone = formData.phoneNumber.replace(/\D/g, '');
-      
-      // Get existing user data
+      const phoneValidation = validatePhoneNumber(formData.phoneNumber);
+      if (!phoneValidation.isValid) {
+        throw new Error(phoneValidation.error);
+      }
+      const formattedPhone = formatPhoneNumberToE164(formData.phoneNumber);
+      if (!formattedPhone || !formattedPhone.startsWith('+1')) {
+        throw new Error('Phone number formatting failed. Please check your input.');
+      }
       const userRef = doc(db, 'users', user.uid);
       const userDoc = await getDoc(userRef);
       const existingData = userDoc.exists() ? userDoc.data() : {};
-
-      // Prepare update data, preserving existing fields
       const updateData = {
         profile: {
           ...(existingData.profile || {}),
@@ -93,27 +104,11 @@ function Settings() {
         },
         updatedAt: new Date().toISOString()
       };
-
-      console.log('Updating profile with data:', updateData);
-      
       await updateDoc(userRef, updateData);
-      console.log('Profile updated successfully');
-
-      // Update the needsProfileSetup state
       setNeedsProfileSetup(false);
-
-      // Add a small delay to ensure state is updated
       await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Verify the update
-      const verifyDoc = await getDoc(userRef);
-      console.log('Verification - Profile updated:', verifyDoc.exists());
-      console.log('Verification - Profile data:', verifyDoc.data());
-
-      // Show success message
       alert('Profile updated successfully!');
     } catch (err) {
-      console.error('Error updating profile:', err);
       setError(err.message || 'Error updating profile. Please try again.');
     } finally {
       setLoading(false);
@@ -121,121 +116,91 @@ function Settings() {
   };
 
   if (loading) {
-    return (
-      <div className="settings-container">
-        <div className="settings-content">
-          <div className="text-center">
-            <div className="spinner-border" role="status">
-              <span className="visually-hidden">Loading...</span>
-            </div>
-            <p className="mt-2">Updating your profile...</p>
-          </div>
-        </div>
-      </div>
-    );
+    return <SimpleLoading message="Updating your profile..." size="medium" />;
   }
 
   return (
-    <div className="settings-container">
-      <div className="settings-content">
-        <div className="settings-header">
-          <h1>Settings</h1>
-          <p className="subtitle">Manage your account settings and preferences</p>
-        </div>
-
-        <div className="settings-grid">
-          <div className="settings-nav">
-            <button className="nav-item active">
-              <i className="fas fa-user"></i>
-              Profile
-            </button>
-            {/* Add more nav items here for future settings sections */}
-          </div>
-
-          <div className="settings-panel">
-            <div className="settings-section">
-              <h2>Profile Settings</h2>
+    <Container maxWidth="md" sx={{ mt: 8 }}>
+      <Card elevation={3}>
+        <CardContent>
+          <Box display="flex" flexDirection={{ xs: 'column', md: 'row' }}>
+            {/* Sidebar Navigation */}
+            <Box minWidth={220} maxWidth={260} mr={{ md: 4 }} mb={{ xs: 3, md: 0 }}>
+              <Typography variant="h5" sx={{ mb: 2 }}>
+                Settings
+              </Typography>
+              <List>
+                <ListItem selected>
+                  <ListItemIcon>
+                    <PersonIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Profile" />
+                </ListItem>
+                {/* Add more nav items here for future settings sections */}
+              </List>
+            </Box>
+            {/* Main Content */}
+            <Box flex={1}>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                Profile Settings
+              </Typography>
               {error && (
-                <div className="alert alert-danger" role="alert">
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
                   {error}
-                  <button 
-                    className="btn btn-link"
-                    onClick={() => setError(null)}
-                  >
-                    Dismiss
-                  </button>
-                </div>
+                </Alert>
               )}
-
-              <form onSubmit={handleSubmit}>
-                <div className="form-group">
-                  <label htmlFor="displayName">Display Name *</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="displayName"
+              <Box component="form" onSubmit={handleSubmit}>
+                <Stack spacing={3}>
+                  <TextField
+                    label="Display Name"
                     name="displayName"
                     value={formData.displayName}
                     onChange={handleChange}
-                    placeholder="Enter your display name"
                     required
+                    fullWidth
+                    inputProps={{ minLength: 2, maxLength: 30 }}
+                    helperText="This is how other users will see you in the app"
                     disabled={loading}
-                    minLength={2}
-                    maxLength={30}
                   />
-                  <small className="text-muted">
-                    This is how other users will see you in the app
-                  </small>
-                </div>
-
-                <div className="form-group">
-                  <label htmlFor="phoneNumber">Phone Number *</label>
-                  <input
-                    type="tel"
-                    className="form-control"
-                    id="phoneNumber"
+                  <TextField
+                    label="Phone Number"
                     name="phoneNumber"
                     value={formData.phoneNumber}
                     onChange={handleChange}
-                    placeholder="Enter your phone number"
                     required
+                    fullWidth
+                    type="tel"
+                    placeholder="e.g., 214-984-7766 or (214) 984-7766"
+                    inputProps={{ pattern: '[\d\s\-\(\)]+' }}
+                    helperText="Enter your 10-digit US phone number. We'll use this for SMS notifications and ride coordination."
                     disabled={loading}
                   />
-                  <small className="text-muted">
-                    We'll use this to verify your account and for ride coordination
-                  </small>
-                </div>
-
-                {/* Placeholder for future community features */}
-                <div className="form-group">
-                  <div className="alert alert-info" role="alert">
-                    <h5 className="alert-heading">Coming Soon!</h5>
-                    <p className="mb-0">
-                      In the future, you'll be able to:
-                    </p>
-                    <ul className="mb-0 mt-2">
+                  <Divider sx={{ my: 2 }} />
+                  <Alert icon={<InfoOutlinedIcon fontSize="inherit" />} severity="info">
+                    <Typography variant="subtitle1" fontWeight={600}>Coming Soon!</Typography>
+                    <ul style={{ margin: 0, paddingLeft: 20 }}>
                       <li>Join communities based on your interests</li>
                       <li>Set your preferred routes</li>
                       <li>Connect with like-minded riders</li>
                     </ul>
-                  </div>
-                </div>
-
-                <div className="d-grid gap-2">
-                  <button 
-                    type="submit" 
-                    className="btn btn-primary"
+                  </Alert>
+                  <Button
+                    type="submit"
+                    variant="contained"
+                    color="primary"
+                    size="large"
                     disabled={loading}
+                    fullWidth
                   >
                     {loading ? 'Updating...' : 'Save Changes'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+                  </Button>
+                </Stack>
+              </Box>
+            </Box>
+          </Box>
+        </CardContent>
+      </Card>
+    </Container>
   );
 }
 

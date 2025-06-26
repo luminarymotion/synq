@@ -11,12 +11,12 @@ import { fromLonLat, toLonLat } from 'ol/proj';
 import { boundingExtent } from 'ol/extent';
 import { defaults as defaultControls } from 'ol/control';
 import { LineString } from 'ol/geom';
-import { calculateRoute, getTrafficInfo } from './routeService';
+import { calculateOptimizedRoute } from '../services/routeOptimizerService';
 import { calculateDistance } from '../services/locationService';
 import '../styles/MapView.css';
 import { Overlay } from 'ol';
 
-function MapView({ users, destination, userLocation, onSetDestinationFromMap, onRouteUpdate }) {
+function MapView({ users = [], destination, userLocation, calculatedRoute, onSetDestinationFromMap, onRouteUpdate, onMapClick }) {
   const mapRef = useRef();
   const vectorSourceRef = useRef(new VectorSource());
   const mapInstanceRef = useRef(null);
@@ -30,11 +30,9 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
   const [isRecalculating, setIsRecalculating] = useState(false);
 
   useEffect(() => {
-    // Use CartoDB's Voyager tiles for a modern look
+    // Use OpenStreetMap tiles for better reliability
     const baseLayer = new TileLayer({
-      source: new OSM({
-        url: 'https://{a-d}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-      })
+      source: new OSM()
     });
 
     const vectorLayer = new VectorLayer({
@@ -59,7 +57,12 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
     map.on('click', function (event) {
         const coordinate = toLonLat(event.coordinate);
         const [lng, lat] = coordinate;
-        if (onSetDestinationFromMap) {
+        
+        if (onMapClick) {
+            // Use the new onMapClick handler for different click modes
+            onMapClick({ latlng: { lat, lng } });
+        } else if (onSetDestinationFromMap) {
+            // Fallback to the old behavior for backward compatibility
             onSetDestinationFromMap({ lat, lng });
         }
     });
@@ -107,119 +110,37 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
         const currentLocation = { lat: userLocation.lat, lng: userLocation.lng };
         const lastLocation = driver.userLocationCoords;
         
-        // If driver has moved more than 100 meters, recalculate route
+        // If driver has moved more than 100 meters, notify parent to recalculate
         if (lastLocation && calculateDistance(currentLocation, lastLocation) > 0.1) {
-          setIsRecalculating(true);
-          calculateOptimizedRoute().finally(() => setIsRecalculating(false));
+          console.log('Driver moved significantly, route may need recalculation');
+          // Route recalculation should be handled by parent component
         }
       }
     }
   }, [userLocation, users, route]);
 
-  // Update route calculation to handle driver location updates
-  const calculateOptimizedRoute = useCallback(async () => {
-    if (!users.length || !destination) {
-      console.log('Missing required data for route calculation:', { users, destination });
-            return;
-          }
-
-    try {
-      // Find the driver (either creator or assigned driver)
-      const driver = users.find(u => u.role === 'driver');
-      if (!driver) {
-        console.warn('No driver found in the route');
-        setError('No driver assigned for the route');
-        return;
-          }
-
-      // Get driver's starting location
-      const startLocation = driver.isCreator ? userLocation : driver.userLocationCoords;
-      if (!startLocation) {
-        console.warn('Driver location not available');
-        setError('Driver location not available');
-        return;
-      }
-
-      console.log('Calculating route with:', {
-        startLocation,
-        destination,
-        pickupPoints: users.filter(u => u.role === 'passenger' && u.userLocationCoords)
-      });
-            
-      // Get all pickup points (excluding driver)
-      const pickupPoints = users
-        .filter(u => u.role === 'passenger' && u.userLocationCoords)
-        .map(u => ({
-          ...u,
-          location: u.userLocationCoords,
-          type: 'pickup',
-          passengerId: u.tempId
-        }));
-
-      // Create waypoints array with start, pickup points, and destination
-      const waypoints = [
-        { location: startLocation, type: 'start' },
-        ...pickupPoints,
-        { location: destination, type: 'destination' }
-      ];
-
-      console.log('Calculating route with waypoints:', waypoints);
-      const route = await calculateRoute(waypoints);
-
-      if (!route || !route.features || !route.features[0]) {
-        throw new Error('Invalid route data received');
-      }
-
-      console.log('Route calculated successfully:', route);
-
-      // Update route with pickup order information and estimated times
-      const optimizedRoute = {
-        ...route,
-        pickupOrder: route.waypoints
-          .filter(wp => wp.type === 'pickup')
-          .map((waypoint, index) => {
-            const estimatedTime = calculateEstimatedPickupTime(route, index);
-            return {
-              passenger: waypoint.name,
-              location: waypoint.location,
-              order: index + 1,
-              estimatedPickupTime: estimatedTime,
-              distance: calculateDistance(startLocation, waypoint.location)
-            };
-          }),
-        lastUpdate: new Date().toISOString()
-      };
-
-      setRoute(optimizedRoute);
-      setRouteDetails({
-        totalDistance: route.features[0].properties.summary.distance,
-        totalDuration: route.features[0].properties.summary.duration,
-        segments: optimizedRoute.pickupOrder.map((pickup, index) => ({
-          type: 'pickup',
-          passenger: {
-            name: pickup.passenger,
-            address: pickup.location.address || 'Location not available'
-          },
-          distance: pickup.distance * 1000, // Convert to meters
-          duration: pickup.estimatedPickupTime * 60, // Convert to seconds
-          cumulativeTime: pickup.estimatedPickupTime * 60
+  // Add debugging for users prop
+  useEffect(() => {
+    console.log('MapView - Received users prop:', {
+      totalUsers: users.length,
+      users: users.map(u => ({
+        uid: u.uid,
+        displayName: u.displayName,
+        role: u.role,
+        hasLocation: !!u.location,
+        location: u.location,
+        invitationStatus: u.invitationStatus
         }))
       });
-      setError(null); // Clear any previous errors
-    } catch (error) {
-      console.error('Error calculating optimized route:', error);
-      setError(error.message || 'Failed to calculate route. Please try again.');
-      setRoute(null); // Clear the route on error
-      setRouteDetails(null);
-    }
-  }, [users, destination, userLocation]);
+  }, [users]);
 
-  // Add effect to trigger route calculation when needed
+  // Update internal route state when calculatedRoute prop changes
   useEffect(() => {
-    if (users.length > 0 && destination && userLocation) {
-      calculateOptimizedRoute();
+    console.log('MapView - calculatedRoute prop changed:', calculatedRoute);
+    if (calculatedRoute) {
+      setRoute(calculatedRoute);
     }
-  }, [users, destination, userLocation, calculateOptimizedRoute]);
+  }, [calculatedRoute]);
 
   // Calculate estimated pickup time based on route segments
   const calculateEstimatedPickupTime = (route, pickupIndex) => {
@@ -239,6 +160,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
   // Update the route visualization
   useEffect(() => {
     const map = mapInstanceRef.current;
+    
     if (!map || !route) return;
 
     try {
@@ -248,7 +170,49 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
         setRouteLayer(null);
       }
 
-      // Create new route layer
+      // Handle multi-vehicle routes
+      if (route.routes && Array.isArray(route.routes)) {
+        // Multi-vehicle route
+        const routeColors = ['#2196F3', '#FF5722', '#4CAF50', '#9C27B0', '#FF9800'];
+        const routeFeatures = [];
+        
+        route.routes.forEach((vehicleRoute, index) => {
+          if (vehicleRoute.waypoints && vehicleRoute.waypoints.length > 1) {
+            const coordinates = vehicleRoute.waypoints.map(waypoint => 
+              fromLonLat([waypoint.location.lng, waypoint.location.lat])
+            );
+            
+            const routeFeature = new Feature({
+              geometry: new LineString(coordinates),
+              name: `Route ${index + 1}`,
+              driver: vehicleRoute.driver?.displayName || `Driver ${index + 1}`
+            });
+
+            // Style the route with different colors for each vehicle
+            const routeStyle = new Style({
+              stroke: new Stroke({
+                color: routeColors[index % routeColors.length],
+                width: 6,
+                lineDash: [8, 4],
+              }),
+            });
+
+            routeFeature.setStyle(routeStyle);
+            routeFeatures.push(routeFeature);
+          }
+        });
+
+        // Create route layer for all vehicles
+        const newRouteLayer = new VectorLayer({
+          source: new VectorSource({
+            features: routeFeatures
+          })
+        });
+
+        map.addLayer(newRouteLayer);
+        setRouteLayer(newRouteLayer);
+      } else if (route.features && route.features[0]) {
+        // Single vehicle route (existing logic)
       const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
       const routeFeature = new Feature({
         geometry: new LineString(coordinates),
@@ -276,6 +240,28 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
 
       map.addLayer(newRouteLayer);
       setRouteLayer(newRouteLayer);
+      } else if (route.waypoints && route.waypoints.length > 1) {
+        // Simple route format
+        const coordinates = route.waypoints.map(waypoint => 
+          fromLonLat([waypoint.lng || waypoint.location.lng, waypoint.lat || waypoint.location.lat])
+        );
+        
+        const routeFeature = new Feature({
+          geometry: new LineString(coordinates),
+          name: 'Route',
+        });
+
+        const routeStyle = new Style({
+          stroke: new Stroke({
+            color: '#2196F3',
+            width: 6,
+            lineDash: [5, 5],
+          }),
+        });
+
+        routeFeature.setStyle(routeStyle);
+        vectorSourceRef.current.addFeature(routeFeature);
+      }
 
       // Get all features to include in the extent calculation
       const allFeatures = vectorSourceRef.current.getFeatures();
@@ -289,6 +275,8 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
         return null;
       }).filter(coord => coord !== null).flat();
 
+      // Only fit map if we have valid coordinates
+      if (allCoordinates.length > 0) {
       // Calculate the extent with additional padding
       const extent = boundingExtent(allCoordinates);
       
@@ -296,45 +284,21 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
       const [minX, minY, maxX, maxY] = extent;
       const width = maxX - minX;
       const height = maxY - minY;
-      const paddedExtent = [
-        minX - width * 0.2,
-        minY - height * 0.2,
-        maxX + width * 0.2,
-        maxY + height * 0.2
-      ];
-
-      // Fit map to show all features with padding and smooth animation
-      map.getView().fit(paddedExtent, {
-        padding: [50, 50, 50, 50], // Padding around the extent
-        maxZoom: 16, // Prevent zooming in too close
-        minZoom: 4,  // Prevent zooming out too far
-        duration: 1500, // Longer duration for smoother animation
-        easing: (t) => {
-          // Custom easing function for smoother animation
-          return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-        }
-      });
-
-      // Add a small delay and then adjust zoom if needed
-      setTimeout(() => {
-        const currentZoom = map.getView().getZoom();
-        const extentSize = Math.max(width, height);
+        const paddingX = width * 0.2;
+        const paddingY = height * 0.2;
         
-        // If the route is very long, zoom out a bit more
-        if (extentSize > 100000) { // If route is longer than 100km
-          map.getView().animate({
-            zoom: Math.min(currentZoom - 1, 12),
-            duration: 1000
-          });
-        }
-      }, 1600);
-
-      console.log('Route visualization updated successfully');
+        const paddedExtent = [minX - paddingX, minY - paddingY, maxX + paddingX, maxY + paddingY];
+        
+        map.getView().fit(paddedExtent, {
+          padding: [50, 50, 50, 50],
+          maxZoom: 16,
+          duration: 1000,
+        });
+      }
         } catch (error) {
       console.error('Error updating route visualization:', error);
-      setError('Failed to display route on map');
         }
-  }, [route, destination]);
+  }, [route]); // Only depend on route, not routeLayer to prevent infinite loops
 
   useEffect(() => {
     const source = vectorSourceRef.current;
@@ -367,16 +331,39 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
 
     // Add users with different styles based on their role
     users.forEach((user) => {
+      // Handle nested location data from participants
+      let userLat, userLng;
+      
+      // For drivers, prioritize currentLocation over location for real-time updates
+      if (user.role === 'driver' && user.currentLocation) {
+        // Use real-time current location for driver
+        userLat = user.currentLocation.lat;
+        userLng = user.currentLocation.lng;
+        console.log('Using driver currentLocation for real-time update:', userLat, userLng);
+      } else if (user.location) {
+        // Location data is nested in user.location
+        userLat = user.location.lat;
+        userLng = user.location.lng;
+      } else if (user.lat && user.lng) {
+        // Location data is directly on user object
+        userLat = user.lat;
+        userLng = user.lng;
+      } else {
+        // No location data available, skip this user
+        console.log('Skipping user without location data:', user.displayName || user.name);
+        return;
+      }
+
       const userFeature = new Feature({
-        geometry: new Point(fromLonLat([user.lng, user.lat])),
-        name: user.name,
+        geometry: new Point(fromLonLat([userLng, userLat])),
+        name: user.displayName || user.name,
       });
 
       const userStyle = new Style({
         image: new CircleStyle({
           radius: 8,
           fill: new Fill({ 
-            color: user.role === 'driver' ? '#2196F3' : user.color
+            color: user.color || (user.role === 'driver' ? '#2196F3' : '#FF5722')
           }),
           stroke: new Stroke({ 
             color: '#ffffff',
@@ -387,6 +374,8 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
 
       userFeature.setStyle(userStyle);
       features.push(userFeature);
+      
+      console.log('Added user marker for:', user.displayName || user.name, 'at:', userLat, userLng, 'role:', user.role);
     });
 
     // Add destination if available
@@ -496,11 +485,7 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
       totalDuration: newRoute.features[0].properties.summary.duration,
       segments: []
     });
-    
-    if (onRouteUpdate) {
-      onRouteUpdate(newRoute);
-    }
-  }, [onRouteUpdate]);
+  }, []);
 
   // Expose updateRoute method to parent component
   useEffect(() => {
@@ -508,6 +493,112 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
       mapRef.current.updateRoute = updateRoute;
     }
   }, [updateRoute]);
+
+  // Update route when calculatedRoute prop changes
+  useEffect(() => {
+    if (calculatedRoute && mapInstanceRef.current) {
+      console.log('Updating route on map:', calculatedRoute);
+      console.log('Route features:', calculatedRoute.features);
+      console.log('Route geometry:', calculatedRoute.features?.[0]?.geometry);
+
+    // Remove existing route layer if it exists
+    if (routeLayer) {
+      mapInstanceRef.current.removeLayer(routeLayer);
+    }
+
+    try {
+        // Handle different route data formats
+        let routeFeatures = [];
+        
+        if (calculatedRoute.features && calculatedRoute.features.length > 0) {
+          // GeoJSON format
+          routeFeatures = calculatedRoute.features;
+        } else if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
+          // VRP format - convert to GeoJSON
+          const route = calculatedRoute.routes[0];
+          if (route.waypoints && route.waypoints.length > 0) {
+            const coordinates = route.waypoints.map(wp => [wp.lng, wp.lat]);
+            routeFeatures = [{
+              type: 'Feature',
+              geometry: {
+                type: 'LineString',
+                coordinates: coordinates
+              },
+              properties: {
+                summary: {
+                  distance: route.totalDistance || calculatedRoute.totalDistance || 0,
+                  duration: route.totalDuration || calculatedRoute.totalDuration || 0
+                }
+              }
+            }];
+          }
+        }
+
+        if (routeFeatures.length > 0) {
+          const routeFeature = routeFeatures[0];
+          const coordinates = routeFeature.geometry.coordinates;
+          console.log('Route coordinates:', coordinates);
+          
+          if (!coordinates || coordinates.length < 2) {
+            console.warn('Invalid route coordinates:', coordinates);
+            return;
+          }
+          
+          const routeFeatureObj = new Feature({
+            geometry: new LineString(coordinates)
+        });
+
+        // Style the route
+        const routeStyle = new Style({
+          stroke: new Stroke({
+            color: '#2196F3',
+            width: 4,
+            lineDash: [10, 5]
+          })
+        });
+
+          routeFeatureObj.setStyle(routeStyle);
+
+        // Create route layer
+        const newRouteLayer = new VectorLayer({
+          source: new VectorSource({
+              features: [routeFeatureObj]
+          }),
+          zIndex: 10
+        });
+
+        // Add route layer to map
+        mapInstanceRef.current.addLayer(newRouteLayer);
+        setRouteLayer(newRouteLayer);
+
+        // Fit map to show the entire route
+          try {
+            const extent = routeFeatureObj.getGeometry().getExtent();
+        mapInstanceRef.current.getView().fit(extent, {
+          padding: [50, 50, 50, 50],
+          duration: 1000
+        });
+          } catch (fitError) {
+            console.warn('Could not fit map to route extent:', fitError);
+            // Fallback: fit to a reasonable area around the route
+            const center = routeFeatureObj.getGeometry().getFirstCoordinate();
+            if (center) {
+              mapInstanceRef.current.getView().setCenter(center);
+              mapInstanceRef.current.getView().setZoom(12);
+            }
+          }
+
+        console.log('Route displayed successfully on map');
+        } else {
+          console.warn('No valid route features found:', calculatedRoute);
+      }
+    } catch (error) {
+        console.error('Error updating route visualization:', error);
+    }
+
+      setRoute(calculatedRoute);
+    }
+  }, [calculatedRoute]); // Removed displayRouteOnMap from dependencies
 
   return (
     <div className="map-and-details-container">
@@ -605,145 +696,6 @@ function MapView({ users, destination, userLocation, onSetDestinationFromMap, on
           </div>
         </div>
       )}
-      <style jsx>{`
-        .map-and-details-container {
-          display: flex;
-          flex-direction: column;
-          width: 100%;
-          height: 100%;
-          position: relative;
-        }
-        .map-section {
-          width: 100%;
-          height: 100%;
-          position: relative;
-          flex: 1;
-        }
-        .route-details-section {
-          width: 100%;
-          max-width: 800px;
-          margin: 0 auto;
-          padding: 0 20px;
-        }
-        .route-info {
-          background-color: white;
-          padding: 20px;
-          border-radius: 12px;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        .route-info h5 {
-          margin-top: 0;
-          margin-bottom: 15px;
-          color: #333;
-          font-size: 1.2em;
-        }
-        .route-status {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 15px;
-          padding-bottom: 10px;
-          border-bottom: 1px solid #eee;
-        }
-        .last-update {
-          color: #666;
-          font-size: 0.9em;
-        }
-        .updating-badge {
-          background-color: #e3f2fd;
-          color: #2196F3;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 0.9em;
-          display: flex;
-          align-items: center;
-          gap: 5px;
-        }
-        .total-info {
-          margin-bottom: 20px;
-          padding-bottom: 15px;
-          border-bottom: 1px solid #eee;
-        }
-        .total-info p {
-          margin: 8px 0;
-          font-weight: 500;
-          font-size: 1.1em;
-        }
-        .segments-info {
-          display: flex;
-          flex-direction: column;
-          gap: 15px;
-        }
-        .segment {
-          padding: 15px;
-          background-color: #f8f9fa;
-          border-radius: 8px;
-          border: 1px solid #eee;
-        }
-        .segment.start {
-          background-color: #e3f2fd;
-          border-color: #2196F3;
-        }
-        .segment h6 {
-          margin: 0 0 10px 0;
-          color: #2196F3;
-          font-size: 1.1em;
-          font-weight: 600;
-        }
-        .segment p {
-          margin: 5px 0;
-          color: #666;
-        }
-        .segment.pickup {
-          border-left: 3px solid #2196F3;
-        }
-        .segment.destination {
-          border-left: 3px solid #4CAF50;
-        }
-        .segment h6 {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin: 0 0 10px 0;
-        }
-        .segment p {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin: 5px 0;
-        }
-        .recalculating-message {
-          position: absolute;
-          top: 10px;
-          left: 50%;
-          transform: translateX(-50%);
-          background-color: rgba(33, 150, 243, 0.9);
-          color: white;
-          padding: 10px 20px;
-          border-radius: 4px;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          z-index: 1000;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-        .warning-message {
-          position: absolute;
-          top: 10px;
-          left: 10px;
-          background-color: rgba(255, 193, 7, 0.9);
-          color: #000;
-          padding: 10px;
-          border-radius: 4px;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          z-index: 1000;
-          max-width: 300px;
-          word-wrap: break-word;
-        }
-        .error-message {
-          top: ${warning ? '60px' : '10px'};
-        }
-      `}</style>
     </div>
   );
 }

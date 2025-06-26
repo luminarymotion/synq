@@ -152,56 +152,54 @@ function UserTable({ users, onDelete, onRoleChange, rideId }) {
   };
 
   return (
-    <div className="user-table-wrapper">
-      <table className="user-table">
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="user-cards-wrapper">
+      <div className="user-cards-container">
           {users.map((user) => (
-            <tr key={user.id || user.tempId} className="user-row">
-              <td className="user-info">
-                <div className="user-avatar">
+          <div key={user.id || user.tempId} className="user-card">
+            <div className="user-card-header">
+              <div className="user-card-avatar">
                   {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.name} />
+                  <img src={user.photoURL} alt={user.displayName || user.name} />
                   ) : (
                     <div className="avatar-placeholder">
-                      {user.name.charAt(0).toUpperCase()}
+                    {(user.displayName || user.name || 'U').charAt(0).toUpperCase()}
                     </div>
                   )}
                 </div>
-                <div className="user-details">
-                  <span className="user-name">{user.name}</span>
-                  {user.email && <span className="user-email">{user.email}</span>}
+              <div className="user-card-info">
+                <div className="user-card-name">
+                  {user.displayName || user.name}
                 </div>
-              </td>
-              <td>
+                {user.friendStatus && (
+                  <div className={`user-card-status ${user.friendStatus}`}>
+                    {user.friendStatus === 'accepted' && <i className="fas fa-check"></i>}
+                    {user.friendStatus === 'pending' && <i className="fas fa-clock"></i>}
+                    {user.friendStatus === 'not_friend' && <i className="fas fa-user-plus"></i>}
+                    {user.friendStatus === 'accepted' ? 'Friend' : 
+                     user.friendStatus === 'pending' ? 'Request Sent' : 'Not Friend'}
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div className="user-card-content">
+              <div className="user-card-role">
                 {getRoleSelect(user)}
-              </td>
-              <td>
-                {getStatusBadge(user)}
-              </td>
-              <td className="actions-cell">
-                {getFriendActions(user)}
+              </div>
+              
                 {!user.isCreator && user.id !== user.uid && (
                 <button 
-                    className="remove-button"
+                  className="user-card-remove"
                     onClick={() => handleRemoveParticipant(user.id || user.tempId)}
                     title="Remove participant"
                   >
-                    <i className="fas fa-user-minus"></i>
+                  <i className="fas fa-times"></i>
                 </button>
                 )}
-              </td>
-            </tr>
+            </div>
+          </div>
           ))}
-        </tbody>
-      </table>
+      </div>
 
       {/* Remove Confirmation Modal */}
       {showRemoveConfirm && (

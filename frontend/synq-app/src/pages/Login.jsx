@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { useUserAuth } from '../services/auth';
+import SimpleLoading from '../components/SimpleLoading';
 import '../App.css';
 
 function Login() {
@@ -52,6 +53,16 @@ function Login() {
       setLoading(false);
     }
   };
+
+  // Show loading overlay during authentication
+  if (loading) {
+    return (
+      <SimpleLoading 
+        message="Signing you in..."
+        size="medium"
+      />
+    );
+  }
 
   if (error) {
     return (

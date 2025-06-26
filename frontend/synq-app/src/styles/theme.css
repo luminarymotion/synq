@@ -9,6 +9,9 @@
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
   position: relative;
+  margin-bottom: 1.5rem;
+  border: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .card::before {
@@ -50,6 +53,10 @@
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  margin-bottom: 1.5rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #1a1a1a;
 }
 
 .card-text {
@@ -62,6 +69,8 @@
   max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
+  padding-top: 1rem;
+  padding-bottom: 2rem;
 }
 
 .container-fluid {
@@ -294,4 +303,18 @@
   .btn {
     padding: 0.5rem 1rem;
   }
+}
+
+/* Global styles */
+.App {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Main content area */
+.App > div:not(.header) {
+  flex: 1;
+  padding-top: 80px; /* Space for fixed header */
+  min-height: calc(100vh - 80px);
 } 

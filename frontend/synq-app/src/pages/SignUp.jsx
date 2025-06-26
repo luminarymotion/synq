@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { createUserProfile } from '../services/firebaseOperations';
+import SimpleLoading from '../components/SimpleLoading';
 import '../App.css';
 
 function SignUp() {
@@ -67,6 +68,16 @@ function SignUp() {
       setLoading(false);
     }
   };
+
+  // Show loading overlay during account creation
+  if (loading) {
+    return (
+      <SimpleLoading 
+        message="Creating your account..."
+        size="medium"
+      />
+    );
+  }
 
   if (error) {
     return (

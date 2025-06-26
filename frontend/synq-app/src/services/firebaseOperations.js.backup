@@ -769,13 +769,8 @@ const updateFriendRequest = async (requestId, status) => {
   }
 };
 
-const getFriendsList = async (userId, runCleanup = false) => {
+const getFriendsList = async (userId) => {
   try {
-    // Optionally clean up orphaned relationships first
-    if (runCleanup) {
-      await cleanupOrphanedRelationships(userId);
-    }
-
     // Get active friendships where user is a participant
     const relationshipsQuery = query(
       collection(db, 'relationships'),
@@ -793,101 +788,34 @@ const getFriendsList = async (userId, runCleanup = false) => {
     // Get friend profiles
     const friendProfiles = await Promise.all(
       friendIds.map(async (friendId) => {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', friendId));
-          
-          // Check if user document exists
-          if (!userDoc.exists()) {
-            console.debug('Friend profile not found (orphaned relationship):', friendId);
-            return null; // Return null for missing users
-          }
-          
-          const userData = userDoc.data();
-          
-          // Check if user data has profile
-          if (!userData || !userData.profile) {
-            console.warn('Friend profile data incomplete:', friendId, userData);
-            return null; // Return null for incomplete data
-          }
+        const userDoc = await getDoc(doc(db, 'users', friendId));
+        const userData = userDoc.data();
+        const relationship = relationshipsSnapshot.docs.find(doc => 
+          doc.data().users.includes(friendId)
+        ).data();
 
-          const relationship = relationshipsSnapshot.docs.find(doc => 
-            doc.data().users.includes(friendId)
-          ).data();
-
-          return {
-            id: friendId,
-            profile: userData.profile,
-            relationship: {
-              id: relationship.id,
-              communityId: relationship.metadata.communityId,
-              communityRole: relationship.metadata.communityRole,
-              addedAt: relationship.metadata.createdAt,
-              lastInteraction: relationship.metadata.lastInteraction
-            },
-            isOnline: userData.isOnline,
-            lastSeen: userData.lastSeen
-          };
-        } catch (error) {
-          console.error('Error fetching friend profile:', friendId, error);
-          return null;
-        }
+        return {
+          id: friendId,
+          profile: userData.profile,
+          relationship: {
+            id: relationship.id,
+            communityId: relationship.metadata.communityId,
+            communityRole: relationship.metadata.communityRole,
+            addedAt: relationship.metadata.createdAt,
+            lastInteraction: relationship.metadata.lastInteraction
+          },
+          isOnline: userData.isOnline,
+          lastSeen: userData.lastSeen
+        };
       })
     );
 
-    // Filter out any null profiles (deleted users or invalid data)
-    const validFriends = friendProfiles.filter(profile => profile !== null);
-
     return {
       success: true,
-      friends: validFriends
+      friends: friendProfiles
     };
   } catch (error) {
     console.error('Error getting friends list:', error);
-    return { success: false, error };
-  }
-};
-
-const cleanupOrphanedRelationships = async (userId) => {
-  try {
-    console.log('Cleaning up orphaned relationships for user:', userId);
-    
-    // Get all relationships for this user
-    const relationshipsQuery = query(
-      collection(db, 'relationships'),
-      where('users', 'array-contains', userId),
-      where('status', '==', 'active'),
-      where('type', '==', 'friend')
-    );
-
-    const relationshipsSnapshot = await getDocs(relationshipsQuery);
-    const batch = writeBatch(db);
-    let cleanupCount = 0;
-
-    // Check each relationship
-    for (const relationshipDoc of relationshipsSnapshot.docs) {
-      const relationshipData = relationshipDoc.data();
-      const friendId = relationshipData.users.find(id => id !== userId);
-      
-      // Check if the friend user exists
-      const friendDoc = await getDoc(doc(db, 'users', friendId));
-      
-      if (!friendDoc.exists()) {
-        console.log('Removing orphaned relationship with non-existent user:', friendId);
-        batch.delete(relationshipDoc.ref);
-        cleanupCount++;
-      }
-    }
-
-    if (cleanupCount > 0) {
-      await batch.commit();
-      console.log(`Cleaned up ${cleanupCount} orphaned relationships`);
-    } else {
-      console.log('No orphaned relationships found');
-    }
-
-    return { success: true, cleanupCount };
-  } catch (error) {
-    console.error('Error cleaning up orphaned relationships:', error);
     return { success: false, error };
   }
 };
@@ -1153,21 +1081,12 @@ const subscribeToFriendsList = (userId, callback) => {
             friendIds.map(async (friendId) => {
               try {
                 const userDoc = await getDoc(doc(db, 'users', friendId));
-                
-                // Check if user document exists
                 if (!userDoc.exists()) {
-                  console.debug('Friend profile not found (orphaned relationship):', friendId);
-                  return null; // Return null for missing users
-                }
-                
-                const userData = userDoc.data();
-                
-                // Check if user data has profile
-                if (!userData || !userData.profile) {
-                  console.warn('Friend profile data incomplete:', friendId, userData);
-                  return null; // Return null for incomplete data
+                  console.log('Friend profile not found:', friendId);
+                  return null;
                 }
 
+                const userData = userDoc.data();
                 const relationship = snapshot.docs.find(doc => 
                   doc.data().users.includes(friendId)
                 );
@@ -1445,34 +1364,17 @@ const getMutualFriends = async (userId1, userId2) => {
     // Get profiles for mutual friends
     const mutualFriends = await Promise.all(
       mutualFriendIds.map(async (friendId) => {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', friendId));
-          
-          // Check if user document exists
-          if (!userDoc.exists()) {
-            console.warn('Friend profile not found:', friendId);
-            return null; // Return null for missing users
-          }
-          
-          const userData = userDoc.data();
-          
-          // Check if user data has profile
-          if (!userData || !userData.profile) {
-            console.warn('Friend profile data incomplete:', friendId, userData);
-            return null; // Return null for incomplete data
-          }
-
+        const userDoc = await getDoc(doc(db, 'users', friendId));
+        if (!userDoc.exists()) return null;
+        
+        const userData = userDoc.data();
           return {
-            id: friendId,
-            displayName: userData.profile.displayName,
-            photoURL: userData.profile.photoURL,
-            isOnline: userData.isOnline,
-            lastSeen: userData.lastSeen
-          };
-        } catch (error) {
-          console.error('Error fetching mutual friend profile:', friendId, error);
-          return null;
-        }
+          id: friendId,
+          displayName: userData.profile.displayName,
+          photoURL: userData.profile.photoURL,
+          isOnline: userData.isOnline,
+          lastSeen: userData.lastSeen
+        };
       })
     );
 
@@ -1772,9 +1674,9 @@ const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
       status: 'pending',
       inviter: {
         uid: inviterId,
-        displayName: inviterData.profile?.displayName || inviterData.displayName || 'Unknown User',
-        photoURL: inviterData.profile?.photoURL || inviterData.photoURL || '',
-        email: inviterData.profile?.email || inviterData.email || ''
+        displayName: inviterData.profile?.displayName || inviterData.displayName,
+        photoURL: inviterData.profile?.photoURL || inviterData.photoURL,
+        email: inviterData.profile?.email || inviterData.email
       },
       invitedAt: serverTimestamp(),
       rideId: rideId,
@@ -1782,32 +1684,24 @@ const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
       rideDate: rideData.createdAt
     };
     
-    // Filter out undefined values from invitation data
-    const cleanInvitationData = JSON.parse(JSON.stringify(invitationData, (key, value) => 
-      value === undefined ? null : value
-    ));
-    
     // Add invitation to ride document
     const rideRef = doc(db, 'rides', rideId);
     await updateDoc(rideRef, {
-      [`invitations.${inviteeId}`]: cleanInvitationData,
+      [`invitations.${inviteeId}`]: invitationData,
       updatedAt: serverTimestamp()
     });
     
     // Create notification for invitee
-    const inviterName = inviterData.profile?.displayName || inviterData.displayName || 'Unknown User';
-    const inviterPhotoURL = inviterData.profile?.photoURL || inviterData.photoURL || '';
-    
     await createNotification({
       userId: inviteeId,
       type: 'ride-invitation',
       title: 'Ride Invitation',
-      message: `${inviterName} invited you to join their ride`,
+      message: `${inviterData.profile?.displayName || inviterData.displayName} invited you to join their ride`,
       metadata: {
         rideId: rideId,
         inviterId: inviterId,
-        inviterName: inviterName,
-        inviterPhotoURL: inviterPhotoURL,
+        inviterName: inviterData.profile?.displayName || inviterData.displayName,
+        inviterPhotoURL: inviterData.profile?.photoURL || inviterData.photoURL,
         destination: rideData.destination?.address || 'Unknown destination'
       },
       actionUrl: `/rides/${rideId}`
@@ -1944,7 +1838,6 @@ export {
   updateRelationshipCommunity,
   removeFriendship,
   checkFriendshipStatus,
-  cleanupOrphanedRelationships,
 
   // Subscription Operations
   subscribeToFriendRequests,
