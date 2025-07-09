@@ -29,12 +29,35 @@ function Login() {
     setError(null);
     setLoading(true);
 
+    console.log('Attempting login with:', {
+      email: formData.email,
+      passwordLength: formData.password.length,
+      auth: auth ? 'Auth object exists' : 'Auth object missing'
+    });
+
     try {
       await signInWithEmailAndPassword(auth, formData.email, formData.password);
+      console.log('Login successful');
       navigate('/dashboard'); // Redirect to dashboard after successful login
     } catch (error) {
       console.error('Error signing in:', error);
-      setError(error.message);
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
+      
+      // Provide more user-friendly error messages
+      let userMessage = 'Login failed. Please check your credentials.';
+      
+      if (error.code === 'auth/invalid-credential') {
+        userMessage = 'Invalid email or password. Please try again.';
+      } else if (error.code === 'auth/user-not-found') {
+        userMessage = 'No account found with this email. Please sign up first.';
+      } else if (error.code === 'auth/wrong-password') {
+        userMessage = 'Incorrect password. Please try again.';
+      } else if (error.code === 'auth/too-many-requests') {
+        userMessage = 'Too many failed attempts. Please try again later.';
+      }
+      
+      setError(userMessage);
     } finally {
       setLoading(false);
     }
@@ -106,6 +129,7 @@ function Login() {
                     placeholder="Enter your email"
                     required
                     disabled={loading}
+                    autoComplete="email"
                   />
                 </div>
 
@@ -121,6 +145,7 @@ function Login() {
                     placeholder="Enter your password"
                     required
                     disabled={loading}
+                    autoComplete="current-password"
                   />
                 </div>
 

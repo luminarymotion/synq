@@ -42,6 +42,26 @@ const theme = createTheme({
   },
 });
 
+// Add global style to ensure full height
+const style = document.createElement('style');
+style.innerHTML = `
+  html, body, #root {
+    height: 100%;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    box-sizing: border-box;
+  }
+  .App {
+    min-height: 100vh;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+`;
+document.head.appendChild(style);
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ThemeProvider theme={theme}>

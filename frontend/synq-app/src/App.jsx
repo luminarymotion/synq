@@ -41,7 +41,44 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
-// Component that uses the auth context
+// Main App component that provides the auth context
+function App() {
+  return (
+    <UserAuthContextProvider>
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 3000,
+          style: {
+            background: '#363636',
+            color: '#fff',
+          },
+          success: {
+            duration: 3000,
+            style: {
+              background: '#4CAF50',
+            },
+          },
+          error: {
+            duration: 4000,
+            style: {
+              background: '#f44336',
+            },
+          },
+          info: {
+            duration: 3000,
+            style: {
+              background: '#2196F3',
+            },
+          },
+        }}
+      />
+      <AppContent />
+    </UserAuthContextProvider>
+  );
+}
+
+// Component that uses the auth context - moved inside the provider
 const AppContent = () => {
   const { user, loading, needsProfileSetup } = useUserAuth();
 
@@ -140,42 +177,5 @@ const AppContent = () => {
     </div>
   );
 };
-
-// Main App component that provides the auth context
-function App() {
-  return (
-    <UserAuthContextProvider>
-      <Toaster
-        position="top-right"
-        toastOptions={{
-          duration: 3000,
-          style: {
-            background: '#363636',
-            color: '#fff',
-          },
-          success: {
-            duration: 3000,
-            style: {
-              background: '#4CAF50',
-            },
-          },
-          error: {
-            duration: 4000,
-            style: {
-              background: '#f44336',
-            },
-          },
-          info: {
-            duration: 3000,
-            style: {
-              background: '#2196F3',
-            },
-          },
-        }}
-      />
-      <AppContent />
-    </UserAuthContextProvider>
-  );
-}
 
 export default App;

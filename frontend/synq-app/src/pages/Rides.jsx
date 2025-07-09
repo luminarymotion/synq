@@ -6,6 +6,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { updateRideParticipation } from '../services/firebaseOperations';
 import SimpleLoading from '../components/SimpleLoading';
 import '../styles/Rides.css';
+import { Box, Container, Card, CardContent, Typography, Button, Avatar, Stack, Divider, Alert, IconButton, Chip } from '@mui/material';
+import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
+import GroupIcon from '@mui/icons-material/Group';
+import HistoryIcon from '@mui/icons-material/History';
 
 /*
  * Rides Page Component
@@ -21,6 +25,19 @@ import '../styles/Rides.css';
  * The dashboard's "Your Active Rides" section will be moved here
  * to provide a more comprehensive ride management experience.
  */
+
+// Ghibli-inspired earthy palette
+const palette = {
+  bg: '#f5f3e7', // warm cream
+  card: '#f9f6ef', // lighter cream
+  accent: '#b5c99a', // soft green
+  accent2: '#a47551', // brown
+  accent3: '#e2b07a', // muted gold
+  text: '#4e342e', // deep brown
+  textSoft: '#7c5e48',
+  border: '#e0c9b3',
+  rideBg: '#e6ede3', // pale green
+};
 
 function Rides() {
   const { user } = useUserAuth();
@@ -487,314 +504,93 @@ function Rides() {
 
   console.log('Rendering main content');
   return (
-    <div className="rides-page-container">
-      <div className="rides-content-wrapper">
-        <div className="rides-header">
-          <h2>Your Rides</h2>
-          <Link to="/create-group" className="btn btn-primary">
-            <i className="bi bi-plus-circle me-2"></i>
-            Create New Group
-          </Link>
-        </div>
-
+    <Box sx={{ background: palette.bg, minHeight: '100vh', py: 5 }}>
+      <Container maxWidth="md">
+        <Typography variant="h4" fontWeight={700} color={palette.text} mb={3}>
+          Your Rides
+        </Typography>
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+        {/* Quick Actions Section - moved above Active Rides */}
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
+          <CardContent>
+            <Typography variant="h6" color={palette.textSoft} mb={2}>
+              Quick Actions
+            </Typography>
+            <Stack spacing={2}>
+              <Button
+                component={Link}
+                to="/create-group"
+                variant="contained"
+                startIcon={<DirectionsCarIcon />}
+                sx={{ background: palette.accent2, color: '#fff', borderRadius: 2, fontWeight: 600 }}
+              >
+                Create a Ride
+              </Button>
+              <Button variant="outlined" startIcon={<GroupIcon />} sx={{ color: palette.accent2, borderColor: palette.border, borderRadius: 2, fontWeight: 600 }}>
+                Find Groups
+              </Button>
+            </Stack>
+          </CardContent>
+        </Card>
         {/* Active Rides Section */}
-        <div className="card mb-4">
-          <div className="card-header">
-            <h3 className="card-title mb-0">Active Rides</h3>
-          </div>
-          <div className="card-body">
-            {loading ? (
-              <div className="text-center py-5">
-                <div className="spinner-border" role="status">
-                  <span className="visually-hidden">Loading...</span>
-                </div>
-              </div>
-            ) : error ? (
-              <div className="alert alert-danger" role="alert">
-                {error}
-              </div>
-            ) : activeRides.length === 0 ? (
-              <div className="text-center py-5">
-                <div className="mb-4">
-                  <i className="bi bi-car-front" style={{ fontSize: '3rem', color: '#6c757d' }}></i>
-                </div>
-                <h4 className="text-muted mb-3">No Active Rides</h4>
-                <p className="text-muted mb-4">You don't have any active rides at the moment.</p>
-                <Link to="/create-group" className="btn btn-primary">
-                  <i className="bi bi-plus-circle me-2"></i>
-                  Create Your First Ride
-                </Link>
-              </div>
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
+          <CardContent>
+            <Typography variant="h6" color={palette.textSoft} mb={2}>
+              <DirectionsCarIcon sx={{ mr: 1, color: palette.accent2 }} /> Active Rides
+            </Typography>
+            <Divider sx={{ mb: 2, background: palette.border }} />
+            {activeRides.length === 0 ? (
+              <Box textAlign="center" py={4}>
+                <DirectionsCarIcon sx={{ fontSize: 48, color: palette.accent2, mb: 2 }} />
+                <Typography color={palette.textSoft} mb={1}>No active rides</Typography>
+                <Typography color={palette.textSoft} variant="body2">Join or create a ride to get started!</Typography>
+              </Box>
             ) : (
-              <div className="rides-list">
-                {activeRides.map((ride) => (
-                  <div key={ride.id} id={`ride-${ride.id}`} className={`ride-container mb-4 ${ride.type === 'recent' ? 'recent-ride' : ''} ${ride.type === 'invitation' ? 'invitation-ride' : ''}`}>
-                    <div className="card">
-                      <div className={`card-header ${ride.type === 'recent' ? 'bg-info bg-opacity-10' : ride.type === 'invitation' ? 'bg-warning bg-opacity-10' : 'bg-light'}`}>
-                        <div className="d-flex justify-content-between align-items-center">
-                          <h4 className="mb-0">
-                            <Link to={`/rides/${ride.id}`} className="text-decoration-none">
-                            <span className="badge bg-primary me-2">{ride.id}</span>
-                            {ride.destination?.address}
-                              {ride.type === 'recent' && (
-                                <span className="badge bg-info ms-2">New</span>
-                              )}
-                              {ride.type === 'invitation' && (
-                                <span className="badge bg-warning ms-2">Invitation</span>
-                              )}
-                            </Link>
-                          </h4>
-                          <div className="d-flex align-items-center gap-2">
-                            <span className={`badge ${ride.status === 'active' ? 'bg-success' : 'bg-secondary'}`}>
-                              {ride.status}
-                            </span>
-                            {(ride.status === 'active' || ride.type === 'recent' || ride.type === 'invitation') && (
-                              <>
-                                <Link 
-                                  to={`/rides/${ride.id}`}
-                                  className="btn btn-outline-primary btn-sm"
-                                >
-                                  <i className="bi bi-map me-2"></i>
-                                  {ride.type === 'invitation' ? 'Respond' : 'View Live'}
-                                </Link>
-                                {ride.status === 'active' && ride.type !== 'invitation' && (
-                                  <button
-                                    className={`btn btn-outline-danger btn-sm ${leavingRideId === ride.id ? 'disabled' : ''}`}
-                                    onClick={() => {
-                                      if (window.confirm(`Are you sure you want to leave ride ${ride.id}?`)) {
-                                        handleLeaveRide(ride.id);
-                                      }
-                                    }}
-                                    disabled={leavingRideId === ride.id}
-                                  >
-                                    {leavingRideId === ride.id ? (
-                                      <>
-                                        <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                                        Leaving...
-                                      </>
-                                    ) : (
-                                      <>
-                                        <i className="bi bi-box-arrow-right me-1"></i>
-                                        Leave Ride
-                                      </>
-                                    )}
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="card-body">
-                        <div className="row">
-                          <div className="col-md-6">
-                            <h5>Driver Information</h5>
-                            <div className="mb-3">
-                              <strong>Name:</strong> {ride.driver?.name}
-                              <br />
-                              <strong>Location:</strong> {ride.driver?.address}
-                            </div>
-                          </div>
-                          <div className="col-md-6">
-                            <h5>Ride Details</h5>
-                            <div className="mb-3">
-                              <strong>Ride ID:</strong> {ride.id}
-                              <br />
-                              <strong>Started:</strong> {formatTime(ride.createdAt)}
-                              <br />
-                              <strong>Duration:</strong> {calculateETA(ride.createdAt)}
-                              <br />
-                              <strong>Passengers:</strong> {ride.passengers?.length || 0}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-4">
-                          <h5>Passengers</h5>
-                          <div className="list-group">
-                            {ride.passengers?.map((passenger, index) => (
-                              <div key={index} className="list-group-item">
-                                <div className="d-flex justify-content-between align-items-center">
-                                  <div>
-                                    <strong>{passenger.name}</strong>
-                                    <br />
-                                    <small className="text-muted">{passenger.address}</small>
-                                  </div>
-                                  <span className={`badge ${
-                                    passenger.status === 'pending' ? 'bg-warning' :
-                                    passenger.status === 'picked-up' ? 'bg-success' :
-                                    'bg-secondary'
-                                  }`}>
-                                    {passenger.status}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+              <Stack spacing={2}>
+                {activeRides.map(ride => (
+                  <Box key={ride.id} sx={{ background: palette.rideBg, borderRadius: 2, p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Box display="flex" alignItems="center">
+                      <Avatar src={ride.groupAvatar || '/default-avatar.png'} alt={ride.groupName} sx={{ width: 48, height: 48, mr: 2, bgcolor: palette.accent }} />
+                      <Box>
+                        <Typography fontWeight={600} color={palette.text}>{ride.groupName || 'Ride Group'}</Typography>
+                        <Typography variant="body2" color={palette.textSoft}>
+                          {!ride.destination ? 'Destination' : 
+                           typeof ride.destination === 'string' ? ride.destination : 
+                           ride.destination.address || 'Unknown destination'}
+                        </Typography>
+                        <Typography variant="caption" color={palette.accent2}>{ride.status || 'Active'}</Typography>
+                      </Box>
+                    </Box>
+                    <Box>
+                      <Button variant="outlined" color="error" size="small" onClick={() => handleLeaveRide(ride.id)} disabled={leavingRideId === ride.id} sx={{ borderRadius: 2, fontWeight: 600, borderColor: palette.accent2, color: palette.accent2 }}>
+                        Leave
+                      </Button>
+                    </Box>
+                  </Box>
                 ))}
-              </div>
+              </Stack>
             )}
-          </div>
-        </div>
-
-        <style jsx>{`
-          .rides-page-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2rem 1rem;
-            background-color: #f8f9fa;
-          }
-
-          .rides-content-wrapper {
-            width: 100%;
-            max-width: 800px;
-            margin: 0 auto;
-          }
-
-          .rides-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-          }
-
-          .rides-header h2 {
-            margin: 0;
-            color: #2c3e50;
-          }
-
-          .rides-list {
-            display: grid;
-            gap: 1rem;
-          }
-
-          .ride-container {
-            transition: transform 0.2s, box-shadow 0.2s;
-          }
-
-          .ride-container:hover {
-            transform: translateY(-2px);
-          }
-
-          .highlight-ride {
-            animation: highlight 2s ease-out;
-          }
-
-          .invitation-ride {
-            border-left: 4px solid #ffc107;
-          }
-
-          .invitation-ride .card-header {
-            background: linear-gradient(135deg, #fff3cd, #ffeaa7);
-          }
-
-          @keyframes highlight {
-            0% {
-              box-shadow: 0 0 0 0 rgba(33, 150, 243, 0.4);
-            }
-            70% {
-              box-shadow: 0 0 0 10px rgba(33, 150, 243, 0);
-            }
-            100% {
-              box-shadow: 0 0 0 0 rgba(33, 150, 243, 0);
-            }
-          }
-
-          .card {
-            border: none;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-          }
-
-          .card-header {
-            border-bottom: 1px solid rgba(0,0,0,0.1);
-          }
-
-          .badge {
-            font-size: 0.9em;
-            padding: 0.5em 1em;
-          }
-
-          .list-group-item {
-            border: 1px solid rgba(0,0,0,0.1);
-            margin-bottom: 0.5rem;
-            border-radius: 4px;
-          }
-
-          @media (max-width: 768px) {
-            .card-header h4 {
-              font-size: 1.1rem;
-            }
-          }
-
-          .btn-outline-danger {
-            border-color: #dc3545;
-            color: #dc3545;
-            transition: all 0.2s ease-in-out;
-          }
-
-          .btn-outline-danger:hover:not(:disabled) {
-            background-color: #dc3545;
-            color: white;
-          }
-
-          .btn-outline-danger:disabled {
-            opacity: 0.65;
-            cursor: not-allowed;
-          }
-
-          .gap-2 {
-            gap: 0.5rem;
-          }
-
-          .btn-outline-primary {
-            border-color: #2196F3;
-            color: #2196F3;
-            transition: all 0.2s ease-in-out;
-          }
-
-          .btn-outline-primary:hover:not(:disabled) {
-            background-color: #2196F3;
-            color: white;
-          }
-
-          .btn-outline-primary:disabled {
-            opacity: 0.65;
-            cursor: not-allowed;
-          }
-
-          .text-decoration-none {
-            color: inherit;
-          }
-
-          .text-decoration-none:hover {
-            color: #2196F3;
-          }
-
-          .recent-ride {
-            border-left: 4px solid #0dcaf0;
-          }
-
-          .recent-ride .card {
-            border-color: #0dcaf0;
-          }
-
-          .recent-ride .card-header {
-            border-bottom-color: #0dcaf0;
-          }
-
-          .badge.bg-info {
-            background-color: #0dcaf0 !important;
-            color: #000;
-          }
-        `}</style>
-      </div>
-    </div>
+          </CardContent>
+        </Card>
+        {/* Ride History Section */}
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
+          <CardContent>
+            <Typography variant="h6" color={palette.textSoft} mb={2}>
+              <HistoryIcon sx={{ mr: 1, color: palette.accent2 }} /> Ride History
+            </Typography>
+            {/* Placeholder for ride history, replace with actual logic if needed */}
+            <Box textAlign="center" py={4}>
+              <Typography color={palette.textSoft} mb={1}>No ride history yet</Typography>
+              <Typography color={palette.textSoft} variant="body2">Your completed rides will appear here.</Typography>
+            </Box>
+          </CardContent>
+        </Card>
+      </Container>
+    </Box>
   );
 }
 

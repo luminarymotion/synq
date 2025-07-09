@@ -1,43 +1,101 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
-import { doc, onSnapshot, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import MapView from '../components/MapView';
 import { useLocation } from '../services/locationTrackingService';
-import rideStatusService, { RIDE_STATUS, STATUS_METADATA, STATUS_TRANSITIONS } from '../services/rideStatusService';
-import RideInvitationModal from '../components/RideInvitationModal';
+import rideStatusService, { RIDE_STATUS } from '../services/rideStatusService';
 import { calculateOptimizedRoute } from '../services/routeOptimizerService';
+import RideInvitationModal from '../components/RideInvitationModal';
+import RouteInformationPanel from '../components/RouteInformationPanel';
 import '../styles/LiveRideView.css';
+import { 
+  Box, Typography, Card, Button, Stack, Divider, Avatar, Chip, Alert, TextField, Modal, IconButton
+} from '@mui/material';
+import {
+  DirectionsCar as CarIcon,
+  Person as PersonIcon,
+  Fullscreen as FullscreenIcon,
+  FullscreenExit as FullscreenExitIcon,
+  Close as CloseIcon
+} from '@mui/icons-material';
 
+// --- VIBE LOGIC ---
+const vibePalettes = [
+  { keyword: 'airport', gradient: 'linear-gradient(135deg, #b2c9e6 0%, #e0e7ef 100%)', accent: '#3a5a7a', text: '#233044' },
+  { keyword: 'university', gradient: 'linear-gradient(135deg, #b7e0c7 0%, #e0f7ef 100%)', accent: '#2e6e4c', text: '#1b3a2f' },
+  { keyword: 'park', gradient: 'linear-gradient(135deg, #d0e6b2 0%, #f0f7e0 100%)', accent: '#6e8e2e', text: '#2f3a1b' },
+  { keyword: 'beach', gradient: 'linear-gradient(135deg, #ffe7b2 0%, #b2e6e0 100%)', accent: '#e6b25a', text: '#3a2f1b' },
+  { keyword: 'mall', gradient: 'linear-gradient(135deg, #e6b2e0 0%, #e0e7ef 100%)', accent: '#7a3a5a', text: '#442333' },
+  { keyword: 'center', gradient: 'linear-gradient(135deg, #b2e6e0 0%, #e0e7ef 100%)', accent: '#3a7a6e', text: '#233944' },
+  { keyword: 'victory', gradient: 'linear-gradient(135deg, #f7d9b7 0%, #e0e7ef 100%)', accent: '#b77a3a', text: '#443823' },
+  { keyword: 'lake', gradient: 'linear-gradient(135deg, #b2d6e6 0%, #e0e7ef 100%)', accent: '#3a6e7a', text: '#233944' },
+  { keyword: 'plaza', gradient: 'linear-gradient(135deg, #e6e2b2 0%, #e0e7ef 100%)', accent: '#7a6e3a', text: '#444223' },
+  { keyword: 'default', gradient: 'linear-gradient(135deg, #f5f3e7 0%, #e0c9b3 100%)', accent: '#b08968', text: '#4e342e' }
+];
+
+function getVibePalette(destination) {
+  if (!destination) return vibePalettes[vibePalettes.length - 1];
+  const address = typeof destination === 'string' ? destination : destination.address || '';
+  const lower = address.toLowerCase();
+  for (const palette of vibePalettes) {
+    if (palette.keyword !== 'default' && lower.includes(palette.keyword)) {
+      return palette;
+    }
+  }
+  return vibePalettes[vibePalettes.length - 1];
+}
+
+// --- MAIN COMPONENT ---
 function LiveRideView() {
   const { rideId } = useParams();
   const navigate = useNavigate();
   const { user } = useUserAuth();
+  
+  // Core state
   const [ride, setRide] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [locationError, setLocationError] = useState(null);
   const [participants, setParticipants] = useState([]);
-  const [isSharing, setIsSharing] = useState(false);
-  const [statusHistory, setStatusHistory] = useState([]);
-  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [optimizedRoute, setOptimizedRoute] = useState(null);
+  const [invitationsWithNames, setInvitationsWithNames] = useState([]);
+  
+  // UI state
   const [showInvitationModal, setShowInvitationModal] = useState(false);
   const [userInvitation, setUserInvitation] = useState(null);
   const [isSubmittingRSVP, setIsSubmittingRSVP] = useState(false);
   const [isManuallyOpened, setIsManuallyOpened] = useState(false);
-  const [mapRef, setMapRef] = useState(null);
-  const [routeLoadingState, setRouteLoadingState] = useState('idle'); // 'idle', 'loading', 'success', 'error'
-  const [routeErrorMessage, setRouteErrorMessage] = useState(null);
-  const [mapState, setMapState] = useState('preview'); // 'preview', 'pending', 'active', 'live'
+  const [isMapModalOpen, setIsMapModalOpen] = useState(false);
+  const [isMapFullScreen, setIsMapFullScreen] = useState(false);
+  const [isFlipped, setIsFlipped] = useState(false);
+  
+  // Description editing
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [description, setDescription] = useState('');
+  const [savingDescription, setSavingDescription] = useState(false);
+  
+  // Title editing
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [title, setTitle] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  
+  // Location tracking
+  const [locationError, setLocationError] = useState(null);
+  
+  // Route optimization
+  const [calculatedRoute, setCalculatedRoute] = useState(null);
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
+  const [routeError, setRouteError] = useState(null);
+  
+  // Route information and passenger management for full screen mode
+  const [currentRouteStep, setCurrentRouteStep] = useState(0);
+  const [passengerStatus, setPassengerStatus] = useState({});
+  const [showFullRoute, setShowFullRoute] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState(null);
 
   const {
     location,
     isTracking,
-    status: locationStatus,
-    error: locationServiceError,
     startTracking,
     stopTracking
   } = useLocation({
@@ -47,7 +105,6 @@ function LiveRideView() {
       if (!ride || ride.driver?.uid !== user.uid) return;
 
       try {
-        // Update ride document with new currentLocation (not location to preserve pickup location)
         const rideRef = doc(db, 'rides', rideId);
         await updateDoc(rideRef, {
           'driver.currentLocation': {
@@ -58,7 +115,6 @@ function LiveRideView() {
             lastUpdated: serverTimestamp()
           }
         });
-        // Clear location error on successful update
         setLocationError(null);
       } catch (error) {
         console.error('Error updating ride with location:', error);
@@ -67,7 +123,6 @@ function LiveRideView() {
     },
     onError: (errorMessage) => {
       console.error('Location tracking error:', errorMessage);
-      // Only set location error for non-critical issues
       if (errorMessage && !errorMessage.includes('permission denied')) {
         setLocationError(errorMessage);
       } else if (errorMessage && errorMessage.includes('permission denied')) {
@@ -93,7 +148,210 @@ function LiveRideView() {
     }
   });
 
-  // Subscribe to ride updates and optimize route when needed
+  // State to store resolved display names
+  const [displayNames, setDisplayNames] = useState({});
+
+  // Calculate optimized route based on participants and destination
+  const calculateRoute = async () => {
+    if (!ride) return;
+
+    setIsCalculatingRoute(true);
+    setRouteError(null);
+
+    try {
+      // Create waypoints array
+      const waypoints = [];
+      
+      // Add driver as starting point (from participants or invitations)
+      let driver = null;
+      
+      // First check if there's a driver in participants
+      if (ride.driver) {
+        driver = {
+          ...ride.driver,
+          role: 'driver',
+          currentLocation: ride.driver.currentLocation,
+          location: ride.driver.location || ride.driver.currentLocation,
+          displayName: displayNames[ride.driver.uid] || ride.driver.displayName || 'Driver'
+        };
+      }
+      
+      if (driver) {
+        const driverLocation = driver.currentLocation || driver.location;
+        if (driverLocation && driverLocation.lat && driverLocation.lng) {
+          waypoints.push({
+            ...driver,
+            lat: driverLocation.lat,
+            lng: driverLocation.lng,
+            location: driverLocation,
+            type: 'driver',
+            displayName: driver.displayName
+          });
+        }
+      }
+
+      // Use participants array which now includes all users with locations
+      const allUsersWithLocations = participants.filter(p => 
+        p.location && p.location.lat && p.location.lng && p.role !== 'driver'
+      );
+      
+      console.log('Users with locations for route calculation:', allUsersWithLocations.map(u => ({
+        uid: u.uid,
+        displayName: u.displayName,
+        role: u.role,
+        status: u.invitationStatus,
+        location: u.location
+      })));
+      
+      // Add all users with locations to waypoints
+      allUsersWithLocations.forEach(user => {
+        waypoints.push({
+          ...user,
+          lat: user.location.lat,
+          lng: user.location.lng,
+          location: user.location,
+          type: 'pickup',
+          displayName: user.displayName
+        });
+      });
+
+      // Add destination
+      if (ride.destination && ride.destination.location) {
+        waypoints.push({
+          ...ride.destination,
+          lat: ride.destination.location.lat,
+          lng: ride.destination.location.lng,
+          location: ride.destination.location,
+          type: 'destination',
+          displayName: 'Destination'
+        });
+      }
+
+      console.log('Calculating route with waypoints:', waypoints.map(wp => ({
+        type: wp.type,
+        displayName: wp.displayName,
+        location: wp.location,
+        role: wp.role,
+        uid: wp.uid
+      })));
+      
+      console.log('Participants with locations:', participants.filter(p => p.location).map(p => ({
+        uid: p.uid,
+        displayName: p.displayName,
+        role: p.role,
+        status: p.invitationStatus,
+        location: p.location
+      })));
+      
+      // Debug: Check what the route optimizer will receive
+      console.log('Route optimizer input analysis:', {
+        totalWaypoints: waypoints.length,
+        drivers: waypoints.filter(w => w.type === 'driver' || w.role === 'driver').length,
+        pickupPoints: waypoints.filter(w => (w.type === 'pickup' || w.type === 'waypoint' || w.type === 'passenger') && w.role !== 'driver').length,
+        destinations: waypoints.filter(w => w.type === 'destination' || w.type === 'end').length,
+        waypointTypes: waypoints.map(w => ({ type: w.type, role: w.role, displayName: w.displayName }))
+      });
+      
+      // More detailed waypoint analysis
+      console.log('Detailed waypoint breakdown:', waypoints.map(wp => ({
+        displayName: wp.displayName,
+        type: wp.type,
+        role: wp.role,
+        uid: wp.uid,
+        hasLocation: !!(wp.location && wp.location.lat && wp.location.lng),
+        location: wp.location,
+        isDriver: wp.type === 'driver' || wp.role === 'driver',
+        isPickup: (wp.type === 'pickup' || wp.type === 'waypoint' || wp.type === 'passenger') && wp.role !== 'driver',
+        isDestination: wp.type === 'destination' || wp.type === 'end'
+      })));
+
+      if (waypoints.length >= 2) {
+        // Check if we have the expected waypoints for a proper route
+        const expectedWaypoints = 1 + allUsersWithLocations.length + (ride.destination && ride.destination.location ? 1 : 0);
+        
+        console.log('Route calculation check:', {
+          actualWaypoints: waypoints.length,
+          expectedWaypoints: expectedWaypoints,
+          driver: waypoints.filter(w => w.type === 'driver').length,
+          passengers: allUsersWithLocations.length,
+          destination: ride.destination && ride.destination.location ? 1 : 0
+        });
+        
+        if (waypoints.length < expectedWaypoints) {
+          console.log('Waiting for all waypoints to be available before calculating route');
+          return;
+        }
+        
+        const routeData = await calculateOptimizedRoute(waypoints, {
+          maxPassengers: 8,
+          maxRouteDistance: 100,
+          maxRouteDuration: 120
+        });
+
+        console.log('Route calculation completed:', routeData);
+        setCalculatedRoute(routeData);
+      } else {
+        console.log('Not enough waypoints for route calculation:', waypoints.length);
+      }
+    } catch (error) {
+      console.error('Error calculating route:', error);
+      setRouteError('Failed to calculate route: ' + error.message);
+    } finally {
+      setIsCalculatingRoute(false);
+    }
+  };
+
+  // Get display name for UID with caching
+  const getDisplayNameForUid = async (uid) => {
+    if (!uid) return 'Unknown User';
+    // Don't return early for current user - we want to fetch their actual display name from Firestore
+    
+    // Check if we already have this display name cached
+    if (displayNames[uid]) {
+      return displayNames[uid];
+    }
+    
+    try {
+      const userRef = doc(db, 'users', uid);
+      const userDoc = await getDoc(userRef);
+      
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+        
+        // Check for displayName in different possible locations (prioritize profile.displayName)
+        let displayName = null;
+        
+        if (userData.profile && userData.profile.displayName) {
+          displayName = userData.profile.displayName;
+        } else if (userData.displayName) {
+          displayName = userData.displayName;
+        } else if (userData.name) {
+          displayName = userData.name;
+        } else if (userData.email) {
+          displayName = userData.email;
+        } else if (userData.userProfile && userData.userProfile.displayName) {
+          displayName = userData.userProfile.displayName;
+        }
+        
+        const resolvedName = displayName || `User ${uid.slice(-4)}`;
+        
+        // Cache the result
+        setDisplayNames(prev => ({
+          ...prev,
+          [uid]: resolvedName
+        }));
+        
+        return resolvedName;
+      } else {
+        console.log(`No user document found for UID: ${uid}`);
+      }
+    } catch (error) {
+      console.error(`Error fetching user profile for UID: ${uid}`, error);
+    }
+    return `User ${uid.slice(-4)}`;
+  };
+
+  // Subscribe to ride updates
   useEffect(() => {
     if (!rideId || !user) return;
 
@@ -101,11 +359,9 @@ function LiveRideView() {
     const unsubscribe = onSnapshot(rideRef, async (doc) => {
         if (doc.exists()) {
         const rideData = doc.data();
-        
         setRide(rideData);
-
-        // Update status history from ride data
-        setStatusHistory(rideData.statusHistory || []);
+        setDescription(rideData.description || '');
+        setTitle(rideData.groupName || rideData.name || 'Untitled Ride');
 
         // Stop location tracking if ride is cancelled
         if (rideData.status === RIDE_STATUS.CANCELLED && isTracking) {
@@ -119,88 +375,125 @@ function LiveRideView() {
           stopTracking();
         }
 
-        // Update participants list with invitation statuses
+        // Update participants list
         const allParticipants = [];
         
-        // Define colors for participants
-        const participantColors = [
-          '#2196F3', // Blue (driver)
-          '#FF5722', // Orange
-          '#4CAF50', // Green
-          '#9C27B0', // Purple
-          '#FF9800', // Amber
-          '#795548', // Brown
-          '#607D8B', // Blue Grey
-          '#E91E63', // Pink
-          '#00BCD4', // Cyan
-          '#8BC34A'  // Light Green
-        ];
-        
-        // Add driver with invitation status
+        // Add driver
         if (rideData.driver) {
-          const driverInvitation = rideData.invitations?.[rideData.driver.uid];
           allParticipants.push({
             ...rideData.driver,
             role: 'driver',
-            invitationStatus: driverInvitation?.status || 'accepted', // Driver is always accepted
+            invitationStatus: 'accepted',
             isCreator: rideData.creatorId === rideData.driver.uid,
-            color: participantColors[0], // Blue for driver
-            // Include currentLocation for real-time updates
-            currentLocation: rideData.driver.currentLocation || null
+            color: '#2196F3',
+            displayName: rideData.driver.displayName || rideData.driver.name || `User ${rideData.driver.uid?.slice(-4)}` || 'Driver'
           });
         }
         
-        // Add passengers with invitation statuses
+                // Add passengers
         if (rideData.passengers) {
           rideData.passengers.forEach((passenger, index) => {
-            const passengerInvitation = rideData.invitations?.[passenger.uid];
+            const isAlreadyParticipant = allParticipants.some(p => p.uid === passenger.uid);
+            if (!isAlreadyParticipant) {
             allParticipants.push({
               ...passenger,
               role: 'passenger',
-              invitationStatus: passengerInvitation?.status || 'accepted',
+                invitationStatus: 'accepted',
               isCreator: rideData.creatorId === passenger.uid,
-              color: participantColors[index + 1] || participantColors[1] // Start from index 1 (orange)
+                color: ['#FF5722', '#4CAF50', '#9C27B0', '#FF9800'][index % 4],
+                displayName: passenger.displayName || passenger.name || `User ${passenger.uid?.slice(-4)}` || 'Passenger'
             });
-          });
-        }
-        
-        // Add pending invitations that haven't responded yet
-        if (rideData.invitations) {
-          Object.entries(rideData.invitations).forEach(([inviteeId, invitation], index) => {
-            // Only add if they're not already in participants and status is pending
-            const isAlreadyParticipant = allParticipants.some(p => p.uid === inviteeId);
-            if (!isAlreadyParticipant && invitation.status === 'pending') {
-              allParticipants.push({
-                uid: inviteeId,
-                displayName: invitation.inviteeName || 'Unknown User',
-                photoURL: invitation.inviteePhotoURL,
-                email: invitation.inviteeEmail,
-                role: invitation.role || 'passenger',
-                invitationStatus: 'pending',
-                isCreator: rideData.creatorId === inviteeId,
-                isPendingInvitation: true,
-                color: participantColors[allParticipants.length] || participantColors[1]
-              });
             }
           });
         }
         
-        setParticipants(allParticipants);
+        // Add invitations (including accepted ones with pickup locations)
+        if (rideData.invitations) {
+          Object.entries(rideData.invitations).forEach(([inviteeId, invitation]) => {
+            const isAlreadyParticipant = allParticipants.some(p => p.uid === inviteeId);
+            if (!isAlreadyParticipant) {
+              const participantData = {
+                uid: inviteeId,
+                displayName: invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User',
+                photoURL: invitation.inviteePhotoURL,
+                email: invitation.inviteeEmail,
+                role: invitation.role || 'passenger',
+                invitationStatus: invitation.status,
+                isCreator: rideData.creatorId === inviteeId,
+                isPendingInvitation: invitation.status === 'pending',
+                color: '#607D8B'
+              };
+              
+              // Add location data from RSVP response if available (regardless of status)
+              if (invitation.response) {
+                const response = invitation.response;
+                if (response.location && response.location.lat && response.location.lng) {
+                  participantData.location = response.location;
+                  participantData.pickupLocation = response.pickupLocation;
+                  participantData.readyTime = response.readyTime;
+                  participantData.locationSharing = response.locationSharing;
+                  participantData.notes = response.notes;
+                  
+                  console.log('Added user with location to participants:', {
+                    uid: inviteeId,
+                    displayName: participantData.displayName,
+                    status: invitation.status,
+                    location: response.location
+                  });
+                }
+              }
+              
+              allParticipants.push(participantData);
+            }
+          });
+        }
+        
+        // Remove duplicates
+        const uniqueParticipants = [];
+        const seenUids = new Set();
+        
+        allParticipants.forEach(participant => {
+          if (!seenUids.has(participant.uid)) {
+            seenUids.add(participant.uid);
+            uniqueParticipants.push(participant);
+          }
+        });
+        
+        setParticipants(uniqueParticipants);
 
-        // Debug logging for participants and their locations
-        console.log('LiveRideView - Participants data:', {
-          totalParticipants: allParticipants.length,
-          participants: allParticipants.map(p => ({
-            uid: p.uid,
-            displayName: p.displayName,
-            role: p.role,
-            hasLocation: !!p.location,
-            location: p.location,
-            invitationStatus: p.invitationStatus
-          }))
+        // Set participants immediately with available data
+        setParticipants(uniqueParticipants);
+        
+        // Resolve display names for all unique UIDs
+        const allUids = [...new Set([
+          ...uniqueParticipants.map(p => p.uid),
+          ...(rideData.invitations ? Object.keys(rideData.invitations) : []),
+          rideData.createdBy // Add ride creator
+        ])];
+        
+        // Fetch display names for all UIDs
+        allUids.forEach(async (uid) => {
+          if (uid && uid !== user?.uid) {
+            await getDisplayNameForUid(uid);
+          }
         });
 
-        // Check if current user has a pending invitation
+        // Calculate route when participants change
+        if (uniqueParticipants.length > 0) {
+          setTimeout(() => calculateRoute(), 1000); // Small delay to ensure display names are loaded
+        }
+        
+        // Set up invitations with names
+        if (rideData.invitations) {
+          const invitationsWithNames = Object.entries(rideData.invitations).map(([inviteeId, invitation]) => ({
+                  inviteeId,
+                  invitation,
+            displayName: invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User'
+          }));
+          setInvitationsWithNames(invitationsWithNames);
+        }
+
+        // Check for pending invitation
         if (user && rideData.invitations && !loading) {
           const userInvitation = rideData.invitations[user.uid];
           
@@ -214,154 +507,157 @@ function LiveRideView() {
             setUserInvitation(null);
           }
         }
-
-        // Optimize route if we have destination location (required for any route)
-        if (rideData.destination?.location) {
-          try {
-            setRouteLoadingState('loading');
-            setRouteErrorMessage(null);
-            
-            console.log('LiveRideView - Starting route optimization');
-            console.log('LiveRideView - Destination location:', rideData.destination.location);
-            console.log('LiveRideView - Driver location:', rideData.driver?.currentLocation || rideData.driver?.location);
-            console.log('LiveRideView - Passengers:', rideData.passengers?.length || 0);
-            
-            // Determine map state based on ride progress
-            let newMapState = 'preview';
-            if (rideData.status === 'active' || rideData.status === 'in_progress') {
-              newMapState = 'live';
-            } else if (rideData.passengers && rideData.passengers.length > 0) {
-              newMapState = 'active';
-            } else if (rideData.invitations && Object.keys(rideData.invitations).length > 0) {
-              newMapState = 'pending';
-            }
-            setMapState(newMapState);
-            
-            // Prepare waypoints for route optimization
-            const waypoints = [];
-            
-            // Add starting point - prioritize driver's current location, then driver's location, then creator's location
-            let startingLocation = null;
-            if (rideData.driver?.currentLocation) {
-              startingLocation = rideData.driver.currentLocation;
-              console.log('LiveRideView - Using driver current location as starting point');
-            } else if (rideData.driver?.location) {
-              startingLocation = rideData.driver.location;
-              console.log('LiveRideView - Using driver location as starting point');
-            } else if (rideData.creatorId === user?.uid && location) {
-              // If current user is creator and has location, use it as starting point
-              startingLocation = {
-                lat: location.latitude,
-                lng: location.longitude,
-                accuracy: location.accuracy
-              };
-              console.log('LiveRideView - Using creator location as starting point');
-            } else {
-              // Fallback: use destination as starting point (will be adjusted by route optimization)
-              startingLocation = rideData.destination.location;
-              console.log('LiveRideView - Using destination as fallback starting point');
-            }
-            
-            if (startingLocation) {
-              waypoints.push({
-                ...startingLocation,
-                type: 'driver',
-                role: 'driver',
-                name: rideData.driver?.displayName || rideData.driver?.name || 'Driver'
-              });
-              console.log('LiveRideView - Added starting waypoint:', {
-                location: startingLocation,
-                type: 'starting_point'
-              });
-            }
-            
-            // Add passengers as pickup points
-            if (rideData.passengers) {
-              rideData.passengers.forEach(passenger => {
-                if (passenger.location) {
-                  waypoints.push({
-                    ...passenger.location,
-                    type: 'pickup',
-                    role: 'passenger',
-                    name: passenger.displayName || passenger.name
-                  });
-                }
-              });
-            }
-            
-            // Add destination
-            if (rideData.destination?.location) {
-              waypoints.push({
-                ...rideData.destination.location,
-                type: 'destination',
-                role: 'destination',
-                name: 'Final Destination'
-              });
-            }
-            
-            console.log('LiveRideView - Waypoints prepared:', waypoints.length);
-            
-            // Use the route optimization service
-            const optimizedRouteData = await calculateOptimizedRoute(waypoints, {
-              timeWindows: {},
-              capacity: 8,
-              maxDistance: 100,
-              trafficConditions: 'current'
-            });
-            
-            console.log('LiveRideView - Route optimization completed:', optimizedRouteData);
-            
-            // Convert VRP route data to GeoJSON format for MapView
-            const geoJsonRoute = convertVRPToGeoJSON(optimizedRouteData, waypoints);
-            
-            console.log('LiveRideView - Converted to GeoJSON:', geoJsonRoute);
-            
-            setOptimizedRoute(geoJsonRoute);
-            setRouteLoadingState('success');
-            
-          } catch (error) {
-            console.error('Error optimizing route:', error);
-            setRouteLoadingState('error');
-            setRouteErrorMessage(error.message);
-            
-            // Fallback to simple route calculation
-            try {
-              console.log('LiveRideView - Trying fallback route calculation');
-              const simpleRoute = await calculateSimpleRoute(rideData, user, location);
-              console.log('LiveRideView - Fallback route result:', simpleRoute);
-              setOptimizedRoute(simpleRoute);
-              setRouteLoadingState('success');
-              setRouteErrorMessage(null);
-            } catch (fallbackError) {
-              console.error('Fallback route calculation also failed:', fallbackError);
-              setRouteLoadingState('error');
-              setRouteErrorMessage('Failed to calculate route. Please try again.');
-            }
-          }
-        } else {
-          console.log('LiveRideView - Skipping route optimization - missing destination:', {
-            hasDestinationLocation: !!rideData.destination?.location,
-            destinationLocation: rideData.destination?.location
-          });
-          setRouteLoadingState('error');
-          setRouteErrorMessage('Destination location is required for route calculation');
-        }
       } else {
         setError('Ride not found');
         navigate('/rides');
       }
-        setLoading(false);
+      setLoading(false);
     });
 
     return () => {
       unsubscribe();
     };
-  }, [rideId, user, navigate]);
+  }, [rideId, user, navigate, loading, showInvitationModal, isManuallyOpened, isTracking, stopTracking]);
 
-  // Separate effect for location tracking
+  // Effect to fetch display names when participants change
+  useEffect(() => {
+    if (!participants.length) return;
+    
+    // Only fetch if we don't already have the display names
+    const uidsToFetch = participants
+      .filter(p => p.uid && !displayNames[p.uid])
+      .map(p => p.uid);
+    
+    console.log('🔍 Participant display name status:', participants.map(p => ({
+      uid: p.uid,
+      isCurrentUser: p.uid === user?.uid,
+      hasCachedName: !!displayNames[p.uid],
+      cachedName: displayNames[p.uid],
+      willFetch: p.uid !== user?.uid && !displayNames[p.uid]
+    })));
+    
+    if (uidsToFetch.length === 0) {
+      console.log('🔄 All participant display names already cached');
+      return;
+    }
+    
+    console.log('🔄 Effect triggered: Fetching display names for participants:', uidsToFetch);
+    
+    // Fetch display names for participants that need them
+    const fetchDisplayNames = async () => {
+      for (const uid of uidsToFetch) {
+        console.log(`🚀 Triggering fetch for participant: ${uid}`);
+        await getDisplayNameForUid(uid);
+      }
+    };
+    
+    fetchDisplayNames();
+  }, [participants, user?.uid, displayNames]);
+
+  // Effect to fetch display names for invitations
+  useEffect(() => {
+    if (!ride?.invitations) return;
+    
+    // Only fetch if we don't already have the display names
+    const uidsToFetch = Object.keys(ride.invitations)
+      .filter(inviteeId => inviteeId && !displayNames[inviteeId]);
+    
+    if (uidsToFetch.length === 0) {
+      console.log('🔄 All invitation display names already cached');
+      return;
+    }
+    
+    console.log('🔄 Effect triggered: Fetching display names for invitations:', uidsToFetch);
+    
+    // Fetch display names for invitees that need them
+    const fetchInvitationDisplayNames = async () => {
+      for (const inviteeId of uidsToFetch) {
+        console.log(`🚀 Triggering fetch for invitee: ${inviteeId}`);
+        await getDisplayNameForUid(inviteeId);
+      }
+    };
+    
+    fetchInvitationDisplayNames();
+  }, [ride?.invitations, user?.uid, displayNames]);
+
+  // Effect to fetch display names when ride data changes
+  useEffect(() => {
+    if (!ride) return;
+    
+    // Only run this effect once when ride data first loads
+    // The other effects will handle ongoing display name fetching
+    console.log('🔄 Ride data loaded, display name fetching will be handled by other effects');
+  }, [ride?.id]); // Only depend on ride ID, not the entire ride object
+
+  // Effect to update invitationsWithNames when displayNames change
+  useEffect(() => {
+    if (!ride?.invitations) return;
+    
+    console.log('🔄 Updating invitationsWithNames with cached display names');
+    
+    const updatedInvitationsWithNames = Object.entries(ride.invitations).map(([inviteeId, invitation]) => ({
+      inviteeId,
+      invitation,
+      displayName: displayNames[inviteeId] || invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User'
+    }));
+    
+    setInvitationsWithNames(updatedInvitationsWithNames);
+  }, [displayNames, ride?.invitations]);
+
+  // Effect to update participants when displayNames change
+  useEffect(() => {
+    if (!participants.length) return;
+    
+    console.log('🔄 Checking participants for display name updates:', participants.map(p => ({
+      uid: p.uid,
+      currentDisplayName: p.displayName,
+      hasCachedName: !!displayNames[p.uid],
+      cachedName: displayNames[p.uid]
+    })));
+    
+    // Check if any participants need display name updates
+    const needsUpdate = participants.some(participant => 
+      displayNames[participant.uid] && 
+      displayNames[participant.uid] !== participant.displayName
+    );
+    
+    if (!needsUpdate) {
+      console.log('🔄 No participants need display name updates');
+      return;
+    }
+    
+    console.log('🔄 Updating participants with cached display names');
+    
+    const updatedParticipants = participants.map(participant => {
+      const cachedName = displayNames[participant.uid];
+      const newDisplayName = cachedName || participant.displayName || participant.name || `User ${participant.uid?.slice(-4)}` || 'Unknown User';
+      
+      console.log(`👤 Updating participant ${participant.uid}: "${participant.displayName}" -> "${newDisplayName}"`);
+      
+      return {
+        ...participant,
+        displayName: newDisplayName
+      };
+    });
+    
+    setParticipants(updatedParticipants);
+  }, [displayNames]); // Remove participants from dependencies to prevent infinite loop
+
+  // Recalculate route when user location changes (for real-time updates)
+  useEffect(() => {
+    if (location && calculatedRoute && participants.length > 0) {
+      // Debounce route recalculation to avoid too frequent updates
+      const timeoutId = setTimeout(() => {
+        calculateRoute();
+      }, 5000); // Recalculate every 5 seconds when location changes
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [location]);
+
+  // Location tracking effect
   useEffect(() => {
     if (!ride || !user) {
-      // Stop tracking if no ride or user
       if (isTracking) {
         console.log('Stopping location tracking - no ride or user');
       stopTracking();
@@ -371,7 +667,6 @@ function LiveRideView() {
 
     const isDriver = ride.driver?.uid === user.uid;
 
-    // Start location tracking if user is the driver and not already tracking
     if (isDriver && !isTracking) {
       console.log('Starting location tracking for driver:', user.uid);
       startTracking(user.uid).catch(error => {
@@ -379,169 +674,29 @@ function LiveRideView() {
         setLocationError('Failed to start location tracking');
       });
     } else if (!isDriver && isTracking) {
-      // Stop tracking if user is no longer the driver
       console.log('Stopping location tracking - user is no longer driver');
       stopTracking();
     }
 
-    // Cleanup function - only run on unmount or when ride/user changes
     return () => {
       if (isTracking) {
         console.log('Cleaning up location tracking');
         stopTracking();
       }
     };
-  }, [ride?.driver?.uid, user?.uid]); // Removed isTracking, startTracking, stopTracking from dependencies
+  }, [ride?.driver?.uid, user?.uid, isTracking, startTracking, stopTracking]);
 
   // Get current user's RSVP status
   const getCurrentUserRSVPStatus = () => {
-    if (!user || !ride?.invitations) {
-      console.log('getCurrentUserRSVPStatus: Missing user or invitations', {
-        hasUser: !!user,
-        hasRide: !!ride,
-        hasInvitations: !!ride?.invitations,
-        userId: user?.uid,
-        rideId: ride?.id
-      });
-      return null;
-    }
-    
-    const invitation = ride.invitations[user.uid];
-    console.log('getCurrentUserRSVPStatus: Found invitation', {
-      userId: user.uid,
-      invitation,
-      allInvitations: ride.invitations
-    });
-    return invitation;
+    if (!user || !ride?.invitations) return null;
+    return ride.invitations[user.uid];
   };
 
-  // Handle opening RSVP modal for status change
-  const handleChangeRSVP = () => {
-    const currentRSVP = getCurrentUserRSVPStatus();
-    if (currentRSVP) {
-      setIsManuallyOpened(true);
-      setUserInvitation(currentRSVP);
-      setShowInvitationModal(true);
-    }
-  };
-
-  const handleStatusUpdate = async (newStatus, reason = null) => {
-    if (!ride || !user) return;
-
-    try {
-      setIsUpdatingStatus(true);
-      const result = await rideStatusService.updateRideStatus(rideId, newStatus, user.uid, reason);
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to update ride status');
-      }
-    } catch (error) {
-      console.error('Error updating ride status:', error);
-      setError(error.message);
-    } finally {
-      setIsUpdatingStatus(false);
-    }
-  };
-
-  const handleLeaveRide = async () => {
-    if (!ride || !user) return;
-
-    const isDriver = ride.driver?.uid === user.uid;
-    const isCreator = ride.creatorId === user.uid;
-    const hasInvitation = ride.invitations?.[user.uid];
-    
-    if (window.confirm('Are you sure you want to leave this ride?')) {
-      try {
-        // Stop location tracking immediately to prevent permission errors
-        if (isDriver) {
-          console.log('Stopping location tracking for driver...');
-          stopTracking();
-        }
-
-        const rideRef = doc(db, 'rides', rideId);
-        
-        // Update invitation status to 'declined' for tracking purposes
-        if (hasInvitation) {
-          await updateDoc(rideRef, {
-            [`invitations.${user.uid}.status`]: 'declined',
-            [`invitations.${user.uid}.respondedAt`]: serverTimestamp(),
-            [`invitations.${user.uid}.response`]: {
-              status: 'declined',
-              reason: 'User left the ride',
-              leftAt: serverTimestamp()
-            }
-          });
-        }
-
-        // Handle participant removal
-        if (isDriver) {
-          // If driver is leaving, update ride status to cancelled
-          await updateDoc(rideRef, {
-            driver: null,
-            status: RIDE_STATUS.CANCELLED
-          });
-          
-          // Add status history entry
-          await rideStatusService.updateRideStatus(rideId, RIDE_STATUS.CANCELLED, user.uid, 'Driver left the ride');
-        } else {
-          // Remove from passengers list and passengerUids array
-          const updatedPassengers = (ride.passengers || []).filter(p => p.uid !== user.uid);
-          const updatedPassengerUids = (ride.passengerUids || []).filter(uid => uid !== user.uid);
-          
-          console.log('Leaving ride - updating database:', {
-            rideId,
-            userId: user.uid,
-            originalPassengers: ride.passengers?.length || 0,
-            originalPassengerUids: ride.passengerUids?.length || 0,
-            updatedPassengers: updatedPassengers.length,
-            updatedPassengerUids: updatedPassengerUids.length,
-            timestamp: new Date().toISOString()
-          });
-          
-          await updateDoc(rideRef, {
-            passengers: updatedPassengers,
-            passengerUids: updatedPassengerUids
-          });
-        }
-
-        // Redirect to dashboard with a small delay to ensure database update is processed
-        console.log('Ride left successfully, redirecting to dashboard...');
-        setTimeout(() => {
-          navigate('/dashboard');
-        }, 1000);
-        
-      } catch (error) {
-        console.error('Error leaving ride:', error);
-        setError('Failed to leave ride. Please try again.');
-      }
-    }
-  };
-
-  const handleShareRide = () => {
-    setIsSharing(true);
-    const shareUrl = `${window.location.origin}/rides/${rideId}`;
-    navigator.clipboard.writeText(shareUrl)
-      .then(() => {
-        alert('Ride link copied to clipboard!');
-      })
-      .catch(err => {
-        console.error('Failed to copy:', err);
-        alert('Failed to copy ride link');
-      })
-      .finally(() => {
-        setIsSharing(false);
-      });
-  };
-
+  // Handle RSVP submission
   const handleRSVPSubmit = async (rsvpData) => {
     if (!ride || !user) return;
 
-    console.log('LiveRideView - RSVP Submit received:', {
-      rsvpData,
-      user: user.uid,
-      hasLocation: !!rsvpData.location,
-      locationData: rsvpData.location
-    });
+    console.log('LiveRideView - RSVP Submit received:', rsvpData);
 
     setIsSubmittingRSVP(true);
     try {
@@ -557,7 +712,6 @@ function LiveRideView() {
 
       // Handle participant management based on status change
       if (rsvpData.status === 'accepted') {
-        // Add user to participants if not already there
         const userData = {
           uid: user.uid,
           displayName: user.displayName,
@@ -568,31 +722,23 @@ function LiveRideView() {
           readyTime: rsvpData.readyTime,
           locationSharing: rsvpData.locationSharing,
           notes: rsvpData.notes,
-          joinedAt: serverTimestamp()
+          joinedAt: new Date()
         };
 
-        // Add location data if provided
         if (rsvpData.location) {
           userData.location = {
             lat: rsvpData.location.lat,
             lng: rsvpData.location.lng,
             address: rsvpData.location.address || rsvpData.pickupLocation,
-            lastUpdated: serverTimestamp()
+            lastUpdated: new Date()
           };
-          console.log('LiveRideView - Adding location to userData:', userData.location);
-        } else {
-          console.log('LiveRideView - No location data provided in RSVP');
         }
-
-        console.log('LiveRideView - Final userData to save:', userData);
 
         if (rsvpData.role === 'driver') {
           await updateDoc(rideRef, {
             driver: userData
           });
-          console.log('LiveRideView - Updated driver with location data');
         } else {
-          // Check if user is already in passengers list
           const existingPassengers = ride.passengers || [];
           const existingPassengerUids = ride.passengerUids || [];
           const isAlreadyPassenger = existingPassengers.some(p => p.uid === user.uid);
@@ -602,12 +748,9 @@ function LiveRideView() {
               passengers: [...existingPassengers, userData],
               passengerUids: [...existingPassengerUids, user.uid]
             });
-            console.log('LiveRideView - Added new passenger with location data');
           } else {
-            // Update existing passenger with new location data - avoid serverTimestamp in arrays
             const updatedPassengers = existingPassengers.map(p => {
               if (p.uid === user.uid) {
-                // Create new user data without serverTimestamp for array update
                 const updatedUserData = {
                   ...p,
                   pickupLocation: userData.pickupLocation,
@@ -616,15 +759,13 @@ function LiveRideView() {
                   notes: userData.notes
                 };
                 
-                // Add location if provided
                 if (rsvpData.location) {
                   updatedUserData.location = {
                     lat: rsvpData.location.lat,
                     lng: rsvpData.location.lng,
                     address: rsvpData.location.address || rsvpData.pickupLocation,
-                    lastUpdated: new Date() // Use regular Date instead of serverTimestamp
+                    lastUpdated: new Date()
                   };
-                  console.log('LiveRideView - Updated existing passenger with location:', updatedUserData.location);
                 }
                 
                 return updatedUserData;
@@ -635,18 +776,14 @@ function LiveRideView() {
             await updateDoc(rideRef, {
               passengers: updatedPassengers
             });
-            console.log('LiveRideView - Updated existing passenger with location data');
           }
         }
       } else if (currentRSVP?.status === 'accepted' && rsvpData.status !== 'accepted') {
-        // Remove user from participants if they were accepted but are now changing to another status
         if (ride.driver?.uid === user.uid) {
-          // Remove as driver
           await updateDoc(rideRef, {
             driver: null
           });
         } else {
-          // Remove from passengers and passengerUids
           const updatedPassengers = (ride.passengers || []).filter(p => p.uid !== user.uid);
           const updatedPassengerUids = (ride.passengerUids || []).filter(uid => uid !== user.uid);
           
@@ -668,1653 +805,946 @@ function LiveRideView() {
     }
   };
 
-  // Get current status metadata
-  const currentStatusMeta = ride ? STATUS_METADATA[ride.status] : null;
-
-  // Get available status transitions for the current user
-  const getAvailableTransitions = () => {
-    if (!ride || !user) return [];
+  // Handle leaving ride
+  const handleLeaveRide = async () => {
+    if (!ride || !user) return;
     
     const isDriver = ride.driver?.uid === user.uid;
-    const isCreator = ride.creatorId === user.uid;
+    const hasInvitation = ride.invitations?.[user.uid];
     
-    if (!isDriver && !isCreator) return [];
+    if (window.confirm('Are you sure you want to leave this ride?')) {
+      try {
+        if (isDriver) {
+          console.log('Stopping location tracking for driver...');
+          stopTracking();
+        }
 
-    const transitions = STATUS_TRANSITIONS[ride.status] || [];
-    return transitions.map(status => ({
-      status,
-      ...STATUS_METADATA[status]
+        const rideRef = doc(db, 'rides', rideId);
+        
+        if (hasInvitation) {
+          await updateDoc(rideRef, {
+            [`invitations.${user.uid}.status`]: 'declined',
+            [`invitations.${user.uid}.respondedAt`]: serverTimestamp(),
+            [`invitations.${user.uid}.response`]: {
+              status: 'declined',
+              reason: 'User left the ride',
+              leftAt: serverTimestamp()
+            }
+          });
+        }
+
+        if (isDriver) {
+          await updateDoc(rideRef, {
+            driver: null,
+            status: RIDE_STATUS.CANCELLED
+          });
+          
+          await rideStatusService.updateRideStatus(rideId, RIDE_STATUS.CANCELLED, user.uid, 'Driver left the ride');
+        } else {
+          const updatedPassengers = (ride.passengers || []).filter(p => p.uid !== user.uid);
+          const updatedPassengerUids = (ride.passengerUids || []).filter(uid => uid !== user.uid);
+          
+          await updateDoc(rideRef, {
+            passengers: updatedPassengers,
+            passengerUids: updatedPassengerUids
+          });
+        }
+
+        console.log('Ride left successfully, redirecting to dashboard...');
+        setTimeout(() => {
+          navigate('/dashboard');
+        }, 1000);
+        
+      } catch (error) {
+        console.error('Error leaving ride:', error);
+        setError('Failed to leave ride. Please try again.');
+      }
+    }
+  };
+
+  // Handle description save
+  const handleDescriptionSave = async () => {
+    setSavingDescription(true);
+    try {
+      await updateDoc(doc(db, 'rides', rideId), { description });
+      setEditingDescription(false);
+    } catch (e) {
+      setError('Failed to save description');
+    } finally {
+      setSavingDescription(false);
+    }
+  };
+
+  // Handle title save
+  const handleTitleSave = async () => {
+    setSavingTitle(true);
+    try {
+      await updateDoc(doc(db, 'rides', rideId), { 
+        groupName: title,
+        name: title 
+      });
+      setEditingTitle(false);
+    } catch (e) {
+      setError('Failed to save title');
+    } finally {
+      setSavingTitle(false);
+    }
+  };
+
+  // Handle map full screen toggle
+  const handleMapFullScreenToggle = () => {
+    setIsMapFullScreen(!isMapFullScreen);
+  };
+
+  // Handle map modal close
+  const handleMapModalClose = () => {
+    setIsMapModalOpen(false);
+    setIsMapFullScreen(false); // Reset full screen when closing
+  };
+
+  // Handle keyboard shortcuts for map modal
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (!isMapModalOpen) return;
+      
+      // F11 or F key for full screen toggle
+      if (event.key === 'F11' || event.key === 'f' || event.key === 'F') {
+        event.preventDefault();
+        handleMapFullScreenToggle();
+      }
+      
+      // Escape key to close modal
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        handleMapModalClose();
+      }
+      
+      // Arrow keys for route navigation in full screen
+      if (isMapFullScreen && calculatedRoute) {
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          setCurrentRouteStep(prev => Math.min(prev + 1, (calculatedRoute.routes?.[0]?.waypoints?.length || 0) - 1));
+        }
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          setCurrentRouteStep(prev => Math.max(prev - 1, 0));
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMapModalOpen, isMapFullScreen, calculatedRoute]);
+
+  // Update current location for route tracking
+  useEffect(() => {
+    if (location && isMapFullScreen) {
+      setCurrentLocation(location);
+    }
+  }, [location, isMapFullScreen]);
+
+  // Process route information for turn-by-turn directions
+  const getRouteInformation = () => {
+    if (!calculatedRoute || !calculatedRoute.routes || calculatedRoute.routes.length === 0) {
+      return null;
+    }
+
+    const route = calculatedRoute.routes[0];
+    const waypoints = route.waypoints || [];
+    
+    if (waypoints.length === 0) return null;
+
+    // Find current step based on location proximity
+    let currentStep = currentRouteStep;
+    if (currentLocation && waypoints.length > 0) {
+      const distances = waypoints.map((wp, index) => {
+        if (!wp.location || !currentLocation) return Infinity;
+        const distance = Math.sqrt(
+          Math.pow(wp.location.lat - currentLocation.latitude, 2) + 
+          Math.pow(wp.location.lng - currentLocation.longitude, 2)
+        );
+        return { index, distance };
+      });
+      
+      const closest = distances.reduce((min, curr) => curr.distance < min.distance ? curr : min);
+      if (closest.distance < 0.01) { // Within ~1km
+        currentStep = closest.index;
+        setCurrentRouteStep(closest.index);
+      }
+    }
+
+    const currentWaypoint = waypoints[currentStep];
+    const nextWaypoint = waypoints[currentStep + 1];
+    const totalSteps = waypoints.length;
+
+    return {
+      currentStep,
+      totalSteps,
+      currentWaypoint,
+      nextWaypoint,
+      waypoints,
+      totalDistance: calculatedRoute.totalDistance,
+      totalDuration: calculatedRoute.totalDuration,
+      progress: ((currentStep + 1) / totalSteps) * 100
+    };
+  };
+
+  // Handle passenger status updates
+  const updatePassengerStatus = (passengerId, status) => {
+    setPassengerStatus(prev => ({
+      ...prev,
+      [passengerId]: {
+        ...prev[passengerId],
+        status,
+        timestamp: new Date().toISOString()
+      }
     }));
   };
 
-  // Add click handler for sidebar toggle
-  const handleSidebarClick = (e) => {
-    if (e.target === e.currentTarget) {
-      setIsSidebarOpen(!isSidebarOpen);
+  // Get passenger information for current route step
+  const getCurrentPassengerInfo = () => {
+    const routeInfo = getRouteInformation();
+    if (!routeInfo || !routeInfo.currentWaypoint) return null;
+
+    const waypoint = routeInfo.currentWaypoint;
+    if (waypoint.type === 'pickup' && waypoint.passengerId) {
+      const passenger = participants.find(p => p.uid === waypoint.passengerId);
+      return passenger ? {
+        ...passenger,
+        status: passengerStatus[waypoint.passengerId]?.status || 'pending'
+      } : null;
     }
+    return null;
   };
 
   if (loading) {
     return (
-      <div className="live-ride-container">
-        <div className="live-ride-content">
-          <div className="live-ride-map-wrapper">
-            <div className="live-ride-map-container">
-              <div className="map-loading-overlay">
-                <div className="modern-loading-container">
-                  <div className="loading-spinner-modern">
-                    <div className="spinner-ring outer"></div>
-                    <div className="spinner-ring middle"></div>
-                    <div className="spinner-ring inner"></div>
-                    <div className="spinner-center">
-                      <i className="fas fa-car"></i>
-                    </div>
-                  </div>
-                  <div className="loading-content">
-                    <h3 className="loading-title">Loading Ride Details</h3>
-                    <p className="loading-subtitle">Getting your ride information ready</p>
-                    <div className="loading-progress">
-                      <div className="progress-bar">
-                        <div className="progress-fill"></div>
-                      </div>
-                      <div className="progress-steps">
-                        <span className="step active">Connecting to ride</span>
-                        <span className="step">Loading participants</span>
-                        <span className="step">Preparing map</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #f5f3e7 0%, #e0c9b3 100%)' }}>
+        <Typography>Loading...</Typography>
+      </Box>
     );
   }
 
   if (error && !ride) {
     return (
-      <div className="live-ride-container">
-        <div className="error-message">
-          <div className="alert alert-danger" role="alert">
-            {error}
-          </div>
-          <button 
-            className="btn btn-primary"
-            onClick={() => navigate('/rides')}
-          >
-            Back to Rides
-          </button>
-        </div>
-      </div>
+      <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #f5f3e7 0%, #e0c9b3 100%)' }}>
+        <Alert severity="error">{error}</Alert>
+      </Box>
     );
   }
 
   if (!ride) {
     return (
-      <div className="live-ride-container">
-        <div className="error-message">
-          <div className="alert alert-warning" role="alert">
-            Ride not found
-          </div>
-          <button 
-            className="btn btn-primary"
-            onClick={() => navigate('/rides')}
-          >
-            Back to Rides
-          </button>
-        </div>
-      </div>
+      <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #f5f3e7 0%, #e0c9b3 100%)' }}>
+        <Alert severity="warning">Ride not found</Alert>
+      </Box>
     );
   }
 
+  // Vibe palette
+  const vibe = getVibePalette(ride?.destination);
+  
+  // Check if user can edit ride details (all accepted participants can edit)
+  const canEditRide = ride && (
+    ride.driver?.uid === user?.uid || 
+    (ride.passengers && ride.passengers.some(p => p.uid === user?.uid)) ||
+    (ride.invitations && ride.invitations[user?.uid]?.status === 'accepted')
+  );
+
   return (
-    <>
-    <div className="live-ride-container">
-      {/* Notifications */}
-      {locationError && (
-        <div className="alert alert-warning mb-3" role="alert">
-          <i className="fas fa-exclamation-triangle me-2"></i>
-          {locationError}
-        </div>
+    <Box sx={{ minHeight: '100vh', background: vibe.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 4 }}>
+      {/* RSVP Modal */}
+      {showInvitationModal && ride && user && (
+        <RideInvitationModal
+          isOpen={showInvitationModal}
+          onClose={() => { setShowInvitationModal(false); setUserInvitation(null); }}
+          ride={ride}
+          inviter={{
+            uid: ride.createdBy,
+            displayName: displayNames[ride.createdBy] || ride.creatorName || 'Ride Creator',
+            photoURL: ride.creatorPhotoURL || '/default-avatar.png'
+          }}
+          currentUserId={user.uid}
+          onRSVPSubmit={handleRSVPSubmit}
+        />
       )}
-
-      <div className="live-ride-content">
-        {/* Map Container - Now first in the DOM order */}
-        <div className="live-ride-map-wrapper">
-          <div className="live-ride-map-container">
-            {/* Route Loading Overlay */}
-            {routeLoadingState === 'loading' && (
-              <div className="map-loading-overlay">
-                <div className="modern-loading-container">
-                  <div className="loading-spinner-modern">
-                    <div className="spinner-ring outer"></div>
-                    <div className="spinner-ring middle"></div>
-                    <div className="spinner-ring inner"></div>
-                    <div className="spinner-center">
-                      <i className="fas fa-route"></i>
-                    </div>
-                  </div>
-                  <div className="loading-content">
-                    <h3 className="loading-title">Calculating Optimal Route</h3>
-                    <p className="loading-subtitle">Finding the best path for your journey</p>
-                    <div className="loading-progress">
-                      <div className="progress-bar">
-                        <div className="progress-fill"></div>
-                      </div>
-                      <div className="progress-steps">
-                        <span className="step active">Analyzing destinations</span>
-                        <span className="step">Optimizing route</span>
-                        <span className="step">Finalizing directions</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Route Error Overlay */}
-            {routeLoadingState === 'error' && (
-              <div className="map-error-overlay">
-                <div className="error-message">
-                  <i className="fas fa-exclamation-triangle text-warning"></i>
-                  <p className="mt-2">{routeErrorMessage || 'Failed to load route'}</p>
-                  <button 
-                    className="btn btn-outline-primary btn-sm"
-                    onClick={() => {
-                      setRouteLoadingState('idle');
-                      // Trigger route recalculation
-                      if (ride && ride.destination?.location) {
-                        setOptimizedRoute(null);
+      
+      <Box sx={{ 
+          perspective: 1800,
+          width: '100%',
+          maxWidth: 1100,
+          minHeight: 500,
+          position: 'relative',
+      }}>
+        {/* Card Flip Container */}
+        <Box
+          sx={{
+            width: '100%',
+            minHeight: 500,
+            borderRadius: 6,
+            boxShadow: 6,
+            position: 'relative',
+            transformStyle: 'preserve-3d',
+            transition: 'transform 0.7s cubic-bezier(.4,2,.3,1)',
+            transform: isFlipped ? 'rotateY(180deg)' : 'none',
+            background: 'transparent',
+          }}
+        >
+          {/* FRONT (Postcard) */}
+          <Card
+            sx={{
+              width: '100%',
+              minHeight: 500,
+              borderRadius: 6,
+              boxShadow: 6,
+            display: 'flex',
+              overflow: 'hidden',
+              background: 'rgba(255,255,255,0.92)',
+            position: 'absolute',
+            top: 0,
+            left: 0,
+              backfaceVisibility: 'hidden',
+              zIndex: 2,
+            }}
+          >
+            {/* Left Side: Ride Info */}
+            <Box sx={{ flex: 2, p: 5, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start' }}>
+                            {/* Action Buttons */}
+              <Box sx={{ position: 'absolute', top: 20, right: 20, zIndex: 10, display: 'flex', gap: 1 }}>
+                <Button 
+                  variant="outlined"
+                  color="primary"
+                  size="small"
+                  onClick={() => {
+                    if (!ride) return; // Prevent opening modal if ride is not loaded
+                    setUserInvitation(ride.invitations?.[user?.uid] || { status: 'accepted' });
+                    setShowInvitationModal(true);
+                    setIsManuallyOpened(true);
+                  }}
+                  disabled={!ride}
+                  sx={{
+                    borderRadius: 2,
+                    fontWeight: 600,
+                    borderColor: vibe.accent,
+                    color: vibe.accent,
+                    px: 2,
+                    py: 1,
+                    '&:hover': {
+                      borderColor: vibe.accent,
+                      backgroundColor: `${vibe.accent}10`
+                    }
+                  }}
+                >
+                  Change RSVP
+                </Button>
+              <Button 
+                variant="outlined"
+                  color="error"
+                  size="small"
+                  onClick={handleLeaveRide}
+                  sx={{
+                    borderRadius: 2,
+                    fontWeight: 600,
+                    borderColor: '#f44336',
+                    color: '#f44336',
+                    px: 2,
+                    py: 1,
+                    '&:hover': {
+                      borderColor: '#d32f2f',
+                      backgroundColor: '#ffebee'
+                    }
+                  }}
+                >
+                  Leave Ride
+              </Button>
+          </Box>
+              
+              {/* Editable Title */}
+              <Box mb={2}>
+                {canEditRide && editingTitle ? (
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <TextField
+                      value={title}
+                      onChange={e => setTitle(e.target.value)}
+                      fullWidth
+                      size="small"
+                      sx={{ background: '#fff', borderRadius: 2 }}
+                    />
+                    <Button onClick={handleTitleSave} disabled={savingTitle} variant="contained" sx={{ background: vibe.accent, color: '#fff', borderRadius: 2, minWidth: 80 }}>
+                      {savingTitle ? 'Saving...' : 'Save'}
+                    </Button>
+                    <Button onClick={() => { setEditingTitle(false); setTitle(ride.groupName || ride.name || 'Untitled Ride'); }} variant="text" sx={{ color: vibe.accent }}>
+                      Cancel
+                    </Button>
+                  </Box>
+                ) : (
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <Typography variant="h4" fontWeight={700} color={vibe.text} sx={{ flex: 1 }}>
+                      {title}
+              </Typography>
+                    {canEditRide && (
+                      <Button onClick={() => setEditingTitle(true)} variant="text" sx={{ color: vibe.accent, fontWeight: 600 }}>
+                        Edit
+                      </Button>
+                    )}
+                  </Box>
+                )}
+              </Box>
+              <Divider sx={{ my: 2, background: vibe.accent, opacity: 0.2 }} />
+              
+              {/* Editable Description */}
+              <Box mb={2}>
+                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600} mb={0.5}>Description</Typography>
+                {canEditRide && editingDescription ? (
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <TextField
+                      value={description}
+                      onChange={e => setDescription(e.target.value)}
+                      multiline
+                      minRows={2}
+                      maxRows={5}
+                      fullWidth
+                      size="small"
+                      sx={{ background: '#fff', borderRadius: 2 }}
+                    />
+                    <Button onClick={handleDescriptionSave} disabled={savingDescription} variant="contained" sx={{ background: vibe.accent, color: '#fff', borderRadius: 2, minWidth: 80 }}>
+                      {savingDescription ? 'Saving...' : 'Save'}
+                    </Button>
+                    <Button onClick={() => { setEditingDescription(false); setDescription(ride.description || ''); }} variant="text" sx={{ color: vibe.accent }}>
+                      Cancel
+                    </Button>
+                  </Box>
+                ) : (
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <Typography variant="body1" color={vibe.text} sx={{ whiteSpace: 'pre-line', flex: 1 }}>
+                      {description || 'No description provided.'}
+                    </Typography>
+                    {canEditRide && (
+                      <Button onClick={() => setEditingDescription(true)} variant="text" sx={{ color: vibe.accent, fontWeight: 600 }}>
+                        Edit
+                      </Button>
+                    )}
+                  </Box>
+                )}
+              </Box>
+              
+              <Box mb={2}>
+                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Destination</Typography>
+                <Typography variant="body1" color={vibe.text}>
+                  {ride.destination?.address || 'No destination set'}
+                </Typography>
+              </Box>
+              
+              <Box mb={2}>
+                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Status</Typography>
+                <Chip 
+                  label={ride.status || 'Unknown'} 
+                  color={ride.status === 'active' ? 'success' : 'warning'} 
+                  sx={{ fontWeight: 600, fontSize: 16, background: vibe.accent, color: '#fff' }} 
+                />
+              </Box>
+              
+              <Box mb={2}>
+                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Created At</Typography>
+                <Typography variant="body2" color={vibe.text}>
+                  {ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate().toLocaleString() : ride.createdAt) : 'N/A'}
+                  </Typography>
+      </Box>
+            </Box>
+            
+            {/* Right Side: Users & Map */}
+            <Box sx={{ flex: 1.2, p: 5, borderLeft: `2px solid ${vibe.accent}22`, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'flex-start', background: 'rgba(255,255,255,0.85)', height: '100%' }}>
+              {/* Map Preview */}
+                            <Box width="100%" mb={4} display="flex" flexDirection="column" alignItems="flex-end" sx={{ mt: 8 }}>
+                {/* Route Status */}
+                {routeError && (
+                  <Alert severity="error" sx={{ mb: 2, fontSize: '0.75rem' }}>
+                    {routeError}
+                  </Alert>
+                )}
+                {isCalculatingRoute && (
+                  <Alert severity="info" sx={{ mb: 2, fontSize: '0.75rem' }}>
+                    Calculating optimized route...
+                  </Alert>
+                )}
+                {calculatedRoute && (
+                  <Alert severity="success" sx={{ mb: 2, fontSize: '0.75rem' }}>
+                    Route optimized! {calculatedRoute.totalDistance ? `${Math.round(calculatedRoute.totalDistance / 1000)}km` : ''}
+                  </Alert>
+                )}
+                
+                <Box
+                  sx={{ 
+                    width: 180,
+                    height: 120,
+                    borderRadius: 3,
+                    boxShadow: 2,
+                    overflow: 'hidden',
+                    background: '#e0e7ef',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    position: 'relative',
+                    border: `2px solid ${vibe.accent}`,
+                    mr: 0
+                  }}
+                  onClick={() => setIsMapModalOpen(true)}
+                >
+                  <MapView
+                    users={participants}
+                    destination={ride.destination?.location ? {
+                      lat: ride.destination.location.lat,
+                      lng: ride.destination.location.lng,
+                      address: ride.destination.address
+                    } : ride.destination}
+                    calculatedRoute={calculatedRoute}
+                    userLocation={location}
+                    isLiveRide={false}
+                    compact={true}
+                  />
+                  <Box sx={{ position: 'absolute', bottom: 8, right: 8, background: '#fff', borderRadius: 2, px: 1, py: 0.5, boxShadow: 1, color: vibe.accent, fontWeight: 600, fontSize: 13, opacity: 0.9 }}>
+                    View Map
+                  </Box>
+                </Box>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                  <Typography variant="caption" color={vibe.accent}>
+                    Click to zoom and see live route
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={calculateRoute}
+                    disabled={isCalculatingRoute}
+                    sx={{
+                      fontSize: '0.7rem',
+                      py: 0.5,
+                      px: 1,
+                      borderColor: vibe.accent,
+                      color: vibe.accent,
+                      '&:hover': {
+                        borderColor: vibe.accent,
+                        backgroundColor: `${vibe.accent}10`
                       }
                     }}
                   >
-                    <i className="fas fa-redo me-1"></i>
-                    Retry
-                  </button>
-                </div>
-              </div>
-            )}
+                    {isCalculatingRoute ? 'Calculating...' : 'Recalculate Route'}
+                  </Button>
+                </Box>
+          </Box>
+              
+              {/* Who's going */}
+              <Box width="100%" mt="auto" pt={6}>
+                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600} mb={1}>Who's going</Typography>
+                <Stack spacing={1}>
+                  {participants.map((p, idx) => {
+                    const isCurrentUser = p.uid === user?.uid;
+                    const statusText = p.invitationStatus === 'accepted' ? 'Confirmed' :
+                                      p.invitationStatus === 'maybe' ? 'Maybe' :
+                                      p.invitationStatus === 'pending' ? 'Pending' :
+                                      p.invitationStatus === 'declined' ? 'Declined' : '';
+                    
+                    const statusColor = p.invitationStatus === 'accepted' ? '#4caf50' :
+                                       p.invitationStatus === 'maybe' ? '#ff9800' :
+                                       p.invitationStatus === 'pending' ? '#9e9e9e' :
+                                       p.invitationStatus === 'declined' ? '#f44336' : '#9e9e9e';
+                    
+                    return (
+                      <Box key={p.uid || idx} display="flex" alignItems="center" gap={1}>
+                        <Avatar 
+                          src={p.photoURL || (isCurrentUser ? user.photoURL : '/default-avatar.png')} 
+                          alt={p.displayName} 
+                          sx={{ width: 36, height: 36, bgcolor: vibe.accent }} 
+                        />
+                        <Box sx={{ flex: 1 }}>
+                          <Typography color={vibe.text} fontWeight={500}>
+                            {displayNames[p.uid] || p.displayName || p.name || `User ${p.uid?.slice(-4)}` || 'Unknown User'}
+                            {isCurrentUser && <span style={{ color: vibe.accent, fontWeight: 600 }}> (You)</span>}
+                          </Typography>
+                          {statusText && (
+                            <Typography variant="caption" color={statusColor} fontWeight={600}>
+                              {statusText}
+                            </Typography>
+                          )}
+                        </Box>
+                        {/* Role icons */}
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          {p.role === 'driver' && (
+                            <Chip 
+                              label="Driver" 
+                              size="small" 
+                              icon={<CarIcon sx={{ fontSize: 14 }} />}
+                              sx={{ 
+                                background: vibe.accent, 
+                                color: '#fff', 
+                                fontSize: 10,
+                                height: 20,
+                                '& .MuiChip-icon': { color: '#fff' }
+                              }} 
+                            />
+                          )}
+                          {p.role === 'passenger' && (
+                            <Chip 
+                              label="Passenger" 
+                              size="small" 
+                              icon={<PersonIcon sx={{ fontSize: 14 }} />}
+                              sx={{ 
+                                background: '#9e9e9e', 
+                                color: '#fff', 
+                                fontSize: 10,
+                                height: 20,
+                                '& .MuiChip-icon': { color: '#fff' }
+                              }} 
+                            />
+                          )}
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                </Stack>
+                
+                {/* Show message if no participants */}
+                {participants.length === 0 && (
+                  <Typography variant="body2" color={vibe.text} sx={{ fontStyle: 'italic' }}>
+                    No participants yet
+              </Typography>
+                )}
+                </Box>
+              </Box>
             
-            {/* Contextual Map Information */}
-            {routeLoadingState === 'success' && (
-              <div className={`map-context-overlay map-state-${mapState}`}>
-                <div className="map-context-content">
-                  {mapState === 'preview' && (
-                    <div className="preview-info">
-                      <h5><i className="fas fa-route me-2"></i>Route Preview</h5>
-                      <p>This shows your planned route to the destination.</p>
-                      <div className="preview-stats">
-                        {optimizedRoute && (
-                          <>
-                            <span className="stat-item">
-                              <i className="fas fa-road me-1"></i>
-                              {formatDistance(optimizedRoute.totalDistance)}
-                            </span>
-                            <span className="stat-item">
-                              <i className="fas fa-clock me-1"></i>
-                              {formatDuration(optimizedRoute.totalDuration)}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      <small className="text-muted">
-                        Invite friends to see pickup points and optimize the route further
-                      </small>
-                    </div>
-                  )}
-                  
-                  {mapState === 'pending' && (
-                    <div className="pending-info">
-                      <h5><i className="fas fa-users me-2"></i>Pending Invitations</h5>
-                      <p>Waiting for friends to respond to ride invitations.</p>
-                      <div className="pending-stats">
-                        <span className="stat-item">
-                          <i className="fas fa-user-clock me-1"></i>
-                          {Object.keys(ride?.invitations || {}).length} pending
-                        </span>
-                      </div>
-                      <small className="text-muted">
-                        Route will update as people accept invitations
-                      </small>
-                    </div>
-                  )}
-                  
-                  {mapState === 'active' && (
-                    <div className="active-info">
-                      <h5><i className="fas fa-car me-2"></i>Active Ride</h5>
-                      <p>Ride is active with confirmed participants.</p>
-                      <div className="active-stats">
-                        <span className="stat-item">
-                          <i className="fas fa-users me-1"></i>
-                          {ride?.passengers?.length || 0} passengers
-                        </span>
-                        {optimizedRoute && (
-                          <span className="stat-item">
-                            <i className="fas fa-route me-1"></i>
-                            Optimized route
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  
-                  {mapState === 'live' && (
-                    <div className="live-info">
-                      <h5><i className="fas fa-satellite me-2"></i>Live Tracking</h5>
-                      <p>Real-time location tracking is active.</p>
-                      <div className="live-stats">
-                        <span className="stat-item">
-                          <i className="fas fa-signal me-1"></i>
-                          Live updates
-                        </span>
-                        {location && (
-                          <span className="stat-item">
-                            <i className="fas fa-crosshairs me-1"></i>
-                            Location active
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            <MapView 
-              ref={setMapRef}
-              users={participants}
-              destination={{
-                ...ride.destination,
-                lat: Array.isArray(ride.destination.location) ? ride.destination.location[1] : ride.destination.location.lat,
-                lng: Array.isArray(ride.destination.location) ? ride.destination.location[0] : ride.destination.location.lng
+            {/* Turned corner */}
+            <Box
+                    sx={{ 
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 64,
+                height: 64,
+                cursor: 'pointer',
+                zIndex: 10,
+                background: 'none',
               }}
-              userLocation={location ? {
-                lat: location.latitude,
-                lng: location.longitude,
-                accuracy: location.accuracy
-              } : null}
-              calculatedRoute={optimizedRoute}
+              onClick={() => setIsFlipped(true)}
+            >
+              <svg width="64" height="64" viewBox="0 0 64 64" style={{ position: 'absolute', bottom: 0, right: 0 }}>
+                <polygon points="0,64 64,0 64,64" fill="#e0e7ef" />
+                <text x="48" y="56" fontSize="14" fill="#b08968" fontWeight="bold" textAnchor="end" style={{ pointerEvents: 'none' }}>flip</text>
+              </svg>
+            </Box>
+          </Card>
+          
+          {/* BACK (Invitee Status) */}
+          <Card
+            sx={{
+              width: '100%',
+              minHeight: 500,
+              borderRadius: 6,
+              boxShadow: 6,
+              display: 'flex',
+              overflow: 'hidden',
+              background: 'rgba(255,255,255,0.97)',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              backfaceVisibility: 'hidden',
+              transform: 'rotateY(180deg)',
+              zIndex: 3,
+            }}
+          >
+            {/* Left: Groupchat */}
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', p: 6 }}>
+              <Typography variant="h5" color="#4e342e" fontWeight={600} mb={2}>groupchat</Typography>
+              <Box sx={{ width: '100%', height: 200, background: '#f5f3e7', borderRadius: 3, boxShadow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#b08968', fontSize: 22, fontWeight: 500 }}>
+                (chat UI WIP)
+              </Box>
+            </Box>
+            
+            {/* Divider */}
+            <Divider orientation="vertical" flexItem sx={{ mx: 0, my: 6, borderColor: '#e0c9b3', borderWidth: 2 }} />
+            
+            {/* Right: Invitee status */}
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'flex-start', p: 6 }}>
+              <Typography variant="h6" color="#4e342e" fontWeight={600} mb={3}>Invitation Status</Typography>
+              
+              {/* Driver Status */}
+              {ride.driver && (
+                <Box sx={{ mb: 3, width: '100%' }}>
+                  <Typography variant="subtitle2" color="#7c5e48" fontWeight={600} mb={1}>Driver</Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, background: '#f5f3e7', borderRadius: 2 }}>
+                    <Avatar 
+                      src={ride.driver.photoURL || '/default-avatar.png'} 
+                      alt={ride.driver.displayName || ride.driver.name || 'Driver'} 
+                      sx={{ width: 32, height: 32, bgcolor: '#b08968' }} 
+                    />
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="body2" color="#4e342e" fontWeight={500}>
+                        {displayNames[ride.driver.uid] || ride.driver.displayName || ride.driver.name || `User ${ride.driver.uid?.slice(-4)}` || 'Driver'}
+                      </Typography>
+                      <Chip label="Confirmed" size="small" sx={{ background: '#4caf50', color: '#fff', fontSize: 10, height: 20 }} />
+                    </Box>
+                  </Box>
+                </Box>
+              )}
+              
+              {/* Invitees Status */}
+              {ride.invitations && Object.keys(ride.invitations).length > 0 && (
+                <Box sx={{ width: '100%' }}>
+                  <Typography variant="subtitle2" color="#7c5e48" fontWeight={600} mb={2}>Invitees</Typography>
+                  <Stack spacing={1}>
+                    {invitationsWithNames.map(({ inviteeId, invitation, displayName }) => {
+                      // Skip driver if they're also in invitations
+                      if (ride.driver?.uid === inviteeId) return null;
+                      
+                      const isCurrentUser = inviteeId === user?.uid;
+                      
+                      const statusColor = invitation.status === 'accepted' ? '#4caf50' : 
+                                        invitation.status === 'declined' ? '#f44336' : 
+                                        invitation.status === 'maybe' ? '#ff9800' : '#9e9e9e';
+                      
+                      const statusText = invitation.status === 'pending' ? 'Pending' :
+                                        invitation.status === 'accepted' ? 'Accepted' :
+                                        invitation.status === 'declined' ? 'Declined' :
+                                        invitation.status === 'maybe' ? 'Maybe' : 'Unknown';
+                      
+                      return (
+                        <Box key={inviteeId} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.5, background: '#f5f3e7', borderRadius: 2 }}>
+                          <Avatar 
+                            src={invitation.inviteePhotoURL || (isCurrentUser ? user.photoURL : '/default-avatar.png')} 
+                            alt={displayName} 
+                            sx={{ width: 28, height: 28, bgcolor: '#b08968' }} 
+                          />
+                          <Box sx={{ flex: 1 }}>
+                            <Typography variant="body2" color="#4e342e" fontWeight={500}>
+                              {displayNames[inviteeId] || displayName || invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User'}
+                              {isCurrentUser && <span style={{ color: '#b08968', fontWeight: 600 }}> (You)</span>}
+                            </Typography>
+                          </Box>
+                          <Chip 
+                            label={statusText} 
+                            size="small"
+                            sx={{ 
+                              background: statusColor, 
+                              color: '#fff', 
+                              fontSize: 10, 
+                              height: 18,
+                              fontWeight: 600
+                            }} 
+                          />
+                        </Box>
+                      );
+                    })}
+          </Stack>
+                </Box>
+              )}
+              
+              {/* No invitations message */}
+              {(!ride.invitations || Object.keys(ride.invitations).length === 0) && (
+                <Box sx={{ width: '100%', textAlign: 'center', color: '#b08968', mt: 2 }}>
+                  <Typography variant="body2">No invitations sent yet</Typography>
+                </Box>
+              )}
+            </Box>
+            
+            {/* Turned corner to flip back */}
+            <Box
+              sx={{
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 64,
+                height: 64,
+                cursor: 'pointer',
+                zIndex: 10,
+                background: 'none',
+              }}
+              onClick={() => setIsFlipped(false)}
+            >
+              <svg width="64" height="64" viewBox="0 0 64 64" style={{ position: 'absolute', bottom: 0, right: 0 }}>
+                <polygon points="0,64 64,0 64,64" fill="#e0e7ef" />
+                <text x="48" y="56" fontSize="14" fill="#b08968" fontWeight="bold" textAnchor="end" style={{ pointerEvents: 'none' }}>flip</text>
+              </svg>
+            </Box>
+          </Card>
+        </Box>
+      </Box>
+      
+      {/* Map Modal */}
+      <Modal open={isMapModalOpen} onClose={handleMapModalClose}>
+        <Box sx={{ 
+          position: 'absolute', 
+          top: '50%', 
+          left: '50%', 
+          transform: 'translate(-50%, -50%)', 
+          width: isMapFullScreen ? '100vw' : { xs: '95vw', sm: 700 },
+          height: isMapFullScreen ? '100vh' : 'auto',
+          maxWidth: isMapFullScreen ? '100vw' : 700,
+          maxHeight: isMapFullScreen ? '100vh' : '90vh',
+          bgcolor: '#fff', 
+          borderRadius: isMapFullScreen ? 0 : 4, 
+          boxShadow: 24, 
+          p: isMapFullScreen ? 0 : 3, 
+          outline: 'none',
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
+          {/* Header */}
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            p: isMapFullScreen ? 2 : 0,
+            pb: isMapFullScreen ? 1 : 2,
+            borderBottom: isMapFullScreen ? '1px solid #e0e0e0' : 'none',
+            background: isMapFullScreen ? 'rgba(255,255,255,0.98)' : 'transparent',
+            backdropFilter: isMapFullScreen ? 'blur(10px)' : 'none'
+          }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6" color={vibe.accent}>
+                Live Ride Route
+              </Typography>
+              {isMapFullScreen && (
+                <Chip 
+                  label="Full Screen" 
+                  size="small" 
+                  sx={{ 
+                    background: vibe.accent, 
+                    color: '#fff', 
+                    fontSize: '0.7rem',
+                    height: 20
+                  }} 
+                />
+              )}
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <IconButton 
+                onClick={handleMapFullScreenToggle}
+                sx={{ 
+                  color: vibe.accent,
+                  background: isMapFullScreen ? 'rgba(0,0,0,0.05)' : 'transparent',
+                  '&:hover': {
+                    background: 'rgba(0,0,0,0.1)',
+                    transform: 'scale(1.1)'
+                  },
+                  transition: 'all 0.2s ease'
+                }}
+                size="small"
+                title={isMapFullScreen ? 'Exit Full Screen' : 'Enter Full Screen'}
+              >
+                {isMapFullScreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+              </IconButton>
+              <IconButton 
+                onClick={handleMapModalClose}
+                sx={{ 
+                  color: vibe.accent,
+                  '&:hover': {
+                    background: 'rgba(0,0,0,0.1)',
+                    transform: 'scale(1.1)'
+                  },
+                  transition: 'all 0.2s ease'
+                }}
+                size="small"
+                title="Close Map"
+              >
+                <CloseIcon />
+              </IconButton>
+            </Box>
+          </Box>
+          
+          {/* Map Container */}
+          <Box sx={{ 
+            width: '100%', 
+            height: isMapFullScreen ? 'calc(100vh - 80px)' : { xs: 300, sm: 400 }, 
+            borderRadius: isMapFullScreen ? 0 : 3, 
+            overflow: 'hidden', 
+            boxShadow: isMapFullScreen ? 'none' : 2,
+            flex: 1,
+            position: 'relative'
+          }}>
+            <MapView
+              users={participants}
+              destination={ride.destination?.location ? {
+                lat: ride.destination.location.lat,
+                lng: ride.destination.location.lng,
+                address: ride.destination.address
+              } : ride.destination}
+              calculatedRoute={calculatedRoute}
+              userLocation={location}
               isLiveRide={true}
             />
-          </div>
-        </div>
-
-        {/* Sliding Sidebar - Now overlays the map */}
-        <div 
-          className={`live-ride-sidebar ${isSidebarOpen ? 'open' : 'closed'}`}
-          onClick={handleSidebarClick}
-        >
-          <div className="sidebar-handle">
-            <button 
-              className="sidebar-toggle"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsSidebarOpen(!isSidebarOpen);
-              }}
-              aria-label={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
-            >
-              <i className={`fas fa-${isSidebarOpen ? 'chevron-left' : 'chevron-right'}`}></i>
-            </button>
-          </div>
-
-          <div className="sidebar-content">
-        <div className="ride-info">
-          <h2>
-            <span className="badge bg-primary me-2">{ride.id}</span>
-            {ride.destination?.address}
-          </h2>
-              <div className="ride-status-info">
-                <span className={`badge bg-${currentStatusMeta?.color || 'secondary'} me-2`}>
-                  <i className={`fas ${currentStatusMeta?.icon || 'fa-question-circle'} me-1`}></i>
-                  {currentStatusMeta?.label || 'Unknown Status'}
-                </span>
-                <small className="text-muted">
-            Started {new Date(ride.createdAt?.toDate()).toLocaleString()}
-                </small>
-              </div>
-              
-              {/* Route Statistics */}
-              {optimizedRoute && routeLoadingState === 'success' && (
-                <div className="route-statistics">
-                  <h6 className="mt-3 mb-2">
-                    <i className="fas fa-route me-2"></i>
-                    Route Information
-                  </h6>
-                  <div className="route-stats-grid">
-                    <div className="route-stat-item">
-                      <div className="stat-label">Distance</div>
-                      <div className="stat-value">
-                        <i className="fas fa-road me-1"></i>
-                        {formatDistance(optimizedRoute.totalDistance)}
-                      </div>
-                    </div>
-                    <div className="route-stat-item">
-                      <div className="stat-label">Duration</div>
-                      <div className="stat-value">
-                        <i className="fas fa-clock me-1"></i>
-                        {formatDuration(optimizedRoute.totalDuration)}
-                      </div>
-                    </div>
-                  </div>
-                  {optimizedRoute.routeType === 'simple_straight_line' && (
-                    <small className="text-muted">
-                      <i className="fas fa-info-circle me-1"></i>
-                      Configure MapQuest API key for road-following routes
-                    </small>
-                  )}
-                </div>
-              )}
-        </div>
-
-        <div className="ride-actions">
-              {/* RSVP Status Section */}
-              {getCurrentUserRSVPStatus() && (
-                <div className="rsvp-status-section">
-                  <div className="rsvp-status-info">
-                    <small className="text-muted">
-                      Your RSVP Status: <span className={`badge bg-${getInvitationStatusColor(getCurrentUserRSVPStatus().status)}`}>
-                        {getInvitationStatusText(getCurrentUserRSVPStatus().status)}
-                      </span>
-                    </small>
-                  </div>
-                    <button
-                    className="btn btn-outline-secondary btn-sm"
-                    onClick={handleChangeRSVP}
-                    >
-                    <i className="fas fa-edit me-1"></i>
-                    Change RSVP
-                    </button>
-                </div>
-              )}
-
-              {/* Fallback RSVP Section for users with invitations but no status */}
-              {!getCurrentUserRSVPStatus() && ride?.invitations?.[user?.uid] && (
-                <div className="rsvp-status-section">
-                  <div className="rsvp-status-info">
-                    <small className="text-muted">
-                      You have a pending invitation for this ride
-                    </small>
-                  </div>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={() => {
-                      setIsManuallyOpened(true);
-                      setUserInvitation(ride.invitations[user.uid]);
-                      setShowInvitationModal(true);
-                    }}
-                  >
-                    <i className="fas fa-reply me-1"></i>
-                    Respond to Invitation
-                  </button>
-                </div>
-              )}
-
-              <div className="action-buttons">
-          <button 
-            className="btn btn-outline-primary me-2"
-            onClick={handleShareRide}
-            disabled={isSharing}
-          >
-            {isSharing ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                Sharing...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-share me-1"></i>
-                Share Ride
-              </>
+            
+            {/* Floating Full Screen Button for Mobile */}
+            {!isMapFullScreen && (
+              <Box sx={{ 
+                position: 'absolute', 
+                top: 16, 
+                right: 16, 
+                zIndex: 1000,
+                display: { xs: 'block', sm: 'none' }
+              }}>
+                <IconButton
+                  onClick={handleMapFullScreenToggle}
+                  sx={{
+                    background: 'rgba(255,255,255,0.9)',
+                    color: vibe.accent,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                    '&:hover': {
+                      background: 'rgba(255,255,255,1)',
+                      transform: 'scale(1.1)'
+                    },
+                    transition: 'all 0.2s ease'
+                  }}
+                  size="small"
+                  title="Full Screen"
+                >
+                  <FullscreenIcon />
+                </IconButton>
+              </Box>
             )}
-          </button>
-          <button 
-            className="btn btn-outline-danger"
-            onClick={handleLeaveRide}
-          >
-            <i className="bi bi-box-arrow-right me-1"></i>
-            Leave Ride
-          </button>
-        </div>
-
-              {getAvailableTransitions().length > 0 && (
-                <div className="status-actions">
-                  {getAvailableTransitions().map(({ status, label, icon, color }) => (
-                    <button
-                      key={status}
-                      className={`btn btn-outline-${color} me-2`}
-                      onClick={() => handleStatusUpdate(status)}
-                      disabled={isUpdatingStatus}
-                    >
-                      {isUpdatingStatus ? (
-                        <>
-                          <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                          Updating...
-                        </>
-                      ) : (
-                        <>
-                          <i className={`fas ${icon} me-1`}></i>
-                          {label}
-                        </>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-      </div>
-
-            <div className="ride-details">
-        </div>
-
-              <div className="participants-list">
-                <div className="participants-header">
-                <h6>Participants</h6>
-                  <span className="participant-count">{participants.length}</span>
-                </div>
-                <div className="participants-table">
-                  {participants.map((participant, index) => (
-                    <div 
-                      key={participant.uid || index} 
-                      className={`participant-item ${participant.isPendingInvitation ? 'pending-invitation' : ''}`}
-                    >
-                      <div className="participant-info">
-                        <div className="participant-avatar">
-                          {participant.photoURL ? (
-                            <img src={participant.photoURL} alt={participant.displayName || participant.name} />
-                          ) : (
-                            <div className="avatar-placeholder">
-                              {(participant.displayName || participant.name || 'U').charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                        </div>
-                        <div className="participant-details">
-                          <div className="participant-name">
-                            {participant.displayName || participant.name || 'Unknown User'}
-                            {participant.isCreator && (
-                              <span className="creator-badge" title="Ride Creator">
-                                <i className="fas fa-crown"></i>
-                      </span>
-                            )}
-                            {/* Color indicator for map identification */}
-                            {participant.color && (
-                              <span 
-                                className="map-color-indicator" 
-                                style={{ backgroundColor: participant.color }}
-                                title={`Map marker color: ${participant.color}`}
-                              >
-                                <i className="fas fa-map-marker-alt"></i>
-                              </span>
-                            )}
-                          </div>
-                        {participant.invitationStatus && (
-                            <div className={`invitation-status-badge ${participant.invitationStatus}`}>
-                              <i className={`fas ${getInvitationStatusIcon(participant.invitationStatus)}`}></i>
-                            {getInvitationStatusText(participant.invitationStatus)}
-                            </div>
-                        )}
-                      </div>
-                      </div>
-                      <div className="participant-meta">
-                        <span className={`role-badge ${participant.role || 'passenger'}`}>
-                          <i className={`fas fa-${participant.role === 'driver' ? 'car' : 'user'}`}></i>
-                          {participant.role || 'passenger'}
-                        </span>
-                        {participant.isPendingInvitation && (
-                          <span className="pending-indicator">
-                            <i className="fas fa-clock"></i>
-                            Pending Response
-                        </span>
-                      )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <style>{`
-        .live-ride-container {
-          position: fixed;
-          top: 64px; /* Height of the header */
-          left: 0;
-          right: 0;
-          bottom: 0;
-          display: flex;
-          flex-direction: column;
-          background: #f8fafc;
-          width: 100vw;
-          height: calc(100vh - 64px);
-          z-index: 1; /* Lower z-index to stay below header */
-          pointer-events: none; /* Allow clicks to pass through to header */
-        }
-
-        .live-ride-content {
-          position: relative;
-          width: 100%;
-          height: 100%;
-          overflow: hidden;
-          pointer-events: auto; /* Re-enable pointer events for content */
-        }
-
-        .live-ride-map-wrapper {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 1;
-        }
-
-        .live-ride-map-container {
-          width: 100%;
-          height: 100%;
-        }
-
-        .live-ride-sidebar {
-          position: absolute;
-          top: 0;
-          left: 0;
-          bottom: 0;
-          width: 400px;
-          background: #ffffff;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-          border-right: 1px solid #eef2f7;
-          transition: transform 0.3s ease;
-          z-index: 2; /* Higher than map but lower than header */
-          height: 100%;
-          pointer-events: auto;
-        }
-
-        .live-ride-sidebar.closed {
-          transform: translateX(-400px);
-        }
-
-        .sidebar-handle {
-          position: absolute;
-          right: -16px;
-          top: 50%;
-          transform: translateY(-50%);
-          z-index: 3; /* Higher than sidebar */
-          background: #ffffff;
-          border-radius: 50%;
-          padding: 4px;
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-          pointer-events: auto;
-        }
-
-        .sidebar-toggle {
-          width: 32px;
-          height: 32px;
-          border-radius: 50%;
-          background: #ffffff;
-          border: 2px solid #eef2f7;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          color: #2196F3;
-        }
-
-        .sidebar-toggle:hover {
-          background: #2196F3;
-          border-color: #2196F3;
-          color: #ffffff;
-        }
-
-        .sidebar-content {
-          padding: 1.5rem;
-          height: 100%;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          gap: 1.5rem;
-          background: #ffffff;
-        }
-
-        .ride-info {
-          margin-bottom: 1.5rem;
-        }
-
-        .ride-status-info {
-          display: flex;
-          align-items: center;
-          margin-top: 0.5rem;
-        }
-
-        .status-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.5rem;
-          margin-bottom: 1rem;
-        }
-
-        .action-buttons {
-          display: flex;
-          gap: 0.5rem;
-        }
-
-        .timeline {
-          position: relative;
-          padding-left: 2rem;
-        }
-
-        .timeline-item {
-          position: relative;
-          padding-bottom: 1.5rem;
-        }
-
-        .timeline-item:last-child {
-          padding-bottom: 0;
-        }
-
-        .timeline-marker {
-          position: absolute;
-          left: -2rem;
-          width: 1.5rem;
-          height: 1.5rem;
-          border-radius: 50%;
-          background: #f8f9fa;
-          border: 2px solid #dee2e6;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .timeline-content {
-          background: #f8f9fa;
-          padding: 1rem;
-          border-radius: 0.5rem;
-        }
-
-        .timeline-header {
-          display: flex;
-          align-items: center;
-          margin-bottom: 0.5rem;
-        }
-
-        .timeline-text {
-          color: #6c757d;
-          font-size: 0.875rem;
-        }
-
-        .route-stats {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-          gap: 1rem;
-          margin-top: 1rem;
-        }
-
-        .stat-item {
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.75rem;
-          background: #f8f9fa;
-          border-radius: 0.5rem;
-          border: 1px solid #eef2f7;
-        }
-
-        .stat-item i {
-          color: #2196F3;
-          font-size: 1.25rem;
-        }
-
-        @media (max-width: 768px) {
-          .live-ride-container {
-            top: 56px; /* Smaller header height on mobile */
-            height: calc(100vh - 56px);
-          }
-
-          .live-ride-sidebar {
-            width: 100%;
-            max-width: 400px;
-          }
-
-          .live-ride-sidebar.closed {
-            transform: translateX(-100%);
-          }
-
-          .sidebar-content {
-            padding: 1rem;
-          }
-        }
-
-        /* Add styles for notifications to ensure they're clickable */
-        .alert {
-          position: relative;
-          z-index: 2;
-          pointer-events: auto;
-        }
-
-        /* Participant list styles */
-        .participants-list {
-          margin-top: 1.5rem;
-        }
-
-        .participants-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 1rem;
-        }
-
-        .participant-count {
-          background: #e9ecef;
-          color: #495057;
-          padding: 0.25rem 0.5rem;
-          border-radius: 0.25rem;
-          font-size: 0.875rem;
-          font-weight: 500;
-        }
-
-        .participants-table {
-          display: flex;
-          flex-direction: column;
-          gap: 0.75rem;
-        }
-
-        .participant-item {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 0.75rem;
-          background: #f8f9fa;
-          border: 1px solid #e9ecef;
-          border-radius: 0.5rem;
-          transition: all 0.2s ease;
-        }
-
-        .participant-item:hover {
-          background: #e9ecef;
-          border-color: #dee2e6;
-        }
-
-        .participant-item.pending-invitation {
-          background: #fff3cd;
-          border-color: #ffeaa7;
-          opacity: 0.8;
-        }
-
-        .participant-info {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          flex: 1;
-        }
-
-        .participant-avatar {
-          width: 2.5rem;
-          height: 2.5rem;
-          border-radius: 50%;
-          overflow: hidden;
-          flex-shrink: 0;
-        }
-
-        .participant-avatar img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-        }
-
-        .avatar-placeholder {
-          width: 100%;
-          height: 100%;
-          background: #2196F3;
-          color: white;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-weight: 600;
-          font-size: 1rem;
-        }
-
-        .participant-details {
-          display: flex;
-          flex-direction: column;
-          gap: 0.25rem;
-          min-width: 0;
-        }
-
-        .participant-name {
-          font-weight: 600;
-          color: #212529;
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-        }
-
-        .creator-badge {
-          color: #ffc107;
-          font-size: 0.875rem;
-        }
-
-        .invitation-status-badge {
-          display: flex;
-          align-items: center;
-          gap: 0.25rem;
-          font-size: 0.75rem;
-          padding: 0.125rem 0.375rem;
-          border-radius: 0.25rem;
-          font-weight: 500;
-        }
-
-        .invitation-status-badge.pending {
-          background: #fff3cd;
-          color: #856404;
-          border: 1px solid #ffeaa7;
-        }
-
-        .invitation-status-badge.accepted {
-          background: #d4edda;
-          color: #155724;
-          border: 1px solid #c3e6cb;
-        }
-
-        .invitation-status-badge.declined {
-          background: #f8d7da;
-          color: #721c24;
-          border: 1px solid #f5c6cb;
-        }
-
-        .invitation-status-badge.maybe {
-          background: #d1ecf1;
-          color: #0c5460;
-          border: 1px solid #bee5eb;
-        }
-
-        .participant-meta {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 0.5rem;
-        }
-
-        .role-badge {
-          display: flex;
-          align-items: center;
-          gap: 0.25rem;
-          font-size: 0.75rem;
-          padding: 0.25rem 0.5rem;
-          border-radius: 0.25rem;
-          font-weight: 500;
-        }
-
-        .role-badge.driver {
-          background: #e3f2fd;
-          color: #1976d2;
-          border: 1px solid #bbdefb;
-        }
-
-        .role-badge.passenger {
-          background: #f3e5f5;
-          color: #7b1fa2;
-          border: 1px solid #e1bee7;
-        }
-
-        .pending-indicator {
-          display: flex;
-          align-items: center;
-          gap: 0.25rem;
-          font-size: 0.75rem;
-          color: #856404;
-          font-weight: 500;
-        }
-
-        .pending-indicator i {
-          color: #ffc107;
-        }
-
-        /* Map color indicator styles */
-        .map-color-indicator {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 20px;
-          height: 20px;
-          border-radius: 50%;
-          margin-left: 8px;
-          color: white;
-          font-size: 10px;
-          border: 2px solid #ffffff;
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-          cursor: help;
-          transition: transform 0.2s ease;
-        }
-
-        .map-color-indicator:hover {
-          transform: scale(1.1);
-        }
-
-        .map-color-indicator i {
-          color: white;
-        }
-
-        /* Route information styles */
-        .route-breakdown {
-          margin-top: 1rem;
-        }
-
-        .route-segment {
-          background: #f8f9fa;
-          border: 1px solid #e9ecef;
-          border-radius: 0.5rem;
-          padding: 1rem;
-          margin-bottom: 1rem;
-        }
-
-        .route-segment:last-child {
-          margin-bottom: 0;
-        }
-
-        .route-segment-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 1rem;
-          padding-bottom: 0.5rem;
-          border-bottom: 1px solid #dee2e6;
-        }
-
-        .route-segment-title {
-          font-weight: 600;
-          color: #212529;
-          display: flex;
-          align-items: center;
-        }
-
-        .driver-name {
-          color: #6c757d;
-          font-weight: 500;
-          margin-left: 0.5rem;
-        }
-
-        .route-segment-stats {
-          font-size: 0.875rem;
-        }
-
-        .waypoints-list {
-          display: flex;
-          flex-direction: column;
-          gap: 0.75rem;
-        }
-
-        .waypoint-item {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          padding: 0.5rem;
-          background: #ffffff;
-          border-radius: 0.375rem;
-          border: 1px solid #e9ecef;
-        }
-
-        .waypoint-marker {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 2rem;
-          height: 2rem;
-          border-radius: 50%;
-          background: #f8f9fa;
-          flex-shrink: 0;
-        }
-
-        .waypoint-marker i {
-          font-size: 1rem;
-        }
-
-        .waypoint-info {
-          flex: 1;
-          min-width: 0;
-        }
-
-        .waypoint-name {
-          font-weight: 500;
-          color: #212529;
-          margin-bottom: 0.25rem;
-        }
-
-        .waypoint-role {
-          display: flex;
-          align-items: center;
-        }
-
-        .waypoint-arrow {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 1.5rem;
-          height: 1.5rem;
-          color: #6c757d;
-          flex-shrink: 0;
-        }
-
-        .route-passengers {
-          margin-top: 1rem;
-          padding-top: 1rem;
-          border-top: 1px solid #dee2e6;
-        }
-
-        .passengers-list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.5rem;
-          margin-top: 0.5rem;
-        }
-
-        .passenger-badge {
-          background: #e3f2fd;
-          color: #1976d2;
-          padding: 0.25rem 0.5rem;
-          border-radius: 0.25rem;
-          font-size: 0.75rem;
-          font-weight: 500;
-          border: 1px solid #bbdefb;
-        }
-
-        .route-optimization-details {
-          margin-top: 1rem;
-          padding-top: 1rem;
-          border-top: 1px solid #dee2e6;
-        }
-
-        .optimization-info {
-          display: flex;
-          flex-direction: column;
-          gap: 0.75rem;
-        }
-
-        .info-item {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          padding: 0.5rem;
-          background: #f8f9fa;
-          border-radius: 0.375rem;
-          border: 1px solid #e9ecef;
-        }
-
-        .info-item i {
-          font-size: 1rem;
-          width: 1.5rem;
-          text-align: center;
-        }
-
-        .info-item span {
-          font-size: 0.875rem;
-          color: #495057;
-        }
-
-        /* Enhanced role badge styles */
-        .role-badge.waypoint {
-          background: #e9ecef;
-          color: #495057;
-          border: 1px solid #ced4da;
-        }
-
-        .role-badge.destination {
-          background: #f8d7da;
-          color: #721c24;
-          border: 1px solid #f5c6cb;
-        }
-
-        .role-badge.origin {
-          background: #d4edda;
-          color: #155724;
-          border: 1px solid #c3e6cb;
-        }
-
-        .role-badge.pickup {
-          background: #fff3cd;
-          color: #856404;
-          border: 1px solid #ffeaa7;
-        }
-      `}</style>
-
-    {/* Ride Invitation Modal - moved outside main container */}
-    {showInvitationModal && userInvitation && ride && (
-      <RideInvitationModal
-        isOpen={showInvitationModal}
-        onClose={() => {
-          setShowInvitationModal(false);
-          setUserInvitation(null);
-          setIsManuallyOpened(false);
-        }}
-        ride={ride}
-        inviter={userInvitation.inviter}
-        currentUserId={user?.uid}
-        onRSVPSubmit={handleRSVPSubmit}
-      />
-    )}
-    </>
+            
+            {/* Route Information Panel - Full Screen Mode */}
+            {isMapFullScreen && (
+              <Box sx={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                background: 'rgba(255,255,255,0.95)',
+                backdropFilter: 'blur(10px)',
+                borderTop: '1px solid rgba(0,0,0,0.1)',
+                zIndex: 1000,
+                maxHeight: '40vh',
+                overflow: 'hidden'
+              }}>
+                <RouteInformationPanel
+                  routeInfo={getRouteInformation()}
+                  passengerInfo={getCurrentPassengerInfo()}
+                  onPassengerStatusUpdate={updatePassengerStatus}
+                  showFullRoute={showFullRoute}
+                  onToggleFullRoute={() => setShowFullRoute(!showFullRoute)}
+                  vibe={vibe}
+                  currentLocation={currentLocation}
+                />
+              </Box>
+            )}
+          </Box>
+          
+          {/* Footer - only show in non-fullscreen mode */}
+          {!isMapFullScreen && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+              <Button 
+                onClick={handleMapModalClose} 
+                sx={{ color: vibe.accent, fontWeight: 600 }}
+              >
+                Close
+              </Button>
+            </Box>
+          )}
+        </Box>
+      </Modal>
+    </Box>
   );
-}
-
-// Helper functions
-function formatDistance(meters) {
-  if (!meters) return 'N/A';
-  const miles = meters / 1609.34; // Convert meters to miles
-  return `${miles.toFixed(1)} mi`;
-}
-
-function formatDuration(seconds) {
-  if (!seconds) return 'N/A';
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes} min`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return `${hours}h ${remainingMinutes}m`;
-}
-
-// Route optimization function
-async function optimizeRoute(rideData, user = null, location = null) {
-  try {
-    console.log('LiveRideView - Starting route optimization');
-    
-    // Prepare waypoints for route optimization
-    const waypoints = [];
-    
-    // Add starting point - prioritize driver's current location, then driver's location, then creator's location
-    let startingLocation = null;
-    if (rideData.driver?.currentLocation) {
-      startingLocation = rideData.driver.currentLocation;
-      console.log('LiveRideView - Using driver current location as starting point');
-    } else if (rideData.driver?.location) {
-      startingLocation = rideData.driver.location;
-      console.log('LiveRideView - Using driver location as starting point');
-    } else if (rideData.creatorId === user?.uid && location) {
-      // If current user is creator and has location, use it as starting point
-      startingLocation = {
-        lat: location.latitude,
-        lng: location.longitude,
-        accuracy: location.accuracy
-      };
-      console.log('LiveRideView - Using creator location as starting point');
-    } else {
-      // Fallback: use destination as starting point (will be adjusted by route optimization)
-      startingLocation = rideData.destination.location;
-      console.log('LiveRideView - Using destination as fallback starting point');
-    }
-    
-    if (startingLocation) {
-      waypoints.push({
-        ...startingLocation,
-        type: 'driver',
-        role: 'driver',
-        name: rideData.driver?.displayName || rideData.driver?.name || 'Driver'
-      });
-      console.log('LiveRideView - Added starting waypoint:', {
-        location: startingLocation,
-        type: 'starting_point'
-      });
-    }
-    
-    // Add passengers as pickup points
-    if (rideData.passengers) {
-      rideData.passengers.forEach(passenger => {
-        if (passenger.location) {
-          waypoints.push({
-            ...passenger.location,
-            type: 'pickup',
-            role: 'passenger',
-            name: passenger.displayName || passenger.name
-          });
-        }
-      });
-    }
-    
-    // Add destination
-    if (rideData.destination?.location) {
-      waypoints.push({
-        ...rideData.destination.location,
-        type: 'destination',
-        role: 'destination',
-        name: 'Final Destination'
-      });
-    }
-    
-    console.log('LiveRideView - Waypoints prepared:', waypoints.length);
-    
-    // Use the route optimization service
-    const optimizedRouteData = await calculateOptimizedRoute(waypoints, {
-      timeWindows: {},
-      capacity: 8,
-      maxDistance: 100,
-      trafficConditions: 'current'
-    });
-    
-    console.log('LiveRideView - Route optimization completed:', optimizedRouteData);
-    
-    // Convert VRP route data to GeoJSON format for MapView
-    const geoJsonRoute = convertVRPToGeoJSON(optimizedRouteData, waypoints);
-    
-    console.log('LiveRideView - Converted to GeoJSON:', geoJsonRoute);
-    
-    return geoJsonRoute;
-  } catch (error) {
-    console.error('Error optimizing route:', error);
-    // Fallback to simple route calculation
-    try {
-      console.log('LiveRideView - Trying fallback route calculation');
-      const simpleRoute = await calculateSimpleRoute(rideData, user, location);
-      console.log('LiveRideView - Fallback route result:', simpleRoute);
-      return simpleRoute;
-    } catch (fallbackError) {
-      console.error('Fallback route calculation also failed:', fallbackError);
-      throw fallbackError;
-    }
-  }
-}
-
-// Convert VRP route data to GeoJSON format
-function convertVRPToGeoJSON(vrpRouteData, waypoints) {
-  try {
-    console.log('Converting VRP route to GeoJSON:', vrpRouteData);
-    console.log('Original waypoints:', waypoints);
-    
-    // If we have routes array from VRP, use the first route
-    if (vrpRouteData.routes && vrpRouteData.routes.length > 0) {
-      const route = vrpRouteData.routes[0];
-      console.log('Using VRP route:', route);
-      
-      // The optimized waypoints are in route.waypoints array
-      if (route.waypoints && Array.isArray(route.waypoints)) {
-        console.log('Found waypoints in route.waypoints:', route.waypoints.length);
-        const coordinates = route.waypoints.map(wp => [wp.lng, wp.lat]);
-        console.log('Route waypoints coordinates:', coordinates);
-        
-        if (coordinates.length < 2) {
-          console.warn('Not enough waypoints for route:', coordinates.length);
-          throw new Error('Not enough waypoints for route visualization');
-        }
-        
-        // Calculate total distance
-        let totalDistance = 0;
-        for (let i = 0; i < coordinates.length - 1; i++) {
-          const point1 = { lat: coordinates[i][1], lng: coordinates[i][0] };
-          const point2 = { lat: coordinates[i + 1][1], lng: coordinates[i + 1][0] };
-          totalDistance += calculateDistance(point1, point2);
-        }
-        
-        // Calculate duration using 45 mph average speed (more realistic than 2 min/km)
-        const totalDistanceMiles = totalDistance / 1609.34; // Convert meters to miles
-        const totalDuration = (totalDistanceMiles / 45) * 60 * 60; // Convert to seconds: (miles / mph) * 60 min/hr * 60 sec/min
-        
-        const geoJsonFeature = {
-          type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: coordinates
-          },
-          properties: {
-            summary: {
-              distance: totalDistance,
-              duration: totalDuration
-            }
-          }
-        };
-        
-        const result = {
-          type: 'FeatureCollection',
-          features: [geoJsonFeature],
-          totalDistance: totalDistance,
-          totalDuration: totalDuration,
-          routeType: 'vrp_optimized'
-        };
-        
-        console.log('VRP waypoints to GeoJSON conversion result:', result);
-        return result;
-      }
-      
-      // Fallback: try to reconstruct from driver and passengers
-      console.log('No waypoints array found, trying to reconstruct from driver and passengers');
-      const coordinates = [];
-      
-      // Add driver location
-      if (route.driver?.currentLocation) {
-        coordinates.push([route.driver.currentLocation.lng, route.driver.currentLocation.lat]);
-        console.log('Added driver coordinate:', [route.driver.currentLocation.lng, route.driver.currentLocation.lat]);
-      } else if (route.driver?.lng && route.driver?.lat) {
-        coordinates.push([route.driver.lng, route.driver.lat]);
-        console.log('Added driver coordinate:', [route.driver.lng, route.driver.lat]);
-      }
-      
-      // Add passenger pickup locations
-      if (route.passengers) {
-        route.passengers.forEach((passenger, index) => {
-          if (passenger.location) {
-            coordinates.push([passenger.location.lng, passenger.location.lat]);
-            console.log(`Added passenger ${index + 1} coordinate:`, [passenger.location.lng, passenger.location.lat]);
-          } else if (passenger.lng && passenger.lat) {
-            coordinates.push([passenger.lng, passenger.lat]);
-            console.log(`Added passenger ${index + 1} coordinate:`, [passenger.lng, passenger.lat]);
-          } else {
-            console.log(`Skipping passenger ${index + 1} - no location:`, passenger);
-          }
-        });
-      }
-      
-      // Add destination
-      if (waypoints.length > 0) {
-        const destination = waypoints[waypoints.length - 1];
-        coordinates.push([destination.lng, destination.lat]);
-        console.log('Added destination coordinate:', [destination.lng, destination.lat]);
-      }
-      
-      console.log('Final coordinates array:', coordinates);
-      
-      if (coordinates.length < 2) {
-        console.warn('Not enough coordinates for route line:', coordinates.length);
-        throw new Error('Not enough coordinates for route visualization');
-      }
-      
-      // Create GeoJSON feature
-      const geoJsonFeature = {
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates
-        },
-        properties: {
-          summary: {
-            distance: vrpRouteData.totalDistance || 0,
-            duration: vrpRouteData.totalDuration || 0
-          }
-        }
-      };
-      
-      const result = {
-        type: 'FeatureCollection',
-        features: [geoJsonFeature],
-        totalDistance: vrpRouteData.totalDistance || 0,
-        totalDuration: vrpRouteData.totalDuration || 0,
-        routeType: 'vrp_reconstructed'
-      };
-      
-      console.log('VRP to GeoJSON conversion result:', result);
-      return result;
-    }
-    
-    // Handle case where route optimization returns waypoints directly
-    if (Array.isArray(vrpRouteData)) {
-      console.log('Route optimization returned waypoints array directly');
-      const coordinates = vrpRouteData.map(wp => [wp.lng, wp.lat]);
-      console.log('Waypoints coordinates:', coordinates);
-      
-      if (coordinates.length < 2) {
-        console.warn('Not enough waypoints for route:', coordinates.length);
-        throw new Error('Not enough waypoints for route visualization');
-      }
-      
-      // Calculate total distance
-      let totalDistance = 0;
-      for (let i = 0; i < coordinates.length - 1; i++) {
-        const point1 = { lat: coordinates[i][1], lng: coordinates[i][0] };
-        const point2 = { lat: coordinates[i + 1][1], lng: coordinates[i + 1][0] };
-        totalDistance += calculateDistance(point1, point2);
-      }
-      
-      // Calculate duration using 45 mph average speed (more realistic than 2 min/km)
-      const totalDistanceMiles = totalDistance / 1609.34; // Convert meters to miles
-      const totalDuration = (totalDistanceMiles / 45) * 60 * 60; // Convert to seconds: (miles / mph) * 60 min/hr * 60 sec/min
-      
-      const geoJsonFeature = {
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates
-        },
-        properties: {
-          summary: {
-            distance: totalDistance,
-            duration: totalDuration
-          }
-        }
-      };
-      
-      const result = {
-        type: 'FeatureCollection',
-        features: [geoJsonFeature],
-        totalDistance: totalDistance,
-        totalDuration: totalDuration,
-        routeType: 'waypoints_direct'
-      };
-      
-      console.log('Waypoints to GeoJSON conversion result:', result);
-      return result;
-    }
-    
-    // Handle case where route optimization returns a single route object with waypoints
-    if (vrpRouteData.waypoints && Array.isArray(vrpRouteData.waypoints)) {
-      console.log('Route optimization returned route object with waypoints');
-      const coordinates = vrpRouteData.waypoints.map(wp => [wp.lng, wp.lat]);
-      console.log('Route waypoints coordinates:', coordinates);
-      
-      if (coordinates.length < 2) {
-        console.warn('Not enough waypoints for route:', coordinates.length);
-        throw new Error('Not enough waypoints for route visualization');
-      }
-      
-      // Calculate total distance
-      let totalDistance = 0;
-      for (let i = 0; i < coordinates.length - 1; i++) {
-        const point1 = { lat: coordinates[i][1], lng: coordinates[i][0] };
-        const point2 = { lat: coordinates[i + 1][1], lng: coordinates[i + 1][0] };
-        totalDistance += calculateDistance(point1, point2);
-      }
-      
-      // Calculate duration using 45 mph average speed (more realistic than 2 min/km)
-      const totalDistanceMiles = totalDistance / 1609.34; // Convert meters to miles
-      const totalDuration = (totalDistanceMiles / 45) * 60 * 60; // Convert to seconds: (miles / mph) * 60 min/hr * 60 sec/min
-      
-      const geoJsonFeature = {
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates
-        },
-        properties: {
-          summary: {
-            distance: totalDistance,
-            duration: totalDuration
-          }
-        }
-      };
-      
-      const result = {
-        type: 'FeatureCollection',
-        features: [geoJsonFeature],
-        totalDistance: totalDistance,
-        totalDuration: totalDuration,
-        routeType: 'route_object'
-      };
-      
-      console.log('Route waypoints to GeoJSON conversion result:', result);
-      return result;
-    }
-    
-    // Fallback: create simple route from waypoints
-    console.log('Using fallback waypoints conversion');
-    const coordinates = waypoints.map(wp => [wp.lng, wp.lat]);
-    console.log('Fallback coordinates:', coordinates);
-    
-    if (coordinates.length < 2) {
-      console.warn('Not enough waypoints for fallback route:', coordinates.length);
-      throw new Error('Not enough waypoints for route visualization');
-    }
-    
-    const geoJsonFeature = {
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: coordinates
-      },
-      properties: {
-        summary: {
-          distance: vrpRouteData.totalDistance || 0,
-          duration: vrpRouteData.totalDuration || 0
-        }
-      }
-    };
-    
-    const totalDistance = vrpRouteData.totalDistance || 0;
-    const totalDuration = vrpRouteData.totalDuration || 0;
-    
-    return {
-      type: 'FeatureCollection',
-      features: [geoJsonFeature],
-      totalDistance: totalDistance,
-      totalDuration: totalDuration,
-      routeType: 'simple'
-    };
-    
-  } catch (error) {
-    console.error('Error converting VRP to GeoJSON:', error);
-    throw error;
-  }
-}
-
-// Fallback route calculation function
-async function calculateSimpleRoute(rideData, user = null, location = null) {
-  try {
-    console.log('LiveRideView - Using fallback route calculation');
-    
-    // Simple route: starting point -> passengers -> destination
-    const waypoints = [];
-    
-    // Add starting point - prioritize driver's current location, then driver's location, then creator's location
-    let startingLocation = null;
-    if (rideData.driver?.currentLocation) {
-      startingLocation = rideData.driver.currentLocation;
-      console.log('LiveRideView - Using driver current location as starting point (fallback)');
-    } else if (rideData.driver?.location) {
-      startingLocation = rideData.driver.location;
-      console.log('LiveRideView - Using driver location as starting point (fallback)');
-    } else if (rideData.creatorId === user?.uid && location) {
-      // If current user is creator and has location, use it as starting point
-      startingLocation = {
-        lat: location.latitude,
-        lng: location.longitude,
-        accuracy: location.accuracy
-      };
-      console.log('LiveRideView - Using creator location as starting point (fallback)');
-    } else {
-      // Fallback: use destination as starting point
-      startingLocation = rideData.destination.location;
-      console.log('LiveRideView - Using destination as fallback starting point (fallback)');
-    }
-    
-    if (startingLocation) {
-      waypoints.push(startingLocation);
-    }
-    
-    if (rideData.passengers) {
-      rideData.passengers.forEach(passenger => {
-        if (passenger.location) {
-          waypoints.push(passenger.location);
-        }
-      });
-    }
-    
-    if (rideData.destination?.location) {
-      waypoints.push(rideData.destination.location);
-    }
-    
-    // Calculate simple distance and duration
-    let totalDistance = 0;
-    for (let i = 0; i < waypoints.length - 1; i++) {
-      const distance = calculateDistance(waypoints[i], waypoints[i + 1]);
-      totalDistance += distance;
-    }
-    
-    // Calculate duration using 45 mph average speed (more realistic than 2 min/km)
-    const totalDistanceMiles = totalDistance / 1609.34; // Convert meters to miles
-    const totalDuration = (totalDistanceMiles / 45) * 60 * 60; // Convert to seconds: (miles / mph) * 60 min/hr * 60 sec/min
-    
-    // Convert to GeoJSON format
-    const coordinates = waypoints.map(wp => [wp.lng, wp.lat]);
-    
-    const geoJsonFeature = {
-      type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: coordinates
-      },
-      properties: {
-        summary: {
-          distance: totalDistance,
-          duration: totalDuration
-        }
-      }
-    };
-    
-    return {
-      type: 'FeatureCollection',
-      features: [geoJsonFeature],
-      totalDistance: totalDistance,
-      totalDuration: totalDuration,
-      routeType: 'simple'
-    };
-  } catch (error) {
-    console.error('Error in fallback route calculation:', error);
-    throw error;
-  }
-}
-
-// Helper function to calculate distance between two points
-function calculateDistance(point1, point2) {
-  const R = 6371e3; // Earth's radius in meters
-  const φ1 = point1.lat * Math.PI / 180;
-  const φ2 = point2.lat * Math.PI / 180;
-  const Δφ = (point2.lat - point1.lat) * Math.PI / 180;
-  const Δλ = (point2.lng - point1.lng) * Math.PI / 180;
-
-  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-    Math.cos(φ1) * Math.cos(φ2) *
-    Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return R * c;
-}
-
-function getInvitationStatusColor(status) {
-  const colors = {
-    pending: 'warning',
-    accepted: 'success',
-    declined: 'danger',
-    maybe: 'info'
-  };
-  return colors[status] || 'secondary';
-}
-
-function getInvitationStatusText(status) {
-  const texts = {
-    pending: 'Pending Response',
-    accepted: 'Accepted',
-    declined: 'Declined',
-    maybe: 'Considering'
-  };
-  return texts[status] || status;
-}
-
-function getInvitationStatusIcon(status) {
-  const icons = {
-    pending: 'fa-clock',
-    accepted: 'fa-check-circle',
-    declined: 'fa-times-circle',
-    maybe: 'fa-question-circle'
-  };
-  return icons[status] || 'fa-question-circle';
 }
 
 export default LiveRideView; 

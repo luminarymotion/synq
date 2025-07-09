@@ -1,370 +1,374 @@
-/**
- * Location service for handling geolocation functionality
- */
+// Mapbox Location Service for SynqRoute
+// Handles geocoding, search, and directions using Mapbox APIs
 
-/**
- * Get the current location of the user
- * @returns {Promise<GeolocationPosition>} Promise that resolves with the current position
- * @throws {Error} If geolocation is not supported or permission is denied
- */
-export const getCurrentLocation = () => {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('Geolocation is not supported by your browser'));
-      return;
-    }
-
-    // First try with high accuracy
-    const highAccuracyOptions = {
-      enableHighAccuracy: true,
-      timeout: 20000, // Increased to 20 seconds
-      maximumAge: 0
-    };
-
-    // Fallback options if high accuracy fails
-    const fallbackOptions = {
-      enableHighAccuracy: false,
-      timeout: 30000, // 30 seconds for fallback
-      maximumAge: 60000 // Allow cached position up to 1 minute old
-    };
-
-    let timeoutId;
-
-    const tryGetLocation = (options, isFallback = false) => {
-      // Clear any existing timeout
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-
-      // Set a timeout to handle cases where the browser doesn't respond
-      timeoutId = setTimeout(() => {
-        if (isFallback) {
-          reject(new Error('Location request timed out. Please check your internet connection and try again.'));
-        } else {
-          console.log('High accuracy location timed out, trying fallback...');
-          tryGetLocation(fallbackOptions, true);
-        }
-      }, options.timeout + 1000); // Add 1 second buffer
-
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          clearTimeout(timeoutId);
-          resolve(position);
-        },
-        (error) => {
-          clearTimeout(timeoutId);
-          
-          if (isFallback) {
-            // If fallback also fails, reject with error
-            let errorMessage = 'Failed to get location';
-    switch (error.code) {
-      case error.PERMISSION_DENIED:
-                errorMessage = 'Location permission denied. Please enable location services in your browser settings.';
-        break;
-      case error.POSITION_UNAVAILABLE:
-                errorMessage = 'Location information is unavailable. Please check your device\'s location services.';
-        break;
-      case error.TIMEOUT:
-                errorMessage = 'Location request timed out. Please check your internet connection and try again.';
-        break;
-      default:
-                errorMessage = 'An unknown error occurred while getting location. Please try again.';
-    }
-            reject(new Error(errorMessage));
-          } else {
-            // If high accuracy fails, try fallback
-            console.log('High accuracy location failed, trying fallback...', error);
-            tryGetLocation(fallbackOptions, true);
-          }
-        },
-        options
-      );
-    };
-
-    // Start with high accuracy
-    tryGetLocation(highAccuracyOptions);
-
-    // Cleanup function
-    return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    };
-  });
+// Mapbox Configuration
+const MAPBOX_CONFIG = {
+  apiKey: import.meta.env.VITE_MAPBOX_API_KEY,
+  baseUrl: 'https://api.mapbox.com',
+  geocodingUrl: 'https://api.mapbox.com/geocoding/v5/mapbox.places',
+  directionsUrl: 'https://api.mapbox.com/directions/v5/mapbox/driving',
+  matrixUrl: 'https://api.mapbox.com/directions-matrix/v1/mapbox/driving',
+  searchUrl: 'https://api.mapbox.com/geocoding/v5/mapbox.places',
+  maxRetries: 3,
+  timeout: 10000,
+  rateLimit: 1000, // 1 second between requests
+  cacheExpiry: 5 * 60 * 1000 // 5 minutes
 };
 
-/**
- * Calculate the distance between two points using the Haversine formula
- * @param {Object} point1 - First point with lat and lng
- * @param {Object} point2 - Second point with lat and lng
- * @returns {number} Distance in kilometers
- */
-export const calculateDistance = (point1, point2) => {
-  const R = 6371; // Earth's radius in kilometers
-  const dLat = toRad(point2.lat - point1.lat);
-  const dLon = toRad(point2.lng - point1.lng);
-  const lat1 = toRad(point1.lat);
-  const lat2 = toRad(point2.lat);
+// Simple cache for geocoding results
+class GeocodingCache {
+  constructor() {
+    this.cache = new Map();
+  }
 
-  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.sin(dLon/2) * Math.sin(dLon/2) * Math.cos(lat1) * Math.cos(lat2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-};
-
-/**
- * Convert degrees to radians
- * @param {number} degrees - Angle in degrees
- * @returns {number} Angle in radians
- */
-const toRad = (degrees) => {
-  return degrees * (Math.PI / 180);
-};
-
-// Add MapQuest configuration
-const MAPQUEST_CONFIG = {
-  baseUrl: 'https://www.mapquestapi.com/geocoding/v1',
-  apiKey: import.meta.env.VITE_MAPQUEST_API_KEY,
-  rateLimit: 100,
-  maxRetries: 2,
-  timeout: 5000,
-  cacheExpiry: 30 * 24 * 60 * 60 * 1000
-};
-
-// Add geocoding cache
-const geocodingCache = {
-  cache: new Map(),
-  
   get(key) {
     const item = this.cache.get(key);
-    if (!item) return null;
-    if (Date.now() > item.expiry) {
-      this.cache.delete(key);
-      return null;
+    if (item && Date.now() < item.expiry) {
+      return item.data;
     }
-    return item.data;
-  },
-  
+    this.cache.delete(key);
+    return null;
+  }
+
   set(key, data) {
     this.cache.set(key, {
       data,
-      expiry: Date.now() + MAPQUEST_CONFIG.cacheExpiry
+      expiry: Date.now() + MAPBOX_CONFIG.cacheExpiry
     });
   }
-};
 
-// Add rate limiter
+  clear() {
+    this.cache.clear();
+  }
+}
+
+const geocodingCache = new GeocodingCache();
+
+// Rate limiter to prevent API abuse
 class RateLimiter {
   constructor(interval) {
     this.interval = interval;
     this.lastRequestTime = 0;
-    this.queue = [];
-    this.processing = false;
   }
 
   async wait() {
-    return new Promise((resolve) => {
-      this.queue.push(resolve);
-      this.processQueue();
-    });
-  }
-
-  async processQueue() {
-    if (this.processing || this.queue.length === 0) return;
-    
-    this.processing = true;
     const now = Date.now();
     const timeSinceLastRequest = now - this.lastRequestTime;
-    
     if (timeSinceLastRequest < this.interval) {
       await new Promise(resolve => setTimeout(resolve, this.interval - timeSinceLastRequest));
     }
-    
     this.lastRequestTime = Date.now();
-    const resolve = this.queue.shift();
-    resolve();
-    this.processing = false;
-    
-    if (this.queue.length > 0) {
-      this.processQueue();
-    }
   }
 }
 
-// Create rate limiter instance
-const rateLimiter = new RateLimiter(MAPQUEST_CONFIG.rateLimit);
+const rateLimiter = new RateLimiter(MAPBOX_CONFIG.rateLimit);
 
-// Add fetch with retry helper
-const fetchWithRetry = async (url, options = {}, maxRetries = MAPQUEST_CONFIG.maxRetries) => {
-  let lastError;
-  for (let i = 0; i <= maxRetries; i++) {
+// Helper function to check if API key is configured
+const isApiKeyConfigured = () => {
+  const apiKey = MAPBOX_CONFIG.apiKey;
+  return apiKey && 
+         apiKey.length > 0 && 
+         apiKey !== 'undefined' && 
+         apiKey.startsWith('pk.');
+};
+
+// Fetch with retry logic
+const fetchWithRetry = async (url, options = {}, maxRetries = MAPBOX_CONFIG.maxRetries) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await rateLimiter.wait();
-      const response = await fetch(url, options);
+      console.log(`🔍 Mapbox API attempt ${attempt}/${maxRetries}:`, url);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), MAPBOX_CONFIG.timeout);
+      
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
       
-      return await response.json();
+      const data = await response.json();
+      console.log(`🔍 Mapbox API success on attempt ${attempt}`);
+      return data;
+      
     } catch (error) {
-      console.warn(`Attempt ${i + 1} failed:`, error);
-      lastError = error;
+      console.warn(`🔍 Mapbox API attempt ${attempt} failed:`, error.message);
       
-      if (i < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, i), 5000);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      if (attempt === maxRetries) {
+        throw error;
       }
+      
+      // Wait before retrying (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
     }
   }
-  throw lastError;
 };
 
-/**
- * Get address from coordinates using MapQuest
- * @param {number} lat - Latitude
- * @param {number} lng - Longitude
- * @returns {Promise<string>} - Formatted address
- */
+// Get address from coordinates (reverse geocoding)
 export const getAddressFromCoords = async (lat, lng) => {
-  const cacheKey = `reverse:${lat}:${lng}`;
-  const cachedResult = geocodingCache.get(cacheKey);
-  if (cachedResult) {
-    return cachedResult;
-  }
-
-  try {
-    const url = new URL(`${MAPQUEST_CONFIG.baseUrl}/reverse`);
-    url.searchParams.append('key', MAPQUEST_CONFIG.apiKey);
-    url.searchParams.append('location', `${lat},${lng}`);
-    url.searchParams.append('outFormat', 'json');
-    url.searchParams.append('thumbMaps', 'false');
-
-    const data = await fetchWithRetry(url.toString(), {
-      signal: AbortSignal.timeout(MAPQUEST_CONFIG.timeout)
-    });
-
-    if (!data.results || !data.results[0].locations || data.results[0].locations.length === 0) {
-      throw new Error('No results found');
-    }
-
-    const location = data.results[0].locations[0];
-    const address = location.street 
-      ? `${location.street}, ${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
-      : `${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`;
-
-    geocodingCache.set(cacheKey, address);
-    return address;
-  } catch (error) {
-    console.error('Error getting address from coordinates:', error);
+  if (!isApiKeyConfigured()) {
+    console.warn('Mapbox API key not configured');
     return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
+  }
+
+  try {
+    await rateLimiter.wait();
+    
+    const url = new URL(`${MAPBOX_CONFIG.geocodingUrl}/${lng},${lat}.json`);
+    url.searchParams.append('access_token', MAPBOX_CONFIG.apiKey);
+    url.searchParams.append('types', 'poi,address');
+    url.searchParams.append('limit', '1');
+    
+    console.log('🔍 Reverse geocoding URL:', url.toString().replace(MAPBOX_CONFIG.apiKey, '***'));
+    
+    const data = await fetchWithRetry(url.toString());
+    
+    if (data.features && data.features.length > 0) {
+      const feature = data.features[0];
+      return feature.place_name || feature.text || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
     }
+    
+    return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
+    
+  } catch (error) {
+    console.error('Error in reverse geocoding:', error);
+    return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
+  }
 };
 
-/**
- * Get coordinates from address using MapQuest
- * @param {string} address - Address to geocode
- * @returns {Promise<{lat: number, lng: number, address: string}>} - Coordinates and formatted address
- */
-export const getCoordsFromAddress = async (address) => {
+// Get coordinates from address (forward geocoding)
+export const getCoordsFromAddress = async (address, options = {}) => {
   if (!address) return null;
-
-  const cacheKey = `geocode:${address}`;
-  const cachedResult = geocodingCache.get(cacheKey);
-  if (cachedResult) {
-    return cachedResult;
+  
+  if (!isApiKeyConfigured()) {
+    console.warn('Mapbox API key not configured');
+    return null;
   }
 
   try {
-    const url = new URL(`${MAPQUEST_CONFIG.baseUrl}/address`);
-    url.searchParams.append('key', MAPQUEST_CONFIG.apiKey);
-    url.searchParams.append('location', address);
-    url.searchParams.append('maxResults', 1);
-    url.searchParams.append('country', 'US');
-    url.searchParams.append('outFormat', 'json');
-    url.searchParams.append('thumbMaps', 'false');
-
-    const data = await fetchWithRetry(url.toString(), {
-      signal: AbortSignal.timeout(MAPQUEST_CONFIG.timeout)
-    });
-
-    if (!data.results || !data.results[0].locations || data.results[0].locations.length === 0) {
-      throw new Error('No results found');
+    await rateLimiter.wait();
+    
+    const cacheKey = `geocode:${address}`;
+    const cached = geocodingCache.get(cacheKey);
+    if (cached) {
+      console.log('🔍 Using cached geocoding result for:', address);
+      return cached;
     }
-
-    const location = data.results[0].locations[0];
-    const result = {
-      lat: location.latLng.lat,
-      lng: location.latLng.lng,
-      address: location.street 
-        ? `${location.street}, ${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
-        : `${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
-    };
-
-    geocodingCache.set(cacheKey, result);
-    return result;
+    
+    const url = new URL(`${MAPBOX_CONFIG.geocodingUrl}/${encodeURIComponent(address)}.json`);
+    url.searchParams.append('access_token', MAPBOX_CONFIG.apiKey);
+    url.searchParams.append('types', 'poi,address');
+    url.searchParams.append('limit', '1');
+    
+    // Add proximity bias if user location is provided
+    if (options.userLocation && options.userLocation.lat && options.userLocation.lng) {
+      url.searchParams.append('proximity', `${options.userLocation.lng},${options.userLocation.lat}`);
+    }
+    
+    console.log('🔍 Geocoding URL:', url.toString().replace(MAPBOX_CONFIG.apiKey, '***'));
+    
+    const data = await fetchWithRetry(url.toString());
+    
+    if (data.features && data.features.length > 0) {
+      const feature = data.features[0];
+      const result = {
+        lat: feature.center[1],
+        lng: feature.center[0],
+        address: feature.place_name,
+        name: feature.text,
+        type: feature.place_type[0],
+        relevance: feature.relevance
+      };
+      
+      geocodingCache.set(cacheKey, result);
+      return result;
+    }
+    
+    return null;
+    
   } catch (error) {
-    console.error('Error getting coordinates from address:', error);
-    throw error;
+    console.error('Error in geocoding:', error);
+    return null;
   }
 };
 
-/**
- * Search for address suggestions using MapQuest
- * @param {string} query - Search query
- * @param {Object} options - Search options
- * @returns {Promise<Array>} - Array of suggestions
- */
-export const searchAddress = async (query, options = {}) => {
-  if (!query || query.length < 2) return [];
+// Calculate distance between two points using Haversine formula
+export const calculateDistance = (point1, point2) => {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = (point2.lat - point1.lat) * Math.PI / 180;
+  const dLon = (point2.lng - point1.lng) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(point1.lat * Math.PI / 180) * Math.cos(point2.lat * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c; // Distance in kilometers
+};
 
-  const cacheKey = `search:${query}:${JSON.stringify(options)}`;
-  const cachedResult = geocodingCache.get(cacheKey);
-  if (cachedResult) {
-    return cachedResult;
-  }
-
-  try {
-    const url = new URL(`${MAPQUEST_CONFIG.baseUrl}/address`);
-    url.searchParams.append('key', MAPQUEST_CONFIG.apiKey);
-    url.searchParams.append('location', query);
-    url.searchParams.append('maxResults', options.limit || 10);
-    url.searchParams.append('country', 'US');
-    url.searchParams.append('outFormat', 'json');
-    url.searchParams.append('thumbMaps', 'false');
-
-    const data = await fetchWithRetry(url.toString(), {
-      signal: AbortSignal.timeout(MAPQUEST_CONFIG.timeout)
-    });
-
-    if (!data.results || !data.results[0].locations) {
-      return [];
-    }
-
-    const suggestions = data.results[0].locations.map(location => ({
-      display_name: location.street 
-        ? `${location.street}, ${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`
-        : `${location.adminArea5}, ${location.adminArea3} ${location.postalCode}`,
-      lat: location.latLng.lat.toString(),
-      lon: location.latLng.lng.toString(),
-      importance: location.geocodeQuality === 'POINT' ? 1 : 0.5,
-      type: location.geocodeQuality
-    }));
-
-    geocodingCache.set(cacheKey, suggestions);
-    return suggestions;
-  } catch (error) {
-    console.error('Error searching address:', error);
+// Search for destinations (POIs and addresses)
+export const searchDestinations = async (query, options = {}) => {
+  if (!query || query.length < 2) {
     return [];
   }
+
+  if (!isApiKeyConfigured()) {
+    return [{
+      display_name: '⚠️ Mapbox API key not configured.',
+      lat: '0',
+      lon: '0',
+      type: 'error',
+      isError: true
+    }];
+  }
+
+  try {
+    await rateLimiter.wait();
+    
+    const cacheKey = `search:${query}:${JSON.stringify(options)}`;
+    const cached = geocodingCache.get(cacheKey);
+    if (cached) {
+      console.log('🔍 Using cached search result for:', query);
+      return cached;
+    }
+
+    console.log('🔍 ===== MAPBOX SEARCH DESTINATIONS =====');
+    console.log('🔍 Query:', query);
+    console.log('🔍 Options:', options);
+
+    // Build search URL
+    const url = new URL(`${MAPBOX_CONFIG.searchUrl}/${encodeURIComponent(query)}.json`);
+    url.searchParams.append('access_token', MAPBOX_CONFIG.apiKey);
+    url.searchParams.append('types', 'poi,address');
+    url.searchParams.append('limit', options.limit || '8');
+    url.searchParams.append('country', 'US');
+    
+    // Add proximity bias if user location is provided
+    if (options.userLocation && options.userLocation.lat && options.userLocation.lng) {
+      url.searchParams.append('proximity', `${options.userLocation.lng},${options.userLocation.lat}`);
+    }
+    
+    console.log('🔍 Search URL:', url.toString().replace(MAPBOX_CONFIG.apiKey, '***'));
+    
+    const data = await fetchWithRetry(url.toString());
+    
+    if (data.features && data.features.length > 0) {
+      const suggestions = data.features.map(feature => {
+        const distance = options.userLocation ? 
+          calculateDistance(
+            { lat: options.userLocation.lat, lng: options.userLocation.lng },
+            { lat: feature.center[1], lng: feature.center[0] }
+          ) : 0;
+        
+        const distanceText = distance < 1 ? `${(distance * 1000).toFixed(0)}m` : `${distance.toFixed(1)}km`;
+        
+        let displayName = feature.place_name;
+        if (distance > 0) {
+          displayName += ` (${distanceText} away)`;
+        }
+
+        return {
+          display_name: displayName,
+          lat: feature.center[1].toString(),
+          lon: feature.center[0].toString(),
+          distance: distance,
+          isNearby: distance < 100,
+          isRealBusiness: feature.place_type.includes('poi'),
+          quality: feature.relevance,
+          type: feature.place_type[0],
+          address: {
+            street: feature.context?.find(c => c.id.startsWith('address'))?.text || '',
+            city: feature.context?.find(c => c.id.startsWith('place'))?.text || '',
+            state: feature.context?.find(c => c.id.startsWith('region'))?.text || '',
+            zip: feature.context?.find(c => c.id.startsWith('postcode'))?.text || ''
+          },
+          name: feature.text,
+          category: feature.place_type[0] === 'poi' ? 'Business/POI' : 'Address',
+          source: 'mapbox_search'
+        };
+      });
+
+      // Sort by relevance and distance
+      suggestions.sort((a, b) => {
+        // First by relevance (higher is better)
+        if (a.quality !== b.quality) {
+          return b.quality - a.quality;
+        }
+        // Then by distance (lower is better)
+        return a.distance - b.distance;
+      });
+
+      geocodingCache.set(cacheKey, suggestions);
+      console.log('🔍 Search results:', suggestions);
+      return suggestions;
+    }
+
+    console.log('🔍 No search results found');
+    return [];
+    
+  } catch (error) {
+    console.error('🔍 Error searching destinations:', error);
+    
+    return [{
+      display_name: '⚠️ Search failed. Please try again or enter an address manually.',
+      lat: '0',
+      lon: '0',
+      importance: 0,
+      type: 'error',
+      isError: true,
+      errorMessage: error.message,
+      originalQuery: query
+    }];
+  }
 };
 
-// Export the configuration for use in other files
-export const MAPQUEST_SERVICE = {
-  config: MAPQUEST_CONFIG,
+// Get current location using browser geolocation
+export const getCurrentLocation = () => {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Geolocation is not supported by this browser'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          accuracy: position.coords.accuracy
+        });
+      },
+      (error) => {
+        reject(error);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 300000
+      }
+    );
+  });
+};
+
+// Clear geocoding cache
+export const clearGeocodingCache = () => {
+  geocodingCache.clear();
+};
+
+// Export the Mapbox service object
+export const MAPBOX_SERVICE = {
+  config: MAPBOX_CONFIG,
   cache: geocodingCache,
   rateLimiter,
   getAddressFromCoords,
   getCoordsFromAddress,
-  searchAddress
+  searchDestinations,
+  isApiKeyConfigured,
+  calculateDistance,
+  getCurrentLocation,
+  clearGeocodingCache
 }; 

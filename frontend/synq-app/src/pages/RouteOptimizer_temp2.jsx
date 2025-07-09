@@ -1,412 +1,3 @@
-// RouteOptimizer.jsx - Handles both ride creation and joining functionality
-import '../App.css';
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import UserForm from '../components/UserForm';
-import MapView from '../components/MapView';
-import UserTable from '../components/UserTable';
-import UserSearch from '../components/UserSearch';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { useUserAuth } from '../services/auth';
-import { db } from '../services/firebase';
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
-import { 
-  createRide, 
-  updateRide, 
-  getFriendsList, 
-  sendFriendRequest, 
-  checkFriendshipStatus,
-  sendRideInvitation,
-  deleteRideInvitation
-} from '../services/firebaseOperations';
-import '../styles/RouteOptimizer.css';
-import locationTrackingService, { useLocation as useLocationTracking } from '../services/locationTrackingService';
-import { toast } from 'react-hot-toast';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import { Icon } from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import { FaMapMarkerAlt, FaUserPlus, FaRoute, FaTimes, FaChevronLeft, FaChevronRight, FaCheck, FaExclamationTriangle } from 'react-icons/fa';
-import { showNotification } from '../utils/notifications';
-import SimpleLoading from '../components/SimpleLoading';
-import { 
-  Box, 
-  Container, 
-  Typography, 
-  Card, 
-  CardContent, 
-  Button, 
-  Stack, 
-  Divider, 
-  Avatar, 
-  IconButton,
-  TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  Chip,
-  Alert,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Fab,
-  Paper,
-  Grid,
-  List,
-  ListItem,
-  ListItemAvatar,
-  ListItemText,
-  ListItemSecondaryAction,
-  Autocomplete,
-  Popper
-} from '@mui/material';
-import {
-  Add as AddIcon,
-  LocationOn as LocationIcon,
-  DirectionsCar as CarIcon,
-  Person as PersonIcon,
-  Group as GroupIcon,
-  CheckCircle as CheckIcon,
-  Close as CloseIcon,
-  Menu as MenuIcon,
-  Map as MapIcon,
-  Route as RouteIcon,
-  Settings as SettingsIcon,
-  Notifications as NotificationsIcon,
-  Edit as EditIcon
-} from '@mui/icons-material';
-
-// Import the real Mapbox service
-import { MAPBOX_SERVICE, calculateDistance, getCurrentLocation } from '../services/locationService';
-
-const rateLimiter = {
-  lastRequestTime: 0,
-  minInterval: 1000,
-  async wait() {
-    const now = Date.now();
-    const timeSinceLastRequest = now - this.lastRequestTime;
-    if (timeSinceLastRequest < this.minInterval) {
-      await new Promise(resolve => setTimeout(resolve, this.minInterval - timeSinceLastRequest));
-    }
-    this.lastRequestTime = Date.now();
-  }
-};
-
-function RouteOptimizer({ mode = 'create' }) {
-  console.log('RouteOptimizer component initializing...', { mode });
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { user, error: authError } = useUserAuth();
-  const mapRef = useRef(null);
-  const locationWatchIdRef = useRef(null);
-  const notificationTimeoutRef = useRef(null);
-  const destinationTimeoutRef = useRef(null);
-  const lastRouteCalculationRef = useRef(null); // Track last route calculation to prevent duplicates
-  const lastSearchQueryRef = useRef(null); // Track last search query to prevent unnecessary cache clearing
-
-  // Add a new state to track if we have a valid location
-  const [hasValidLocation, setHasValidLocation] = useState(false);
-
-  // Add missing state variables - moved up to fix initialization order
-  const [hasLocationError, setHasLocationError] = useState(false);
-
-  // Move useLocationTracking hook here after all state declarations
-  const {
-    location: trackingLocation,
-    isTracking,
-    status: locationStatus,
-    error: locationServiceError,
-    startTracking,
-    stopTracking,
-    setManualLocation
-  } = useLocationTracking({
-    preset: 'office', // Use office preset for better compatibility with restricted networks
-    updateFirebase: true,
-    onLocationUpdate: async (locationData) => {
-      console.log('Location update received in RouteOptimizer:', locationData);
-      
-      // Check if locationData is valid
-      if (!locationData || !locationData.latitude || !locationData.longitude) {
-        console.warn('Invalid location data received:', locationData);
-        return;
-      }
-      
-      const { latitude: lat, longitude: lng, accuracy, address } = locationData;
-      
-      // Validate coordinates before updating state
-      if (typeof lat !== 'number' || typeof lng !== 'number' || 
-          isNaN(lat) || isNaN(lng) ||
-          lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        console.warn('Invalid coordinates received from location service:', { lat, lng });
-        return; // Don't update state with invalid coordinates
-      }
-      
-      // If we have valid coordinates, clear any errors and update state
-      if (lat && lng) {
-        setHasValidLocation(true);
-        setLocationError(null);
-        setHasLocationError(false); // Clear error flag when we get valid location
-        console.log('Cleared hasLocationError flag due to valid location');
-        
-        // Update status message
-          setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
-      }
-      
-      // Update user location state
-      const newLocation = { lat, lng, address, accuracy };
-      setUserLocation(newLocation);
-      
-      // Update form state
-        setForm(prev => ({
-          ...prev,
-          userLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`,
-          startingLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
-        }));
-      
-      // Update status message
-      setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
-    },
-    onError: (errorMessage) => {
-      // Only log and handle actual errors, not null (which clears errors)
-      if (errorMessage !== null) {
-        console.error('Location tracking error:', errorMessage);
-        setHasLocationError(true); // Set error flag
-        
-        // Update error message to be more user-friendly
-        let userFriendlyError = errorMessage;
-        const errorMsg = errorMessage?.toString() || 'Unknown error';
-        
-        if (errorMsg.includes('blocked') || errorMsg.includes('timeout') || errorMsg.includes('network')) {
-          userFriendlyError = 'Location tracking failed. Please enter your location manually';
-        }
-        
-        setLocationError(userFriendlyError);
-        setLocationStatusMessage(userFriendlyError);
-      } else {
-        // Clear error state when errorMessage is null
-        setLocationError(null);
-        setHasLocationError(false); // Clear error flag
-      }
-    },
-    onStatusChange: (status) => {
-      console.log('Location status changed:', status);
-      switch (status) {
-        case 'active':
-          // Clear any existing errors when tracking becomes active
-          setLocationError(null);
-          setLocationStatusMessage('Location tracking active');
-          break;
-        case 'manual':
-          // Handle manual mode for office networks
-          setLocationError(null);
-          setLocationStatusMessage('Location tracking in manual mode - set your location manually');
-          break;
-        case 'inactive':
-          // Show "stopped" message
-          setLocationStatusMessage('Location tracking stopped');
-          setUserLocation(null);
-          setHasValidLocation(false); // Reset valid location state
-          break;
-        case 'error':
-          // Set error status and reset tracking state
-          setLocationStatusMessage('Location tracking failed. Please enter your location manually');
-          setHasLocationError(true); // Set error flag
-          break;
-        case 'offline':
-          setLocationStatusMessage('Location tracking paused - offline');
-          break;
-        case 'syncing':
-          setLocationStatusMessage('Syncing location data...');
-          break;
-      }
-    }
-  });
-
-  // Group all useState hooks together at the top
-  const [error, setError] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [users, setUsers] = useState([]);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [form, setForm] = useState({ 
-    name: '', 
-    address: '', 
-    destination: '', 
-    role: 'passenger',
-    userLocation: '',
-    startingLocation: '',
-    isCreator: mode === 'create'
-  });
-  const [destination, setDestination] = useState(null);
-  const [userLocation, setUserLocation] = useState(null);
-  const [isStartingRide, setIsStartingRide] = useState(false);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
-  const [createdRideId, setCreatedRideId] = useState(null);
-  const [creatorRole, setCreatorRole] = useState('driver');
-  const [isLocationLoading, setIsLocationLoading] = useState(false);
-  const [locationStatusMessage, setLocationStatusMessage] = useState(null);
-  const [locationError, setLocationError] = useState(null);
-  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
-  const [groupCreated, setGroupCreated] = useState(false);
-  const [notifications, setNotifications] = useState([]);
-  const [invitationStatus, setInvitationStatus] = useState({
-    isSending: false,
-    sentCount: 0,
-    totalCount: 0,
-    errors: []
-  });
-
-  // Add back friends-related state
-  const [friends, setFriends] = useState([]);
-  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
-  const [friendError, setFriendError] = useState(null);
-
-  // Add new state for active tab and friend modal
-  const [activeTab, setActiveTab] = useState('form'); // 'form' or 'route'
-  const [showFriendModal, setShowFriendModal] = useState(false);
-  
-  // Add route state
-  const [calculatedRoute, setCalculatedRoute] = useState(null);
-  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
-  const [routeDetails, setRouteDetails] = useState(null);
-  
-  // Add missing state variables
-  const [mapClickMode, setMapClickMode] = useState(null);
-
-  // Add a counter for unique notification IDs
-  const notificationIdCounter = useRef(0);
-
-  // Destination search state
-  const [destinationSuggestions, setDestinationSuggestions] = useState([]);
-  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const searchTimeoutRef = useRef(null);
-  
-  // Get user location from location tracking service
-  const { location: trackedLocation, isTracking: isLocationTracking } = useLocationTracking();
-
-
-
-
-
-  // Add notification function - moved to top to avoid initialization error
-  const showLocalNotification = (message, type = 'success') => {
-    const id = `${Date.now()}-${notificationIdCounter.current++}`;
-    setNotifications(prev => [...prev, { id, message, type }]);
-    
-    // Remove notification after 3 seconds
-    setTimeout(() => {
-      setNotifications(prev => prev.filter(n => n.id !== id));
-    }, 3000);
-  };
-
-  // Simplified destination search
-  const searchDestinationsLocal = async (query) => {
-    console.log('🔍 [ROUTE_OPTIMIZER] searchDestinationsLocal called with:', query);
-    
-    if (!query || query.length < 2) {
-      console.log('🔍 [ROUTE_OPTIMIZER] Query too short, clearing suggestions');
-      setDestinationSuggestions([]);
-      setIsDropdownOpen(false);
-      return;
-    }
-
-    // Clear previous timeout
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-
-    // Debounce search
-    searchTimeoutRef.current = setTimeout(async () => {
-      console.log('🔍 [ROUTE_OPTIMIZER] Starting search for:', query);
-      setIsLoadingSuggestions(true);
-      setIsDropdownOpen(true);
-
-      try {
-        const searchOptions = {
-          limit: 8,
-          maxDistance: 50 // 50 mile radius
-        };
-        
-        // Add user location if available
-        if (userLocation) {
-          searchOptions.userLocation = userLocation;
-          console.log('🔍 [ROUTE_OPTIMIZER] Searching with user location:', userLocation);
-          console.log('🔍 [ROUTE_OPTIMIZER] User location type:', typeof userLocation);
-          console.log('🔍 [ROUTE_OPTIMIZER] User location has lat/lng:', userLocation.lat && userLocation.lng);
-        } else {
-          console.log('🔍 [ROUTE_OPTIMIZER] No user location available');
-        }
-
-        console.log('🔍 [ROUTE_OPTIMIZER] Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
-        
-        // Test if MAPBOX_SERVICE is available
-        if (!MAPBOX_SERVICE) {
-          console.error('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE is not available');
-          throw new Error('Mapbox service not available');
-        }
-        
-        if (!MAPBOX_SERVICE.searchDestinations) {
-          console.error('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations is not available');
-          throw new Error('Mapbox search function not available');
-        }
-        
-        console.log('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations type:', typeof MAPBOX_SERVICE.searchDestinations);
-        console.log('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations:', MAPBOX_SERVICE.searchDestinations);
-        
-        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
-        console.log('🔍 [ROUTE_OPTIMIZER] Search results:', results);
-        
-        if (results && results.length > 0) {
-          // Debug: Log each result's distance
-          results.forEach((result, index) => {
-            console.log(`🔍 [ROUTE_OPTIMIZER] Result ${index}:`, {
-              display_name: result.display_name,
-              distance: result.distance,
-              isError: result.isError,
-              type: result.type,
-              lat: result.lat,
-              lon: result.lon
-            });
-          });
-          
-          // Filter out error messages and distant results
-          const validResults = results.filter(result => {
-            if (result.isError) {
-              console.log(`🔍 [ROUTE_OPTIMIZER] Filtering out error result:`, result.display_name);
-              return false;
-            }
-            
-            // If we have user location and distance, filter by distance
-            if (userLocation && result.distance !== undefined) {
-              const isValid = result.distance <= 50; // Only show results within 50 miles
-              if (!isValid) {
-                console.log(`🔍 [ROUTE_OPTIMIZER] Filtering out distant result: ${result.display_name} (${result.distance} miles)`);
-              }
-              return isValid;
-            }
-            
-            // If no user location or no distance info, include all valid results
-            return true;
-          });
-          
-          console.log('🔍 [ROUTE_OPTIMIZER] Valid results:', validResults);
-          setDestinationSuggestions(validResults);
-          setIsDropdownOpen(true);
-        } else {
-          console.log('🔍 [ROUTE_OPTIMIZER] No results found');
-          setDestinationSuggestions([]);
-          setIsDropdownOpen(false);
-        }
-      } catch (error) {
-        console.error('🔍 [ROUTE_OPTIMIZER] Search failed:', error);
-        setDestinationSuggestions([]);
-        setIsDropdownOpen(false);
-      } finally {
-        setIsLoadingSuggestions(false);
-      }
-    }, 300); // 300ms debounce
-  };
-
   // Define calculateAndDisplayRoute function before it's used in useEffect
   const calculateAndDisplayRoute = useCallback(async (startLocation, endLocation) => {
     if (!startLocation || !endLocation) {
@@ -467,9 +58,11 @@ function RouteOptimizer({ mode = 'create' }) {
         lng: wp.lng
       })));
       
-      // Route optimization temporarily disabled - Mapbox integration pending
-      console.log('Route optimization temporarily disabled - Mapbox integration pending');
-      const route = null;
+      const route = await calculateOptimizedRoute(waypoints, {
+        maxPassengers: passengers.length,
+        timeWindows: null, // Can be enhanced later
+        maxDistance: 100 // km
+      });
       
       console.log('=== ROUTE CALCULATION COMPLETED ===');
       console.log('Route result:', {
@@ -516,8 +109,45 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   }, [creatorRole, users, showLocalNotification]);
 
-  // Simplified route calculation - now handled in handleDestinationSelect
-  // Removed automatic useEffect to prevent confusion and duplicate calculations
+  // Add effect to automatically calculate route when both location and destination are available
+  useEffect(() => {
+    const calculateRouteForDriver = async () => {
+      // Only calculate route if user is driver and has both location and destination
+      if (creatorRole === 'driver' && userLocation && destination && !isCalculatingRoute) {
+        // Create a unique key for this route calculation
+        const routeKey = `${userLocation.lat},${userLocation.lng}-${destination.lat},${destination.lng}`;
+        
+        // Check if we've already calculated this exact route recently
+        if (lastRouteCalculationRef.current === routeKey) {
+          console.log('Route already calculated recently, skipping...');
+          return;
+        }
+        
+        console.log('Auto-calculating route for driver:', {
+          userLocation,
+          destination,
+          creatorRole
+        });
+        
+        // Add rate limiting to prevent API flooding
+        await rateLimiter.wait();
+        
+        try {
+        await calculateAndDisplayRoute(userLocation, destination);
+          // Mark this route as calculated
+          lastRouteCalculationRef.current = routeKey;
+        } catch (error) {
+          console.warn('Route calculation failed, will retry later:', error.message);
+          // Don't set error state for automatic route calculations to avoid UI disruption
+        }
+      }
+    };
+
+    // Add debounce to prevent rapid successive calls
+    const timeoutId = setTimeout(calculateRouteForDriver, 500);
+    
+    return () => clearTimeout(timeoutId);
+  }, [userLocation, destination, creatorRole, isCalculatingRoute]); // Removed calculateAndDisplayRoute from dependencies
 
   // Add back friends-related useEffect
   useEffect(() => {
@@ -593,20 +223,26 @@ function RouteOptimizer({ mode = 'create' }) {
       try {
         console.log('Initializing RouteOptimizer for user:', user.uid);
         
-        // Check if Mapbox API key is configured
-        const apiKey = import.meta.env.VITE_MAPBOX_API_KEY;
-        console.log('Mapbox API key:', apiKey ? 'Present' : 'Missing');
+        // Check if MapQuest API key is configured and show notification if not
+        const apiKey = import.meta.env.VITE_MAPQUEST_API_KEY;
+        console.log('Environment API key:', apiKey ? 'Present' : 'Missing');
+        console.log('Using fallback API key:', 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
         
-        if (!apiKey || apiKey === 'undefined' || !apiKey.startsWith('pk.')) {
+        if (!apiKey || apiKey === 'undefined' || apiKey === 'your_actual_api_key_here') {
           showLocalNotification(
-            'Mapbox API key not configured. Location suggestions will be limited. Please check your .env file.',
+            'MapQuest API key not configured. Location suggestions will be limited. Check API_SETUP.md for setup instructions.',
             'warning'
           );
-        } else {
-          console.log('Mapbox API key configured successfully');
         }
         
-
+        // Test MapQuest API directly
+        try {
+          console.log('Testing MapQuest API directly...');
+          const testResults = await MAPQUEST_SERVICE.searchDestinations('DFW Airport', { limit: 3 });
+          console.log('Direct API test results:', testResults);
+        } catch (error) {
+          console.error('Direct API test failed:', error);
+        }
         
         setIsLoading(false);
       } catch (err) {
@@ -644,35 +280,39 @@ function RouteOptimizer({ mode = 'create' }) {
     };
   }, []);
 
-  // Clean up search timeout on unmount
+  // Clean up suggestion timeout
   useEffect(() => {
     return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+      if (suggestionTimeout) {
+        clearTimeout(suggestionTimeout);
       }
     };
-  }, []);
+  }, [suggestionTimeout]);
 
-  // Update userLocation when trackedLocation changes
+  // Prevent multiple initializations
   useEffect(() => {
-    if (trackedLocation && trackedLocation.lat && trackedLocation.lng) {
-      console.log('📍 Location tracking service provided location:', trackedLocation);
-      setUserLocation(trackedLocation);
-      setIsTracking(isLocationTracking);
-    }
-  }, [trackedLocation, isLocationTracking]);
-  
-  // Auto-start location tracking when user is driver
-  useEffect(() => {
-    if (user && creatorRole === 'driver' && !isTracking) {
-      console.log('🚗 Auto-starting location tracking for driver');
-      locationTrackingService.startTracking(user?.uid, { preset: 'office' });
-    }
-  }, [user, creatorRole, isTracking]);
+    let isMounted = true;
+    
+    const initialize = async () => {
+      if (!isMounted) return;
+      
+      try {
+        setIsLoading(false);
+      } catch (err) {
+        if (isMounted) {
+          console.error('Error initializing RouteOptimizer:', err);
+          setError(err);
+          setIsLoading(false);
+        }
+      }
+    };
 
+    initialize();
 
-
-
+    return () => {
+      isMounted = false;
+    };
+  }, []); // Removed dependencies to prevent re-initialization
 
   // Show loading state
   if (isLoading) {
@@ -745,7 +385,7 @@ function RouteOptimizer({ mode = 'create' }) {
 
   const getAddressFromCoords = async (lat, lng) => {
     try {
-      return await MAPBOX_SERVICE.getAddressFromCoords(lat, lng);
+      return await MAPQUEST_SERVICE.getAddressFromCoords(lat, lng);
     } catch (error) {
       console.error('Error getting address from coordinates:', error);
       return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
@@ -755,7 +395,7 @@ function RouteOptimizer({ mode = 'create' }) {
   const geocodeAddress = async (address) => {
     if (!address) return null;
     try {
-      const result = await MAPBOX_SERVICE.getCoordsFromAddress(address);
+      const result = await MAPQUEST_SERVICE.getCoordsFromAddress(address);
       return { lat: result.lat, lng: result.lng, address: result.address };
     } catch (error) {
       console.error('Error geocoding address:', error);
@@ -772,13 +412,16 @@ function RouteOptimizer({ mode = 'create' }) {
         currentDestination: destination
       });
 
-      // Only require destination for the creator/driver, not for friends being added
-      if (userData.isCreator && !userData.destination && !destination) {
+      // Validate required fields with more descriptive error messages
+      if (!userData.destination && !destination) {
         throw new Error('Please set a destination for the ride before adding participants');
       }
 
       // Use the destination from userData if provided, otherwise use the global destination
       const destinationToUse = userData.destination || destination;
+      if (!destinationToUse) {
+        throw new Error('Destination is required');
+      }
 
       // If this is the creator being added as a driver, use their current location
       if (userData.isCreator && userData.role === 'driver' && userLocation) {
@@ -787,8 +430,7 @@ function RouteOptimizer({ mode = 'create' }) {
       }
 
       // If destinationToUse is a string, geocode it
-      let destinationCoords = null;
-      if (destinationToUse) {
+      let destinationCoords;
       if (typeof destinationToUse === 'string') {
         destinationCoords = await geocodeAddress(destinationToUse);
         if (!destinationCoords) {
@@ -797,7 +439,6 @@ function RouteOptimizer({ mode = 'create' }) {
       } else {
         // If it's already an object with coordinates, use it directly
         destinationCoords = destinationToUse;
-        }
       }
 
       // If user is a passenger, geocode their location too
@@ -825,7 +466,7 @@ function RouteOptimizer({ mode = 'create' }) {
         name: userData.name || userData.profile?.displayName || userData.displayName || 'Unknown User',
         displayName: userData.profile?.displayName || userData.displayName || userData.name || 'Unknown User',
         role: userData.role || 'passenger',
-        destination: destinationCoords?.address || destinationCoords || null,
+        destination: destinationCoords.address || destinationCoords,
         destinationCoords,
         color,
         photoURL: userData.profile?.photoURL || userData.photoURL || '',
@@ -842,7 +483,7 @@ function RouteOptimizer({ mode = 'create' }) {
       setUsers(prevUsers => [...prevUsers, newUser]);
 
       // If this is the first user (creator), update the destination in state
-      if (users.length === 0 && destinationCoords) {
+      if (users.length === 0) {
         setDestination(destinationCoords);
       }
 
@@ -1636,7 +1277,7 @@ function RouteOptimizer({ mode = 'create' }) {
     console.log('User Location:', userLocation);
     
     try {
-              const results = await MAPBOX_SERVICE.searchDestinations(query, {
+      const results = await MAPQUEST_SERVICE.searchDestinations(query, {
         userLocation: userLocation,
         limit: 5
       });
@@ -1664,398 +1305,11 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Add a function to clear route calculation cache
-  const clearRouteCalculationCache = () => {
-    lastRouteCalculationRef.current = null;
-    console.log('🧹 Route calculation cache cleared');
-  };
-  
-  // Test Mapbox integration
-  const testMapboxIntegration = async () => {
-    console.log('🧪 Testing Mapbox integration...');
-    
-    try {
-      // Test geocoding
-      console.log('🧪 Testing geocoding...');
-      const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress('Starbucks, Plano, TX');
-      console.log('🧪 Geocoding result:', geocodeResult);
-      
-      // Test search
-      console.log('🧪 Testing search...');
-      const searchResult = await MAPBOX_SERVICE.searchDestinations('walmart', {
-        limit: 3,
-        userLocation: userLocation
-      });
-      console.log('🧪 Search result:', searchResult);
-      
-      // Test reverse geocoding
-      if (userLocation) {
-        console.log('🧪 Testing reverse geocoding...');
-        const reverseResult = await MAPBOX_SERVICE.getAddressFromCoords(userLocation.lat, userLocation.lng);
-        console.log('🧪 Reverse geocoding result:', reverseResult);
-      }
-      
-    } catch (error) {
-      console.error('🧪 Mapbox integration test failed:', error);
-    }
-  };
-
-  // Test functions commented out - Mapbox integration pending
-  /*
-  const testSearchAPIv2 = async () => {
-    console.log('🧪 Testing Search API v2 directly...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    console.log('🧪 User location for test:', userLocation);
-    
-    // Test different parameter combinations
-    const testCases = [
-      {
-        name: 'Original parameters',
-        params: {
-          maxMatches: '5',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Alternative parameters (center instead of shapePoints)',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic search without location',
-        params: {
-          maxMatches: '5',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response:`, data);
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-  
-  // Test different business types to see what's available
-  const testBusinessTypes = async () => {
-    console.log('🧪 Testing different business types...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const businessTypes = ['starbucks', 'mcdonalds', 'walmart', 'target', 'kroger', 'restaurant', 'gas', 'bank'];
-    
-    for (const businessType of businessTypes) {
-      try {
-        console.log(`🧪 Testing business type: ${businessType}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        searchUrl.searchParams.append('maxMatches', '3');
-        searchUrl.searchParams.append('shapePoints', `${userLocation.lat},${userLocation.lng}`);
-        searchUrl.searchParams.append('radius', '80');
-        searchUrl.searchParams.append('units', 'k');
-        searchUrl.searchParams.append('hostedData', 'mqap.ntpois');
-        searchUrl.searchParams.append('search', businessType);
-        
-        console.log(`🧪 ${businessType} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        
-        if (!response.ok) {
-          console.log(`🧪 ${businessType} failed with status:`, response.status);
-          continue;
-        }
-        
-        const data = await response.json();
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${businessType} found ${data.searchResults.length} results:`);
-          data.searchResults.forEach((result, index) => {
-            console.log(`  ${index + 1}. ${result.name} (${result.distance}km away)`);
-          });
-        } else {
-          console.log(`🧪 ${businessType} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${businessType} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-  };
-
-  // Test the actual search function used in the app
-  const testAppSearch = async (query = 'starbucks') => {
-    console.log('🧪 Testing app search function with query:', query);
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    try {
-      const searchOptions = {
-        limit: 5,
-        maxDistance: 50,
-        userLocation: userLocation
-      };
-      
-              console.log('🧪 Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
-        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
-      
-      console.log('🧪 App search results:', results);
-      
-      if (results && results.length > 0) {
-        console.log('🧪 Found', results.length, 'results:');
-        results.forEach((result, index) => {
-          console.log(`  ${index + 1}. ${result.display_name} (${result.distance}km away)`);
-        });
-      } else {
-        console.log('🧪 No results found');
-      }
-    } catch (error) {
-      console.error('🧪 App search failed:', error);
-    }
-  };
-
-  // Test API parameters systematically
-  const testAPIParameters = async () => {
-    console.log('🧪 Testing API parameters systematically...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const testCases = [
-      {
-        name: 'Basic shapePoints with search',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic center with search',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'shapePoints with q parameter',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'center with q parameter',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} HTTP error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response keys:`, Object.keys(data));
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else if (data.results && data.results.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.results.length} results (alternative structure)`);
-          console.log(`🧪 ${testCase.name} first result:`, data.results[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-          if (data.info) {
-            console.log(`🧪 ${testCase.name} info:`, data.info);
-          }
-        }
-      } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-
   // Add debug functions to global scope for testing
   if (typeof window !== 'undefined') {
     window.testGeolocation = testGeolocation;
     window.testSpecificSearch = testSpecificSearch;
-    window.clearRouteCache = clearRouteCalculationCache;
-    window.testMapbox = testMapboxIntegration;
-    window.userLocation = userLocation;
-    window.trackedLocation = trackedLocation;
   }
-  */
-
-  // Handle destination selection
-  const handleDestinationSelect = async (selectedOption) => {
-    if (!selectedOption) return;
-    
-    try {
-      let coords;
-      
-      if (selectedOption.lat && selectedOption.lon) {
-        // Use the provided coordinates
-        coords = {
-          lat: parseFloat(selectedOption.lat),
-          lng: parseFloat(selectedOption.lon),
-          address: selectedOption.display_name
-        };
-      } else {
-        // Try to geocode the display name
-        const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress(selectedOption.display_name);
-        if (geocodeResult) {
-          coords = {
-            lat: geocodeResult.lat,
-            lng: geocodeResult.lng,
-            address: geocodeResult.address
-          };
-        }
-      }
-      
-      if (coords) {
-        // Set destination
-        await handleDestinationChange(coords);
-        setForm(prev => ({ ...prev, destination: coords.address }));
-        
-        // Clear suggestions and close dropdown
-        setDestinationSuggestions([]);
-        setIsDropdownOpen(false);
-        
-        // Automatically calculate route if user is driver and has location
-        if (creatorRole === 'driver' && userLocation) {
-          console.log('🚗 Auto-calculating route for driver');
-          await calculateAndDisplayRoute(userLocation, coords);
-        }
-      } else {
-        console.warn('⚠️ Could not get coordinates for selected destination');
-        setForm(prev => ({ ...prev, destination: selectedOption.display_name }));
-      }
-      
-    } catch (error) {
-      console.error('❌ Error setting destination:', error);
-      setForm(prev => ({ ...prev, destination: selectedOption.display_name }));
-    }
-  };
 
   return (
     <Box 
@@ -2242,62 +1496,6 @@ function RouteOptimizer({ mode = 'create' }) {
                   >
                     {isLocationLoading ? 'Starting...' : 'Auto Detect'}
                   </Button>
-                  
-                  {/* Manual Location Option - Show when tracking fails or for office networks */}
-                  {(hasLocationError || locationStatusMessage?.includes('blocked') || locationStatusMessage?.includes('failed')) && (
-                    <Box mt={1.5}>
-                      <Typography variant="caption" color="#7c5e48" display="block" mb={1}>
-                        Or set location manually:
-                      </Typography>
-                      <Stack direction="row" spacing={1}>
-                        <Button 
-                          variant="outlined"
-                          size="small"
-                          startIcon={<MapIcon fontSize="small" />}
-                          onClick={handleSetManualLocationFromMap}
-                          sx={{ 
-                            flex: 1,
-                            color: '#b08968', 
-                            borderColor: '#b08968',
-                            borderRadius: 1.5,
-                            py: 0.5,
-                            '&:hover': {
-                              borderColor: '#a47551',
-                              background: '#f9f6ef'
-                            }
-                          }}
-                        >
-                          Click on Map
-                        </Button>
-                        <Button 
-                          variant="outlined"
-                          size="small"
-                          startIcon={<EditIcon fontSize="small" />}
-                          onClick={() => {
-                            // Focus on the location input field
-                            const input = document.querySelector('input[name="userLocation"]');
-                            if (input) {
-                              input.focus();
-                              input.select();
-                            }
-                          }}
-                          sx={{ 
-                            flex: 1,
-                            color: '#b08968', 
-                            borderColor: '#b08968',
-                            borderRadius: 1.5,
-                            py: 0.5,
-                            '&:hover': {
-                              borderColor: '#a47551',
-                              background: '#f9f6ef'
-                            }
-                          }}
-                        >
-                          Type Address
-                        </Button>
-                      </Stack>
-                    </Box>
-                  )}
                 </Box>
               )}
 
@@ -2361,7 +1559,7 @@ function RouteOptimizer({ mode = 'create' }) {
                         {isProcessingDestination ? (
                           <SimpleLoading size="small" sx={{ color: '#fff' }} />
                         ) : (
-                        <LocationIcon fontSize="small" sx={{ color: '#fff' }} />
+                          <LocationIcon fontSize="small" sx={{ color: '#fff' }} />
                         )}
                       </Avatar>
                       <Box>
@@ -2374,22 +1572,22 @@ function RouteOptimizer({ mode = 'create' }) {
                       </Box>
                     </Box>
                     {!isProcessingDestination && (
-                    <IconButton 
-                      size="small"
-                      onClick={() => {
-                        setDestination(null);
-                        setForm(prev => ({ ...prev, destination: '' }));
-                      }}
-                      sx={{ 
-                        color: '#b08968',
-                        '&:hover': {
-                          background: '#ffebee',
-                          color: '#f44336'
-                        }
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
+                      <IconButton 
+                        size="small"
+                        onClick={() => {
+                          setDestination(null);
+                          setForm(prev => ({ ...prev, destination: '' }));
+                        }}
+                        sx={{ 
+                          color: '#b08968',
+                          '&:hover': {
+                            background: '#ffebee',
+                            color: '#f44336'
+                          }
+                        }}
+                      >
+                        <CloseIcon fontSize="small" />
+                      </IconButton>
                     )}
                   </Box>
                   
@@ -2437,9 +1635,6 @@ function RouteOptimizer({ mode = 'create' }) {
                   <Typography variant="body2" color="#7c5e48" mb={1.5}>
                     Set your destination to start planning
                   </Typography>
-                  
-                  {/* Test buttons removed - Mapbox integration pending */}
-                  
                   <Autocomplete
                     freeSolo
                     options={destinationSuggestions}
@@ -2448,51 +1643,72 @@ function RouteOptimizer({ mode = 'create' }) {
                       return option.display_name || '';
                     }}
                     loading={isLoadingSuggestions}
-                    open={isDropdownOpen}
-                    onOpen={() => setIsDropdownOpen(true)}
-                    onClose={() => setIsDropdownOpen(false)}
+                    open={destinationSuggestions.length > 0 || isLoadingSuggestions}
                     onInputChange={(event, newInputValue, reason) => {
-                      console.log('🔤 onInputChange called:', { newInputValue, reason });
+                      console.log('Destination input changed:', newInputValue, 'reason:', reason);
                       setForm(prev => ({ ...prev, destination: newInputValue }));
                       
+                      // Only fetch suggestions if user is typing (not selecting)
                       if (reason === 'input') {
-                        // User is typing - search for suggestions
-                        console.log('🔤 User typing, calling local searchDestinations');
-                        // Call our local searchDestinations function that includes user location
-                        searchDestinationsLocal(newInputValue);
-                      } else if (reason === 'clear') {
-                        // User cleared the input - clear everything
-                        console.log('🔤 User cleared input');
-                        setDestinationSuggestions([]);
-                        setDestination(null);
-                        setCalculatedRoute(null);
-                        setRouteDetails(null);
-                        setIsDropdownOpen(false);
-                        
-                        // Clear search timeout
-                        if (searchTimeoutRef.current) {
-                          clearTimeout(searchTimeoutRef.current);
-                        }
+                        fetchDestinationSuggestions(newInputValue);
                       }
                     }}
-                    onChange={(event, newValue) => {
-                      handleDestinationSelect(newValue);
+                    onChange={async (event, newValue) => {
+                      console.log('Destination selected:', newValue);
+                      if (newValue && typeof newValue === 'object') {
+                        // Handle suggestion selection
+                        if (newValue.isAlternative && newValue.alternativeQuery) {
+                          // Handle alternative suggestion - update the input and search
+                          setForm(prev => ({ ...prev, destination: newValue.alternativeQuery }));
+                          fetchDestinationSuggestions(newValue.alternativeQuery);
+                        } else if (newValue.lat && newValue.lon && !newValue.isHelpMessage) {
+                          // Handle real location selection
+                          const coords = {
+                            lat: parseFloat(newValue.lat),
+                            lng: parseFloat(newValue.lon),
+                            address: newValue.display_name
+                          };
+                          await handleDestinationChange(coords);
+                          setForm(prev => ({ ...prev, destination: newValue.display_name }));
+                          setDestinationSuggestions([]); // Clear suggestions after selection
+                        }
+                      } else if (newValue && typeof newValue === 'string') {
+                        // Handle manual entry
+                        try {
+                          const coords = await MAPQUEST_SERVICE.getCoordsFromAddress(newValue, {
+                            userLocation: userLocation
+                          });
+                          if (coords) {
+                            await handleDestinationChange(coords);
+                            setForm(prev => ({ ...prev, destination: coords.address }));
+                          }
+                        } catch (error) {
+                          console.warn('Could not geocode address:', error);
+                          setForm(prev => ({ ...prev, destination: newValue }));
+                        }
+                      }
                     }}
                     renderInput={(params) => (
                       <TextField
                         {...params}
                         size="small"
-                        placeholder="Enter destination (e.g., American Airlines Center, DFW Airport)"
+                        placeholder="Enter destination (e.g., DFW Airport, American Airlines Center)"
                         InputProps={{
                           ...params.InputProps,
                           endAdornment: (
                             <>
-                              {isLoadingSuggestions && <SimpleLoading size="small" />}
-                              {destinationSuggestions.length > 0 && !isLoadingSuggestions && (
-                                <Box sx={{ color: '#b08968', fontSize: '0.75rem', mr: 1 }}>
-                                  {destinationSuggestions.length} found
+                              {isLoadingSuggestions ? <SimpleLoading size="small" /> : null}
+                              {isProcessingDestination ? (
+                                <Box sx={{ color: '#4caf50', fontSize: '0.75rem', mr: 1, display: 'flex', alignItems: 'center' }}>
+                                  <SimpleLoading size="small" />
+                                  <span style={{ marginLeft: '4px' }}>Setting destination...</span>
                                 </Box>
-                              )}
+                              ) : null}
+                              {destinationSuggestions.length > 0 && !isLoadingSuggestions && !isProcessingDestination ? (
+                                <Box sx={{ color: '#b08968', fontSize: '0.75rem', mr: 1 }}>
+                                  {destinationSuggestions.length} suggestions
+                                </Box>
+                              ) : null}
                               {params.InputProps.endAdornment}
                             </>
                           ),
@@ -2502,32 +1718,50 @@ function RouteOptimizer({ mode = 'create' }) {
                             borderRadius: 1.5,
                             background: '#fff',
                             '& fieldset': {
-                              borderColor: destinationSuggestions.length > 0 ? '#b08968' : '#e0c9b3'
+                              borderColor: isProcessingDestination ? '#4caf50' : destinationSuggestions.length > 0 ? '#b08968' : '#e0c9b3'
                             },
                             '&:hover fieldset': {
-                              borderColor: '#b08968'
+                              borderColor: isProcessingDestination ? '#4caf50' : '#b08968'
                             },
                             '&.Mui-focused fieldset': {
-                              borderColor: '#b08968'
+                              borderColor: isProcessingDestination ? '#4caf50' : '#b08968'
                             }
                           }
                         }}
                       />
                     )}
-                    renderOption={(props, option) => (
-                      <Box component="li" {...props} sx={{ py: 1 }}>
-                            <Box>
-                          <Typography variant="body2" color="#4e342e" fontWeight={500}>
-                            📍 {option.display_name}
-                              </Typography>
-                            {option.distance && option.distance > 0 && (
-                            <Typography variant="caption" color="#b08968">
-                                {option.distance < 1 ? `${(option.distance * 1000).toFixed(0)}m` : `${option.distance.toFixed(1)}km`} away
+                    renderOption={(props, option) => {
+                      const { key, ...otherProps } = props;
+                      return (
+                        <Box component="li" key={key} {...otherProps} sx={{ py: 1 }}>
+                          <Box>
+                            <Typography 
+                              variant="body2" 
+                              color={option.isHelpMessage ? '#b08968' : option.isAlternative ? '#7c5e48' : '#4e342e'} 
+                              fontWeight={500} 
+                              sx={{ mb: 0.5 }}
+                            >
+                              {option.isHelpMessage ? '💡' : option.isAlternative ? '🔄' : '📍'} {option.display_name}
                             </Typography>
+                            {option.distance && option.distance > 0 && (
+                              <Typography variant="caption" color="#b08968" sx={{ fontWeight: 500, mr: 1 }}>
+                                {option.distance < 1 ? `${(option.distance * 1000).toFixed(0)}m` : `${option.distance.toFixed(1)}km`} away
+                              </Typography>
+                            )}
+                            {option.type && option.type !== 'business' && (
+                              <Typography variant="caption" color="#4caf50" sx={{ fontWeight: 500, mr: 1 }}>
+                                {option.type.charAt(0).toUpperCase() + option.type.slice(1)}
+                              </Typography>
+                            )}
+                            {option.isRealBusiness && !option.isHelpMessage && !option.isAlternative && (
+                              <Typography variant="caption" color="#2196f3" sx={{ fontWeight: 500 }}>
+                                ✓ Verified
+                              </Typography>
                             )}
                           </Box>
                         </Box>
-                    )}
+                      );
+                    }}
                     PopperComponent={(props) => (
                       <Popper
                         {...props}
@@ -2538,8 +1772,7 @@ function RouteOptimizer({ mode = 'create' }) {
                             border: '1px solid #e0c9b3',
                             borderRadius: 2,
                             boxShadow: '0 4px 20px rgba(176, 137, 104, 0.15)',
-                            mt: 0.5,
-                            zIndex: 9999
+                            mt: 0.5
                           }
                         }}
                       />
@@ -2550,51 +1783,6 @@ function RouteOptimizer({ mode = 'create' }) {
                       }
                     }}
                   />
-                  
-                  {/* Route Status Display */}
-                  {destination && userLocation && creatorRole === 'driver' && (
-                    <Box mt={1.5}>
-                      {isCalculatingRoute ? (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          color: '#b08968',
-                          fontSize: '0.875rem'
-                        }}>
-                          <SimpleLoading size="small" />
-                          <span style={{ marginLeft: '8px' }}>Calculating route...</span>
-                        </Box>
-                      ) : calculatedRoute ? (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          justifyContent: 'space-between',
-                          color: '#4caf50',
-                          fontSize: '0.875rem'
-                        }}>
-                          <span>✅ Route calculated</span>
-                          <Button
-                            variant="text"
-                            size="small"
-                            onClick={() => {
-                              console.log('🧹 Clearing route');
-                              setCalculatedRoute(null);
-                              setRouteDetails(null);
-                            }}
-                            sx={{ 
-                              color: '#b08968', 
-                              fontSize: '0.75rem',
-                              '&:hover': {
-                                background: '#f9f6ef'
-                              }
-                            }}
-                          >
-                            Clear Route
-                          </Button>
-                        </Box>
-                      ) : null}
-                    </Box>
-                  )}
                 </Box>
               )}
             </CardContent>
@@ -2919,10 +2107,8 @@ function RouteOptimizer({ mode = 'create' }) {
         </DialogTitle>
         <DialogContent sx={{ background: '#fff' }}>
           <UserSearch 
-            onlyShowFriends={true}
             onSelectFriend={(friend) => {
               console.log('Friend selected from UserSearch:', friend);
-              console.log('Current users state before adding:', users);
               
               const friendData = {
                 id: friend.id,
@@ -2933,8 +2119,6 @@ function RouteOptimizer({ mode = 'create' }) {
                 photoURL: friend.profile?.photoURL || friend.photoURL || '',
                 email: friend.profile?.email || friend.email || ''
               };
-              
-              console.log('Friend data to add:', friendData);
               
               const isAlreadyAdded = users.some(user => user.id === friend.id);
               if (isAlreadyAdded) {

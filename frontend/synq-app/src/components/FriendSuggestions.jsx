@@ -7,6 +7,7 @@ import {
 } from '../services/firebaseOperations';
 import SimpleLoading from './SimpleLoading';
 import '../styles/FriendSuggestions.css';
+import { Box, Card, CardContent, Typography, Button, Chip, Avatar, Stack } from '@mui/material';
 
 function FriendSuggestions() {
   const { user } = useUserAuth();
@@ -14,6 +15,20 @@ function FriendSuggestions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sendingRequest, setSendingRequest] = useState({});
+
+  // Ghibli-inspired earthy palette
+  const palette = {
+    bg: '#f5f3e7', // warm cream
+    card: '#f9f6ef', // lighter cream
+    accent: '#b5c99a', // soft green
+    accent2: '#a47551', // brown
+    accent3: '#e2b07a', // muted gold
+    text: '#4e342e', // deep brown
+    textSoft: '#7c5e48',
+    border: '#e0c9b3',
+    friendBg: '#e6ede3', // pale green
+    requestBg: '#f6e7d7', // pale tan
+  };
 
   useEffect(() => {
     const loadSuggestions = async () => {
@@ -141,97 +156,84 @@ function FriendSuggestions() {
 
   if (loading) {
     return (
-      <div className="card">
-        <div className="card-body">
-          <h5 className="card-title">Friend Suggestions</h5>
-          <div className="text-center">
+      <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 2 }}>
+        <CardContent sx={{ py: 3 }}>
+          <Box sx={{ textAlign: 'center' }}>
             <SimpleLoading 
               message="Loading suggestions..."
               size="small"
             />
-          </div>
-        </div>
-      </div>
+          </Box>
+        </CardContent>
+      </Card>
     );
   }
 
   if (error) {
     return (
-      <div className="card">
-        <div className="card-body">
-          <h5 className="card-title">Friend Suggestions</h5>
-          <div className="alert alert-danger" role="alert">
+      <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 2 }}>
+        <CardContent sx={{ py: 3 }}>
+          <Box sx={{ background: '#fff0f0', color: '#b71c1c', borderRadius: 2, p: 2, mb: 2, fontWeight: 500 }}>
             {error}
-            <button 
-              className="btn btn-link"
-              onClick={() => setError(null)}
-            >
+            <Button variant="text" size="small" sx={{ color: palette.accent2, ml: 2 }} onClick={() => setError(null)}>
               Dismiss
-            </button>
-          </div>
-        </div>
-      </div>
+            </Button>
+          </Box>
+        </CardContent>
+      </Card>
     );
   }
 
   if (suggestions.length === 0) {
     return (
-      <div className="card">
-        <div className="card-body">
-          <h5 className="card-title">Friend Suggestions</h5>
-          <p className="text-muted">No suggestions available at the moment.</p>
-        </div>
-      </div>
+      <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 2 }}>
+        <CardContent sx={{ py: 3 }}>
+          <Typography color={palette.textSoft}>No suggestions available at the moment.</Typography>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="card">
-      <div className="card-body">
-        <h5 className="card-title">Friend Suggestions</h5>
-        <div className="list-group">
+    <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 2 }}>
+      <CardContent sx={{ py: 3 }}>
+        <Stack spacing={2}>
           {suggestions.map(suggestion => (
-            <div key={suggestion.id} className="list-group-item">
-              <div className="d-flex justify-content-between align-items-center">
-                <div>
-                  <h6 className="mb-0">
-                    {suggestion.profile?.displayName || suggestion.displayName}
-                    <span className={`ms-2 badge ${getTrustScoreColor(suggestion.trustScore)}`}>
-                      Trust Score: {suggestion.trustScore}%
-                    </span>
-                  </h6>
-                  <small className="text-muted">
-                    {suggestion.reputation?.rideCount || 0} rides completed
-                    {suggestion.reputation?.rating && ` • ${suggestion.reputation.rating.toFixed(1)}★ rating`}
-                  </small>
+            <Box key={suggestion.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: palette.friendBg, borderRadius: 3, p: 2, boxShadow: '0 1px 4px 0 #e0c9b3', transition: 'box-shadow 0.2s, background 0.2s', '&:hover': { boxShadow: '0 4px 16px 0 #e0c9b3', background: '#f5f3e7' } }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                <Avatar src={suggestion.profile?.photoURL || '/default-avatar.png'} alt={suggestion.profile?.displayName || suggestion.displayName} sx={{ width: 48, height: 48, mr: 2, bgcolor: palette.accent }} />
+                <Box>
+                  <Typography fontWeight={700} color={palette.text} fontSize={17}>{suggestion.profile?.displayName || suggestion.displayName}</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
+                    <Chip label={`Trust Score: ${suggestion.trustScore}%`} size="small" sx={{ background: palette.accent3, color: palette.text }} />
+                    <Typography variant="caption" color={palette.textSoft}>
+                      {suggestion.reputation?.rideCount || 0} rides
+                      {suggestion.reputation?.rating && ` • ${suggestion.reputation.rating.toFixed(1)}★`}
+                    </Typography>
+                  </Stack>
                   {suggestion.reputation?.badges?.length > 0 && (
-                    <div className="badges mt-1">
-                      <small>
-                        Badges: {suggestion.reputation.badges.join(', ')}
-                      </small>
-                    </div>
+                    <Stack direction="row" spacing={1} mt={0.5}>
+                      {suggestion.reputation.badges.map((badge, idx) => (
+                        <Chip key={idx} label={badge} size="small" sx={{ background: palette.accent, color: palette.text }} />
+                      ))}
+                    </Stack>
                   )}
-                </div>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={() => handleSendRequest(suggestion.id)}
-                  disabled={sendingRequest[suggestion.id]}
-                >
-                  {sendingRequest[suggestion.id] ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                      Sending...
-                    </>
-                  ) : (
-                    'Add Friend'
-                  )}
-                </button>
-              </div>
-            </div>
+                </Box>
+              </Box>
+              <Button
+                variant="contained"
+                size="small"
+                sx={{ background: palette.accent2, color: '#fff', borderRadius: 2, fontWeight: 600, px: 2, py: 1, fontSize: 15, minWidth: 110 }}
+                onClick={() => handleSendRequest(suggestion.id)}
+                disabled={sendingRequest[suggestion.id]}
+              >
+                {sendingRequest[suggestion.id] ? 'Sending...' : 'Add Friend'}
+              </Button>
+            </Box>
           ))}
-        </div>
-      </div>
-    </div>
+        </Stack>
+      </CardContent>
+    </Card>
   );
 }
 

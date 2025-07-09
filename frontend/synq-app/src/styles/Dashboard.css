@@ -45,3 +45,110 @@
   left: 50%;
   transform: translate(-50%, -50%);
 } 
+
+/* --- Improved styles for redesigned dashboard layout --- */
+.dashboard-main-layout {
+  display: flex;
+  gap: 2.5rem;
+  align-items: flex-start;
+}
+
+.dashboard-main-content {
+  flex: 2;
+  min-width: 0;
+}
+
+.dashboard-sidebar-bg {
+  flex: 1;
+  min-width: 280px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  position: sticky;
+  top: 32px;
+  align-self: flex-start;
+  background: #f9f6ef;
+  border-radius: 1.5rem;
+  box-shadow: 0 2px 16px 0 #e0c9b3;
+  padding: 1.5rem 1rem;
+}
+
+.dashboard-card {
+  border-radius: 1.5rem;
+  box-shadow: none;
+  margin-bottom: 2rem;
+  padding: 2rem 1.5rem;
+}
+
+.dashboard-welcome-card {
+  background: linear-gradient(90deg, #f9f6f2 60%, #f5f3e7 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3rem 3.5rem;
+  margin-bottom: 2.5rem;
+  box-shadow: 0 4px 24px 0 #e0c9b3;
+}
+
+.dashboard-stats-row {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 2.5rem;
+}
+
+.dashboard-stats-row .MuiCard-root {
+  flex: 1;
+  min-height: 120px;
+  border-radius: 1.25rem;
+}
+
+@media (max-width: 1200px) {
+  .dashboard-main-layout {
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .dashboard-sidebar-bg {
+    max-width: 100%;
+    min-width: 0;
+    position: static;
+    box-shadow: none;
+    padding: 1rem 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .dashboard-main-layout {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .dashboard-sidebar-bg {
+    max-width: 100%;
+    min-width: 0;
+    flex-direction: row;
+    gap: 1rem;
+    position: static;
+    box-shadow: none;
+    padding: 0.5rem 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .dashboard-welcome-card {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 1.2rem 1rem;
+  }
+  .dashboard-stats-row {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .dashboard-sidebar-bg {
+    flex-direction: column;
+    gap: 1rem;
+    padding: 0.5rem 0;
+  }
+  .dashboard-card {
+    padding: 1rem 0.5rem;
+  }
+} 

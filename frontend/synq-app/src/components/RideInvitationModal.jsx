@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { respondToRideInvitation } from '../services/firebaseOperations';
-import { searchAddress } from '../services/locationService';
+import { searchDestinations } from '../services/locationService';
 import '../styles/RideInvitationModal.css';
 
 function RideInvitationModal({ 
@@ -65,7 +65,7 @@ function RideInvitationModal({
     searchTimeoutRef.current = setTimeout(async () => {
       try {
         setIsSearching(true);
-        const results = await searchAddress(query, { limit: 5 });
+        const results = await searchDestinations(query, { limit: 5 });
         setSuggestions(results);
         setShowSuggestions(true);
       } catch (error) {
@@ -150,6 +150,17 @@ function RideInvitationModal({
     }
   }, [isStatusChange, ride, currentUserId]);
 
+  useEffect(() => {
+    if (isOpen) {
+      console.log('RideInvitationModal opened with props:', {
+        isOpen,
+        ride: ride?.id,
+        inviter: inviter?.displayName,
+        currentUserId
+      });
+    }
+  }, [isOpen, ride, inviter, currentUserId]);
+
   const handleRSVP = async (response) => {
     console.log('RSVP button clicked:', response);
     if (response === 'accepted') {
@@ -227,13 +238,6 @@ function RideInvitationModal({
   };
 
   if (!isOpen) return null;
-
-  console.log('RideInvitationModal rendering with props:', {
-    isOpen,
-    ride: ride?.id,
-    inviter: inviter?.displayName,
-    currentUserId
-  });
 
   return (
     <div className="modal-backdrop" style={{ pointerEvents: 'auto' }} onClick={onClose}>
