@@ -1,3 +1,8 @@
+/* Override global padding for RouteOptimizer page */
+.route-optimizer-page {
+  padding-top: 0 !important;
+}
+
 .route-optimizer-container {
   width: 100vw;
   height: 100vh;

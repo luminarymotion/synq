@@ -1,3 +1,51 @@
+/* --- Refined styles for Friends page to match dashboard aesthetic --- */
+.friends-container, .friends-page, body {
+  background: #f5f3e7 !important;
+}
+
+.card, .MuiCard-root {
+  border-radius: 1.5rem !important;
+  box-shadow: 0 2px 12px 0 #e0c9b3 !important;
+  margin-bottom: 2.5rem !important;
+  border: none !important;
+}
+
+.card-content, .MuiCardContent-root {
+  padding: 2.5rem 2rem !important;
+}
+
+.friend-request-item, .friend-item {
+  background: #fff !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 1px 4px 0 #e0c9b3 !important;
+  transition: box-shadow 0.2s, background 0.2s;
+}
+
+.friend-request-item:hover, .friend-item:hover {
+  box-shadow: 0 4px 16px 0 #e0c9b3 !important;
+  background: #f5f3e7 !important;
+}
+
+.friend-avatar, .MuiAvatar-root {
+  width: 56px !important;
+  height: 56px !important;
+  margin-right: 1rem !important;
+}
+
+@media (max-width: 900px) {
+  .card-content, .MuiCardContent-root {
+    padding: 1.2rem 0.7rem !important;
+  }
+  .card, .MuiCard-root {
+    margin-bottom: 1.2rem !important;
+  }
+}
+
+/* Remove legacy list-group and badge styles */
+.list-group, .list-group-item, .badge, .friend-details, .friend-stats, .friend-details ul, .friend-details ul li {
+  all: unset !important;
+}
+
 .friend-item {
   position: relative;
   transition: background-color 0.2s ease;
@@ -611,4 +659,49 @@
   width: 1.5rem;
   height: 1.5rem;
   border-width: 0.2em;
+}
+
+/* --- Refined styles for UserSearch and user-card to match dashboard aesthetic --- */
+.user-search-container, .search-box, .search-results {
+  all: unset !important;
+}
+
+.user-card {
+  background: #e6ede3 !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 1px 4px 0 #e0c9b3 !important;
+  margin-bottom: 1rem !important;
+  padding: 1rem 1.5rem !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  transition: box-shadow 0.2s, background 0.2s;
+}
+.user-card:hover {
+  box-shadow: 0 4px 16px 0 #e0c9b3 !important;
+  background: #f5f3e7 !important;
+}
+.user-avatar {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  margin-right: 16px !important;
+  background: #b5c99a !important;
+}
+.user-details {
+  font-size: 15px !important;
+  color: #7c5e48 !important;
+}
+.user-name {
+  font-weight: 700 !important;
+  color: #4e342e !important;
+  font-size: 17px !important;
+}
+.text-muted {
+  color: #b08968 !important;
+}
+/* Remove legacy input-group and btn styles */
+.input-group, .input-group-text, .btn, .btn-sm, .btn-primary, .btn-success {
+  all: unset !important;
 } 

@@ -7,12 +7,19 @@ import {
   subscribeToFriendsList,
   subscribeToUserStatus,
   subscribeToFriendRequests,
-  updateFriendRequest
+  updateFriendRequest,
+  cleanupOrphanedRelationships
 } from '../services/firebaseOperations';
 import FriendSuggestions from './FriendSuggestions';
 import UserSearch from './UserSearch';
 import SimpleLoading from './SimpleLoading';
-import '../styles/Friends.css';
+// MUI imports
+import { Box, Container, Card, CardContent, Typography, Button, Avatar, Stack, Chip, Divider, Alert, IconButton } from '@mui/material';
+import GroupIcon from '@mui/icons-material/Group';
+import PersonRemoveIcon from '@mui/icons-material/PersonRemove';
+import PersonAddIcon from '@mui/icons-material/PersonAdd';
+import CheckIcon from '@mui/icons-material/Check';
+import CloseIcon from '@mui/icons-material/Close';
 
 function Friends() {
   const { user } = useUserAuth();
@@ -30,6 +37,17 @@ function Friends() {
       if (result.success) {
         setFriends(result.friends);
         setLoading(false);
+        
+        // Check for orphaned relationships and clean them up
+        const orphanedCount = result.friends.filter(f => f.isOrphaned).length;
+        if (orphanedCount > 0) {
+          console.log(`Found ${orphanedCount} orphaned relationships, cleaning up...`);
+          cleanupOrphanedRelationships(user.uid).then(cleanupResult => {
+            if (cleanupResult.success && cleanupResult.cleanedCount > 0) {
+              console.log(`Cleaned up ${cleanupResult.cleanedCount} orphaned relationships`);
+            }
+          });
+        }
       } else {
         setError(result.error);
         setLoading(false);
@@ -76,8 +94,11 @@ function Friends() {
     try {
       setRemovingFriend(prev => ({ ...prev, [friendId]: true }));
       const result = await removeFriendship(user.uid, friendId);
-      if (!result.success) {
-        setError('Failed to remove friend');
+      if (result.success) {
+        // Show success message
+        console.log('Friend removed successfully:', result.message);
+      } else {
+        setError(`Failed to remove friend: ${result.error}`);
       }
     } catch (err) {
       setError('Error removing friend');
@@ -116,6 +137,20 @@ function Friends() {
     return lastSeen.toLocaleDateString();
   };
 
+  // Ghibli-inspired earthy palette
+  const palette = {
+    bg: '#f5f3e7', // warm cream
+    card: '#f9f6ef', // lighter cream
+    accent: '#b5c99a', // soft green
+    accent2: '#a47551', // brown
+    accent3: '#e2b07a', // muted gold
+    text: '#4e342e', // deep brown
+    textSoft: '#7c5e48',
+    border: '#e0c9b3',
+    friendBg: '#e6ede3', // pale green
+    requestBg: '#f6e7d7', // pale tan
+  };
+
   if (loading) {
     return (
       <SimpleLoading 
@@ -126,175 +161,152 @@ function Friends() {
   }
 
   return (
-    <div className="friends-page">
-      <div className="friends-container">
+    <Box sx={{ background: palette.bg, minHeight: '100vh', py: { xs: 2, md: 5 } }}>
+      <Container maxWidth="md" sx={{ px: { xs: 1, sm: 3, md: 6 } }}>
+        <Typography variant="h4" fontWeight={800} color={palette.text} mb={4} sx={{ letterSpacing: 0.5 }}>
+          Your Friends
+        </Typography>
         {error && (
-          <div className="alert alert-danger alert-dismissible fade show" role="alert">
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
-            <button 
-              type="button" 
-              className="btn-close" 
-              onClick={() => setError(null)}
-              aria-label="Close"
-            ></button>
-          </div>
+          </Alert>
         )}
-
-        <div className="friends-grid">
-          {/* Search Section */}
-          <div className="friends-section search-section">
-            <div className="card scrollable-card">
-              <div className="card-body">
-                <h5 className="card-title">
-                  <i className="fas fa-search me-2"></i>
-                  Search Users
-                </h5>
-                <div className="scrollable-content">
-                  <UserSearch />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Friends List Section */}
-          <div className="friends-section friends-list-section">
-            <div className="card scrollable-card">
-              <div className="card-body">
-                <h5 className="card-title">
-                  <i className="fas fa-users me-2"></i>
-                  Friends
-                  {friends.length > 0 && (
-                    <span className="badge bg-secondary ms-2">{friends.length}</span>
-                  )}
-                </h5>
-                <div className="scrollable-content">
-                  {friends.length === 0 ? (
-                    <div className="empty-state">
-                      <i className="fas fa-user-friends mb-3"></i>
-                      <p>No friends yet</p>
-                      <span className="text-muted">Try adding some friends to get started!</span>
-                    </div>
-                  ) : (
-                    <div className="friends-list">
-                      {friends.map(friend => (
-                        <div key={friend.id} className="friend-item">
-                          <div className="friend-content">
-                            <img 
-                              src={friend.profile.photoURL || '/default-avatar.png'} 
-                              alt={friend.profile.displayName}
-                              className="friend-avatar"
-                            />
-                            <div className="friend-info">
-                              <h6 className="friend-name">{friend.profile.displayName}</h6>
-                              {friend.relationship.communityId && (
-                                <span className="badge bg-info">
-                                  {friend.relationship.communityRole || 'Member'}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="friend-actions">
-                            <button
-                              className="btn btn-outline-danger btn-sm"
-                              onClick={() => handleRemoveFriend(friend.id)}
-                              disabled={removingFriend[friend.id]}
-                            >
-                              {removingFriend[friend.id] ? (
-                                <>
-                                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                  Removing...
-                                </>
-                              ) : (
-                                <>
-                                  <i className="fas fa-user-minus me-1"></i>
-                                  Remove
-                                </>
-                              )}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Friend Suggestions Section */}
-          <div className="friends-section suggestions-section">
-            <div className="card scrollable-card">
-              <div className="card-body">
-                <h5 className="card-title">
-                  <i className="fas fa-lightbulb me-2"></i>
-                  Suggested Friends
-                </h5>
-                <div className="scrollable-content">
-                  <FriendSuggestions />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Friend Requests Section - Moved to bottom */}
-          {friendRequests.length > 0 && (
-            <div className="friends-section requests-section">
-              <div className="card scrollable-card">
-                <div className="card-body">
-                  <h5 className="card-title">
-                    <i className="fas fa-user-plus me-2"></i>
-                    Friend Requests
-                    <span className="badge bg-primary ms-2">{friendRequests.length}</span>
-                  </h5>
-                  <div className="scrollable-content">
-                    <div className="friend-requests-list">
-                      {friendRequests.map(request => (
-                        <div key={request.id} className="friend-request-item">
-                          <div className="friend-request-content">
-                            <img 
-                              src={request.senderProfile.photoURL || '/default-avatar.png'} 
-                              alt={request.senderProfile.displayName}
-                              className="friend-avatar"
-                            />
-                            <div className="friend-request-info">
-                              <h6 className="friend-name">{request.senderProfile.displayName}</h6>
-                              <p className="friend-message text-muted">{request.message}</p>
-                            </div>
-                          </div>
-                          <div className="friend-request-actions">
-                            <button
-                              className="btn btn-primary btn-sm"
-                              onClick={() => handleFriendRequest(request.id, 'accepted')}
-                              disabled={processingRequest[request.id]}
-                            >
-                              {processingRequest[request.id] ? (
-                                <>
-                                  <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                                  Processing...
-                                </>
-                              ) : (
-                                'Accept'
-                              )}
-                            </button>
-                            <button
-                              className="btn btn-outline-danger btn-sm"
-                              onClick={() => handleFriendRequest(request.id, 'rejected')}
-                              disabled={processingRequest[request.id]}
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+        {/* Friend Requests - full width, top */}
+        {friendRequests.length > 0 && (
+          <Card sx={{ background: palette.requestBg, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 4, p: 1 }}>
+            <CardContent sx={{ py: 3 }}>
+              <Typography variant="h6" fontWeight={700} color={palette.textSoft} mb={2}>
+                Friend Requests
+              </Typography>
+              <Stack spacing={2}>
+                {friendRequests.map(req => (
+                  <Box key={req.id} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff', borderRadius: 3, p: 2, boxShadow: '0 1px 4px 0 #e0c9b3', transition: 'box-shadow 0.2s', '&:hover': { boxShadow: '0 4px 16px 0 #e0c9b3' } }}>
+                    <Box display="flex" alignItems="center">
+                      <Avatar src={req.senderProfile?.photoURL || '/default-avatar.png'} alt={req.senderProfile?.displayName} sx={{ width: 48, height: 48, mr: 2, bgcolor: palette.accent }} />
+                      <Box>
+                        <Typography fontWeight={700} color={palette.text}>{req.senderProfile?.displayName || 'Unknown User'}</Typography>
+                        <Typography variant="body2" color={palette.textSoft}>{req.senderProfile?.email || req.senderId}</Typography>
+                      </Box>
+                    </Box>
+                    <Box>
+                      <IconButton color="success" onClick={() => handleFriendRequest(req.id, 'accepted')} disabled={processingRequest[req.id]} sx={{ mx: 0.5 }}>
+                        <CheckIcon />
+                      </IconButton>
+                      <IconButton color="error" onClick={() => handleFriendRequest(req.id, 'rejected')} disabled={processingRequest[req.id]} sx={{ mx: 0.5 }}>
+                        <CloseIcon />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                ))}
+              </Stack>
+            </CardContent>
+          </Card>
+        )}
+        {/* Search Users */}
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 4, p: 1 }}>
+          <CardContent sx={{ py: 3 }}>
+            <Typography variant="h6" fontWeight={700} color={palette.textSoft} mb={2}>
+              Search Users
+            </Typography>
+            <UserSearch />
+          </CardContent>
+        </Card>
+        {/* Friend Suggestions */}
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 4, p: 1 }}>
+          <CardContent sx={{ py: 3 }}>
+            <Typography variant="h6" fontWeight={700} color={palette.textSoft} mb={2}>
+              Friend Suggestions
+            </Typography>
+            <FriendSuggestions />
+          </CardContent>
+        </Card>
+        {/* Friends List */}
+        <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: '0 2px 12px 0 #e0c9b3', mb: 4, p: 1 }}>
+          <CardContent sx={{ py: 3 }}>
+            <Typography variant="h6" fontWeight={700} color={palette.textSoft} mb={2}>
+              Friends {friends.length > 0 && (
+                <Chip label={friends.length} size="small" sx={{ ml: 1, background: palette.accent, color: palette.text }} />
+              )}
+            </Typography>
+            <Divider sx={{ mb: 2, background: palette.border }} />
+            {friends.length === 0 ? (
+              <Box textAlign="center" py={4}>
+                <GroupIcon sx={{ fontSize: 56, color: palette.accent2, mb: 2 }} />
+                <Typography color={palette.textSoft} mb={1} fontSize={18}>No friends yet</Typography>
+                <Typography color={palette.textSoft} variant="body2">Try adding some friends to get started!</Typography>
+              </Box>
+            ) : (
+              <Stack spacing={2}>
+                {friends.map(friend => (
+                  <Box key={friend.id} sx={{ 
+                    background: friend.isOrphaned ? '#f8d7da' : palette.friendBg, 
+                    borderRadius: 3, 
+                    p: 2.5, 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between', 
+                    boxShadow: '0 1px 4px 0 #e0c9b3', 
+                    transition: 'box-shadow 0.2s', 
+                    '&:hover': { 
+                      boxShadow: '0 4px 16px 0 #e0c9b3', 
+                      background: friend.isOrphaned ? '#f5c6cb' : '#f5f3e7' 
+                    },
+                    border: friend.isOrphaned ? '1px solid #dc3545' : 'none',
+                    opacity: friend.isOrphaned ? 0.8 : 1
+                  }}>
+                    <Box display="flex" alignItems="center">
+                      <Avatar 
+                        src={friend.profile.photoURL || '/default-avatar.png'} 
+                        alt={friend.profile.displayName} 
+                        sx={{ 
+                          width: 56, 
+                          height: 56, 
+                          mr: 2, 
+                          bgcolor: friend.isOrphaned ? '#dc3545' : palette.accent 
+                        }} 
+                      />
+                      <Box>
+                        <Typography 
+                          fontWeight={700} 
+                          color={friend.isOrphaned ? '#721c24' : palette.text} 
+                          fontSize={18}
+                          sx={{ 
+                            textDecoration: friend.isOrphaned ? 'line-through' : 'none',
+                            fontStyle: friend.isOrphaned ? 'italic' : 'normal'
+                          }}
+                        >
+                          {friend.profile.displayName}
+                          {friend.isOrphaned && ' (Deleted)'}
+                        </Typography>
+                        {friend.isOrphaned && (
+                          <Typography variant="caption" color="#721c24" sx={{ fontStyle: 'italic' }}>
+                            This user's account has been deleted
+                          </Typography>
+                        )}
+                        {friend.relationship.communityId && !friend.isOrphaned && (
+                          <Chip label={friend.relationship.communityRole || 'Member'} size="small" sx={{ background: palette.accent3, color: palette.text, mt: 0.5 }} />
+                        )}
+                      </Box>
+                    </Box>
+                    <Box>
+                      <IconButton 
+                        color="error" 
+                        onClick={() => handleRemoveFriend(friend.id)} 
+                        disabled={removingFriend[friend.id]} 
+                        sx={{ mx: 0.5 }}
+                        title={friend.isOrphaned ? 'Remove orphaned relationship' : 'Remove friend'}
+                      >
+                        <PersonRemoveIcon />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                ))}
+              </Stack>
+            )}
+          </CardContent>
+        </Card>
+      </Container>
+    </Box>
   );
 }
 

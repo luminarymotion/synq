@@ -277,23 +277,35 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
 
       // Only fit map if we have valid coordinates
       if (allCoordinates.length > 0) {
-      // Calculate the extent with additional padding
-      const extent = boundingExtent(allCoordinates);
-      
-      // Add 20% padding to the extent
-      const [minX, minY, maxX, maxY] = extent;
-      const width = maxX - minX;
-      const height = maxY - minY;
-        const paddingX = width * 0.2;
-        const paddingY = height * 0.2;
-        
-        const paddedExtent = [minX - paddingX, minY - paddingY, maxX + paddingX, maxY + paddingY];
-        
-        map.getView().fit(paddedExtent, {
-          padding: [50, 50, 50, 50],
-          maxZoom: 16,
-          duration: 1000,
-        });
+        try {
+          // Calculate the extent with additional padding
+          const extent = boundingExtent(allCoordinates);
+          
+          // Validate extent before using it
+          if (extent && extent.length === 4 && 
+              extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
+              extent[0] !== extent[2] && extent[1] !== extent[3]) {
+            
+            // Add 20% padding to the extent
+            const [minX, minY, maxX, maxY] = extent;
+            const width = maxX - minX;
+            const height = maxY - minY;
+            const paddingX = width * 0.2;
+            const paddingY = height * 0.2;
+            
+            const paddedExtent = [minX - paddingX, minY - paddingY, maxX + paddingX, maxY + paddingY];
+            
+            map.getView().fit(paddedExtent, {
+              padding: [50, 50, 50, 50],
+              maxZoom: 16,
+              duration: 1000,
+            });
+          } else {
+            console.warn('Invalid extent from allCoordinates, skipping map fit');
+          }
+        } catch (error) {
+          console.warn('Error calculating extent from allCoordinates:', error);
+        }
       }
         } catch (error) {
       console.error('Error updating route visualization:', error);
@@ -427,12 +439,34 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
     source.addFeatures(features);
 
     if (features.length > 0) {
-      const extent = boundingExtent(features.map((f) => f.getGeometry().getCoordinates()));
-      map.getView().fit(extent, {
-        padding: [50, 50, 50, 50],
-        maxZoom: 16,
-        duration: 500,
-      });
+      try {
+        const coordinates = features.map((f) => f.getGeometry().getCoordinates()).filter(coord => coord && coord.length > 0);
+        if (coordinates.length > 0) {
+          const extent = boundingExtent(coordinates);
+          // Validate extent before fitting
+          if (extent && extent.length === 4 && 
+              extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
+              extent[0] !== extent[2] && extent[1] !== extent[3]) {
+            map.getView().fit(extent, {
+              padding: [50, 50, 50, 50],
+              maxZoom: 16,
+              duration: 500,
+            });
+          } else {
+            console.warn('Invalid extent from features, using default view');
+            map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
+            map.getView().setZoom(12);
+          }
+        } else {
+          console.warn('No valid coordinates from features, using default view');
+          map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
+          map.getView().setZoom(12);
+        }
+      } catch (error) {
+        console.warn('Error calculating extent from features:', error);
+        map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
+        map.getView().setZoom(12);
+      }
     } else {
       map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
       map.getView().setZoom(12);
@@ -497,7 +531,26 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
   // Update route when calculatedRoute prop changes
   useEffect(() => {
     if (calculatedRoute && mapInstanceRef.current) {
-      console.log('Updating route on map:', calculatedRoute);
+      console.log('=== MAPVIEW ROUTE UPDATE ===');
+      console.log('Calculated route data:', calculatedRoute);
+      console.log('Route type:', calculatedRoute.type);
+      console.log('Has routes array:', !!calculatedRoute.routes);
+      console.log('Routes count:', calculatedRoute.routes?.length || 0);
+      console.log('Has features array:', !!calculatedRoute.features);
+      console.log('Features count:', calculatedRoute.features?.length || 0);
+      
+      if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
+        const firstRoute = calculatedRoute.routes[0];
+        console.log('First route details:', {
+          type: firstRoute.type,
+          waypointsCount: firstRoute.waypoints?.length || 0,
+          totalDistance: firstRoute.totalDistance,
+          totalDuration: firstRoute.totalDuration,
+          firstWaypoint: firstRoute.waypoints?.[0],
+          lastWaypoint: firstRoute.waypoints?.[firstRoute.waypoints?.length - 1]
+        });
+      }
+      
       console.log('Route features:', calculatedRoute.features);
       console.log('Route geometry:', calculatedRoute.features?.[0]?.geometry);
 
@@ -516,8 +569,47 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
         } else if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
           // VRP format - convert to GeoJSON
           const route = calculatedRoute.routes[0];
+          console.log('Processing VRP route:', route);
+          
           if (route.waypoints && route.waypoints.length > 0) {
-            const coordinates = route.waypoints.map(wp => [wp.lng, wp.lat]);
+            console.log('Route waypoints:', route.waypoints.length, 'points');
+            
+            // Extract coordinates from waypoints - these should be the road-following path
+            const coordinates = route.waypoints.map(wp => {
+              // Handle different waypoint formats
+              if (wp.lng && wp.lat) {
+                return [wp.lng, wp.lat];
+              } else if (wp.location && wp.location.lng && wp.location.lat) {
+                return [wp.location.lng, wp.location.lat];
+              } else {
+                console.warn('Invalid waypoint format:', wp);
+                return null;
+              }
+            }).filter(coord => coord !== null);
+            
+            console.log('Extracted coordinates:', coordinates.length, 'points');
+            console.log('First few coordinates:', coordinates.slice(0, 3));
+            console.log('Sample coordinate values:', coordinates.slice(0, 3).map(coord => ({
+              lng: coord[0],
+              lat: coord[1],
+              lngType: typeof coord[0],
+              latType: typeof coord[1],
+              lngValid: !isNaN(coord[0]) && coord[0] >= -180 && coord[0] <= 180,
+              latValid: !isNaN(coord[1]) && coord[1] >= -90 && coord[1] <= 90
+            })));
+            
+            // Debug: Show actual waypoint data structure
+            console.log('Sample waypoints from route:', route.waypoints.slice(0, 5).map(wp => ({
+              displayName: wp.displayName,
+              type: wp.type,
+              hasLngLat: !!(wp.lng && wp.lat),
+              hasLocation: !!(wp.location && wp.location.lng && wp.location.lat),
+              lng: wp.lng || wp.location?.lng,
+              lat: wp.lat || wp.location?.lat,
+              rawWaypoint: wp
+            })));
+            
+            if (coordinates.length >= 2) {
             routeFeatures = [{
               type: 'Feature',
               geometry: {
@@ -532,6 +624,10 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
               }
             }];
           }
+          }
+        } else if (calculatedRoute.type === 'FeatureCollection' && calculatedRoute.features) {
+          // Direct GeoJSON FeatureCollection
+          routeFeatures = calculatedRoute.features;
         }
 
         if (routeFeatures.length > 0) {
@@ -539,13 +635,68 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
           const coordinates = routeFeature.geometry.coordinates;
           console.log('Route coordinates:', coordinates);
           
+          // Debug: Check if route goes near passenger
+          const passengerLocation = users.find(u => u.role === 'passenger')?.location;
+          if (passengerLocation) {
+            console.log('Passenger location:', passengerLocation);
+            
+            // Find the closest point on the route to the passenger
+            let closestDistance = Infinity;
+            let closestPoint = null;
+            
+            coordinates.forEach((coord, index) => {
+              const distance = Math.sqrt(
+                Math.pow(coord[0] - passengerLocation.lng, 2) + 
+                Math.pow(coord[1] - passengerLocation.lat, 2)
+              );
+              if (distance < closestDistance) {
+                closestDistance = distance;
+                closestPoint = { coord, index, distance };
+              }
+            });
+            
+            console.log('Closest route point to passenger:', closestPoint);
+            console.log('Distance from passenger to route:', closestDistance, 'degrees');
+            
+            // Convert to approximate meters (rough conversion)
+            const distanceInMeters = closestDistance * 111000; // 1 degree ≈ 111km
+            console.log('Distance from passenger to route:', distanceInMeters, 'meters');
+          }
+          
           if (!coordinates || coordinates.length < 2) {
             console.warn('Invalid route coordinates:', coordinates);
             return;
           }
           
+          // Validate coordinates before creating geometry
+          const validCoordinates = coordinates.filter(coord => {
+            if (!Array.isArray(coord) || coord.length !== 2) {
+              console.warn('Invalid coordinate format:', coord);
+              return false;
+            }
+            const [lng, lat] = coord;
+            if (typeof lng !== 'number' || typeof lat !== 'number' || 
+                isNaN(lng) || isNaN(lat) ||
+                lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+              console.warn('Invalid coordinate values:', coord);
+              return false;
+            }
+            return true;
+          });
+          
+          if (validCoordinates.length < 2) {
+            console.warn('Not enough valid coordinates for route:', validCoordinates);
+            return;
+          }
+          
+          console.log('Creating LineString with valid coordinates:', validCoordinates.length, 'points');
+          
+          // Convert geographic coordinates to map projection coordinates
+          const projectedCoordinates = validCoordinates.map(coord => fromLonLat(coord));
+          console.log('Projected coordinates sample:', projectedCoordinates.slice(0, 3));
+          
           const routeFeatureObj = new Feature({
-            geometry: new LineString(coordinates)
+            geometry: new LineString(projectedCoordinates)
         });
 
         // Style the route
@@ -573,18 +724,66 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
 
         // Fit map to show the entire route
           try {
-            const extent = routeFeatureObj.getGeometry().getExtent();
-        mapInstanceRef.current.getView().fit(extent, {
-          padding: [50, 50, 50, 50],
-          duration: 1000
-        });
+            const geometry = routeFeatureObj.getGeometry();
+            if (geometry && geometry.getExtent) {
+              const extent = geometry.getExtent();
+              console.log('Route extent:', extent);
+              console.log('Extent validation:', {
+                hasExtent: !!extent,
+                length: extent?.length,
+                allNumbers: extent?.every(coord => typeof coord === 'number'),
+                allFinite: extent?.every(coord => !isNaN(coord) && isFinite(coord)),
+                hasWidth: extent && extent[0] !== extent[2],
+                hasHeight: extent && extent[1] !== extent[3],
+                extentValues: extent
+              });
+              
+              // Check if extent is valid (not empty or infinite)
+              if (extent && extent.length === 4 && 
+                  extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
+                  extent[0] !== extent[2] && extent[1] !== extent[3]) { // Ensure extent has width and height
+                
+                // Add some padding to the extent
+                const paddingX = (extent[2] - extent[0]) * 0.1;
+                const paddingY = (extent[3] - extent[1]) * 0.1;
+                const paddedExtent = [extent[0] - paddingX, extent[1] - paddingY, extent[2] + paddingX, extent[3] + paddingY];
+                
+                mapInstanceRef.current.getView().fit(paddedExtent, {
+                  padding: [50, 50, 50, 50],
+                  duration: 1000
+                });
+                console.log('Map fitted to route extent successfully');
+              } else {
+                throw new Error('Invalid or empty extent values');
+              }
+            } else {
+              throw new Error('Geometry has no getExtent method');
+            }
           } catch (fitError) {
             console.warn('Could not fit map to route extent:', fitError);
             // Fallback: fit to a reasonable area around the route
-            const center = routeFeatureObj.getGeometry().getFirstCoordinate();
-            if (center) {
-              mapInstanceRef.current.getView().setCenter(center);
-              mapInstanceRef.current.getView().setZoom(12);
+            try {
+              const geometry = routeFeatureObj.getGeometry();
+              if (geometry && geometry.getFirstCoordinate) {
+                const center = geometry.getFirstCoordinate();
+                if (center && center.length === 2 && 
+                    center.every(coord => typeof coord === 'number' && !isNaN(coord))) {
+                  console.log('Falling back to center on first coordinate:', center);
+                  // Convert center back to geographic coordinates for setCenter
+                  const geoCenter = toLonLat(center);
+                  mapInstanceRef.current.getView().setCenter(fromLonLat(geoCenter));
+                  mapInstanceRef.current.getView().setZoom(12);
+                } else {
+                  console.warn('Invalid center coordinate, using default view');
+                  // Set a default view around the area
+                  mapInstanceRef.current.getView().setCenter(fromLonLat([-96.7970, 32.7767])); // Dallas area
+                  mapInstanceRef.current.getView().setZoom(10);
+                }
+              }
+            } catch (centerError) {
+              console.warn('Could not set center, using default view:', centerError);
+              mapInstanceRef.current.getView().setCenter(fromLonLat([-96.7970, 32.7767])); // Dallas area
+              mapInstanceRef.current.getView().setZoom(10);
             }
           }
 

@@ -3,8 +3,9 @@ import { useUserAuth } from '../services/auth';
 import { searchUsers, sendFriendRequest, checkFriendshipStatus } from '../services/firebaseOperations';
 import SimpleLoading from './SimpleLoading';
 import '../styles/UserSearch.css';
+import { Box } from '@mui/material';
 
-function UserSearch({ onSelectFriend }) {
+function UserSearch({ onSelectFriend, onlyShowFriends = false }) {
   const { user } = useUserAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -12,6 +13,20 @@ function UserSearch({ onSelectFriend }) {
   const [error, setError] = useState(null);
   const [sendingRequest, setSendingRequest] = useState({});
   const [searchTimeout, setSearchTimeout] = useState(null);
+
+  // Ghibli-inspired earthy palette
+  const palette = {
+    bg: '#f5f3e7', // warm cream
+    card: '#f9f6ef', // lighter cream
+    accent: '#b5c99a', // soft green
+    accent2: '#a47551', // brown
+    accent3: '#e2b07a', // muted gold
+    text: '#4e342e', // deep brown
+    textSoft: '#7c5e48',
+    border: '#e0c9b3',
+    friendBg: '#e6ede3', // pale green
+    requestBg: '#f6e7d7', // pale tan
+  };
 
   useEffect(() => {
     // Clear timeout on unmount
@@ -169,68 +184,53 @@ function UserSearch({ onSelectFriend }) {
   };
 
   return (
-    <div className="user-search-container">
-      <div className="search-box">
-        <div className="input-group">
-          <span className="input-group-text">
-            <i className="fas fa-search"></i>
-          </span>
+    <Box sx={{ background: palette.bg, borderRadius: 3, p: { xs: 2, md: 3 }, boxShadow: 0 }}>
+      <Box sx={{ background: palette.card, borderRadius: 3, p: { xs: 2, md: 3 }, boxShadow: '0 2px 12px 0 #e0c9b3' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+          <Box sx={{ mr: 2, color: palette.textSoft }}>
+            <i className="fas fa-search" style={{ fontSize: 20 }}></i>
+          </Box>
           <input
             type="text"
-            className="form-control"
             placeholder="Search users by name or email..."
             value={searchTerm}
             onChange={(e) => {
               setSearchTerm(e.target.value);
               handleSearch(e.target.value);
             }}
+            className="user-search-input"
           />
-        </div>
-      </div>
-
-      {error && (
-        <div className="alert alert-danger mt-3" role="alert">
-          {error}
-        </div>
-      )}
-
-      {loading && (
-        <div className="text-center mt-3">
-          <SimpleLoading 
-            message="Searching users..."
-            size="small"
-          />
-        </div>
-      )}
-
-      {searchResults.length > 0 && (
-        <div className="search-results mt-3">
-          {searchResults.map(user => (
-            <div key={user.id} className="user-card">
-              <div className="user-info">
-                <img 
-                  src={user.profile?.photoURL || '/default-avatar.png'} 
-                  alt={user.profile?.displayName || 'User'} 
-                  className="user-avatar"
-                />
-                <div className="user-details">
-                  <h6 className="user-name">{user.profile?.displayName || 'Unknown User'}</h6>
-                  <small className="text-muted">{user.profile?.email || 'No email'}</small>
+        </Box>
+        {/* Filter results if onlyShowFriends is true */}
+        {(loading && <SimpleLoading />) || (
+          <div className="user-search-results">
+            {(onlyShowFriends
+              ? searchResults.filter(u => u.friendshipStatus === 'friends')
+              : searchResults
+            ).map(user => (
+              <div key={user.id} className="user-search-result-card">
+                <div className="user-info">
+                  <img src={user.profile?.photoURL || user.photoURL || '/default-avatar.png'} alt={user.profile?.displayName || user.displayName || user.email} className="user-avatar" />
+                  <div className="user-details">
+                    <span className="user-name">{user.profile?.displayName || user.displayName || user.email}</span>
+                    <span className="user-email">{user.profile?.email || user.email}</span>
+                  </div>
                 </div>
+                <div className="user-action">{getActionButton(user)}</div>
               </div>
-              {getActionButton(user)}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {searchTerm && !loading && searchResults.length === 0 && (
-        <div className="text-center mt-3 text-muted">
-          <i className="fas fa-search mb-2" style={{ fontSize: '2rem' }}></i>
-          <p>No users found matching "{searchTerm}"</p>
-        </div>
-      )}
-    </div>
+            ))}
+            {/* Show empty state if no results */}
+            {((onlyShowFriends
+              ? searchResults.filter(u => u.friendshipStatus === 'friends')
+              : searchResults
+            ).length === 0 && !loading) && (
+              <div className="user-search-empty">No friends found.</div>
+            )}
+          </div>
+        )}
+        {error && <div className="user-search-error">{error}</div>}
+      </Box>
+    </Box>
   );
 }
 

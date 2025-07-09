@@ -6,25 +6,35 @@ import { getAddressFromCoords } from './locationService';
 
 // Configuration with different presets for different use cases
 const LOCATION_CONFIG = {
-  // Basic tracking (for simple location display)
+  // Basic tracking (for simple location display) - more lenient for office networks
   basic: {
-    updateInterval: 10000, // 10 seconds
-    minDistance: 20, // 20 meters
-    maxAccuracy: 200, // 200 meters (increased from 100)
-    maxAge: 30000, // 30 seconds
-    retryAttempts: 2,
-    retryDelay: 1000,
+    updateInterval: 30000, // 30 seconds (increased for office networks)
+    minDistance: 50, // 50 meters (increased for office networks)
+    maxAccuracy: 500, // 500 meters (increased for office networks)
+    maxAge: 60000, // 60 seconds (increased for office networks)
+    retryAttempts: 1, // Reduced retries to avoid endless loops
+    retryDelay: 2000, // Increased delay
     offlineQueueSize: 10
   },
-  // Real-time tracking (for ride sharing)
+  // Real-time tracking (for ride sharing) - more lenient for office networks
   realtime: {
-    updateInterval: 5000, // 5 seconds
-    minDistance: 10, // 10 meters
-    maxAccuracy: 200, // 200 meters (increased from 50)
-    maxAge: 15000, // 15 seconds
-    retryAttempts: 3,
-    retryDelay: 1000,
+    updateInterval: 15000, // 15 seconds (increased for office networks)
+    minDistance: 25, // 25 meters (increased for office networks)
+    maxAccuracy: 300, // 300 meters (increased for office networks)
+    maxAge: 30000, // 30 seconds (increased for office networks)
+    retryAttempts: 2, // Reduced retries
+    retryDelay: 2000, // Increased delay
     offlineQueueSize: 50
+  },
+  // Office-friendly tracking (for restricted networks)
+  office: {
+    updateInterval: 60000, // 60 seconds
+    minDistance: 100, // 100 meters
+    maxAccuracy: 1000, // 1000 meters
+    maxAge: 120000, // 2 minutes
+    retryAttempts: 1,
+    retryDelay: 5000, // 5 seconds
+    offlineQueueSize: 10
   }
 };
 
@@ -134,13 +144,13 @@ class LocationTrackingService {
 
       // Only set up watchPosition if we successfully got initial position
       console.log('Setting up position watch...');
-      // Start watching position with more lenient settings
+      // Start watching position with better accuracy settings for office networks
       this.watchId = navigator.geolocation.watchPosition(
         this.handleLocationUpdate.bind(this),
         this.handleLocationError.bind(this),
         {
-          enableHighAccuracy: false, // Use low accuracy for better compatibility
-          timeout: 30000, // 30 second timeout for office networks
+          enableHighAccuracy: false, // Use low accuracy for office networks
+          timeout: 30000, // 30 second timeout (increased for office networks)
           maximumAge: 300000 // Accept cached location up to 5 minutes old
         }
       );
@@ -212,18 +222,27 @@ class LocationTrackingService {
     }
   }
 
-  // Get current position with retry and fallback
+  // Get current position with retry and fallback - more lenient for office networks
   async getCurrentPosition() {
     console.log('Getting current position...');
     return new Promise((resolve, reject) => {
-      const tryGetPosition = (attempt = 1) => {
-        console.log(`Attempt ${attempt} to get position...`);
+      const tryGetPosition = (attempt = 1, useLowAccuracy = false) => {
+        console.log(`Attempt ${attempt} to get position... (${useLowAccuracy ? 'low accuracy' : 'high accuracy'})`);
+        
+        const options = {
+          enableHighAccuracy: !useLowAccuracy, // Start with high accuracy, fallback to low
+          timeout: useLowAccuracy ? 30000 : 20000, // Longer timeout for low accuracy
+          maximumAge: useLowAccuracy ? 300000 : 120000 // Accept older cached locations for low accuracy (5 min vs 2 min)
+        };
+        
         navigator.geolocation.getCurrentPosition(
           (position) => {
             console.log('Position received:', {
               coords: position.coords,
+              accuracy: position.coords.accuracy,
               timestamp: new Date(position.timestamp).toISOString(),
-              attempt
+              attempt,
+              accuracyMode: useLowAccuracy ? 'low' : 'high'
             });
             resolve(position);
           },
@@ -231,6 +250,7 @@ class LocationTrackingService {
             console.error(`Position error on attempt ${attempt}:`, {
               code: error.code,
               message: error.message,
+              accuracyMode: useLowAccuracy ? 'low' : 'high',
               networkInfo: {
                 protocol: location.protocol,
                 hostname: location.hostname
@@ -244,26 +264,35 @@ class LocationTrackingService {
               console.warn('Position unavailable - device location services may be disabled');
             }
             
+            // If high accuracy failed and we haven't tried low accuracy yet, try that
+            if (!useLowAccuracy && attempt === 1) {
+              console.log('High accuracy failed, trying low accuracy...');
+              setTimeout(() => tryGetPosition(1, true), 1000);
+              return;
+            }
+            
+            // If we still have retries left, try again
             if (attempt < this.config.retryAttempts) {
               console.log(`Retrying in ${this.config.retryDelay}ms...`);
-              setTimeout(() => tryGetPosition(attempt + 1), this.config.retryDelay);
+              setTimeout(() => tryGetPosition(attempt + 1, useLowAccuracy), this.config.retryDelay);
             } else {
-              // Try to get cached location as fallback
-              console.log('Attempting to get cached location as fallback...');
+              // Final fallback: try to get any cached location
+              console.log('Attempting to get any cached location as final fallback...');
               navigator.geolocation.getCurrentPosition(
                 (cachedPosition) => {
-                  console.log('Cached position received as fallback:', {
+                  console.log('Cached position received as final fallback:', {
                     coords: cachedPosition.coords,
+                    accuracy: cachedPosition.coords.accuracy,
                     timestamp: new Date(cachedPosition.timestamp).toISOString()
                   });
                   resolve(cachedPosition);
                 },
                 (fallbackError) => {
-                  console.error('Fallback position also failed:', fallbackError);
+                  console.error('All position attempts failed:', fallbackError);
                   // Provide user-friendly error message
                   let userFriendlyError = 'Failed to get location';
                   if (error.code === error.TIMEOUT) {
-                    userFriendlyError = 'Location tracking failed. Please enter your location manually';
+                    userFriendlyError = 'Location tracking blocked by network. You can manually set your location.';
                   } else if (error.code === error.POSITION_UNAVAILABLE) {
                     userFriendlyError = 'Location unavailable. Please check your device\'s location services.';
                   } else if (error.code === error.PERMISSION_DENIED) {
@@ -272,18 +301,14 @@ class LocationTrackingService {
                   reject(new Error(userFriendlyError));
                 },
                 {
-                  enableHighAccuracy: false,
-                  timeout: 10000,
+                  enableHighAccuracy: false, // Use low accuracy for final fallback
+                  timeout: 45000, // Very long timeout for final attempt
                   maximumAge: 600000 // Accept cached location up to 10 minutes old
                 }
               );
             }
           },
-          {
-            enableHighAccuracy: false, // Use low accuracy for better compatibility
-            timeout: 30000, // 30 second timeout for office networks
-            maximumAge: 300000 // Accept cached location up to 5 minutes old
-          }
+          options
         );
       };
 

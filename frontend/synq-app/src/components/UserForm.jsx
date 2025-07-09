@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useUserAuth } from '../services/auth';
-import { getCurrentLocation, searchAddress } from '../services/locationService';
+import { getCurrentLocation, searchDestinations } from '../services/locationService';
 import '../styles/UserForm.css';
 
 function UserForm({ 
@@ -66,7 +66,7 @@ function UserForm({
       if (query && query.length >= 2) {
         setIsSearching(true);
         try {
-          const results = await searchAddress(query, { limit: 5 });
+          const results = await searchDestinations(query, { limit: 5 });
           setSuggestions(results);
           setShowSuggestions(true);
         } catch (error) {
@@ -249,7 +249,7 @@ function UserForm({
     pickupSearchTimeoutRef.current = setTimeout(async () => {
       try {
         setIsSearchingPickup(true);
-        const results = await searchAddress(value, { limit: 5 });
+        const results = await searchDestinations(value, { limit: 5 });
         setPickupSuggestions(results);
         setShowPickupSuggestions(true);
       } catch (error) {
@@ -318,7 +318,7 @@ function UserForm({
     startingLocationSearchTimeoutRef.current = setTimeout(async () => {
       try {
         setIsSearchingStartingLocation(true);
-        const results = await searchAddress(value, { limit: 5 });
+        const results = await searchDestinations(value, { limit: 5 });
         setStartingLocationSuggestions(results);
         setShowStartingLocationSuggestions(true);
       } catch (error) {

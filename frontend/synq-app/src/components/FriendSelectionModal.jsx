@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
-import { db } from '../services/firebase';
-import { collection, query, getDocs } from 'firebase/firestore';
+import { getFriendsList } from '../services/firebaseOperations';
 import '../styles/FriendSelectionModal.css';
 
 function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipants }) {
@@ -27,7 +26,8 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
       setFilteredFriends(friends);
     } else {
       const filtered = friends.filter(friend => 
-        friend.displayName.toLowerCase().includes(searchTerm.toLowerCase())
+        friend.profile?.displayName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        friend.profile?.email?.toLowerCase().includes(searchTerm.toLowerCase())
       );
       setFilteredFriends(filtered);
     }
@@ -38,17 +38,17 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
       setLoading(true);
       setError(null);
       
-      const friendsRef = collection(db, 'users', user.uid, 'friends');
-      const friendsSnapshot = await getDocs(friendsRef);
+      // Use the proper friends list function
+      const result = await getFriendsList(user.uid);
       
-      const friendsList = friendsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to load friends');
+      }
 
-      // Filter out friends who are already participants
-      const availableFriends = friendsList.filter(
-        friend => !existingParticipants.some(p => p.id === friend.id)
+      // Filter out friends who are already participants and orphaned relationships
+      const availableFriends = result.friends.filter(friend => 
+        !existingParticipants.some(p => p.id === friend.id) && 
+        !friend.isOrphaned // Don't show deleted users
       );
 
       setFriends(availableFriends);
@@ -128,12 +128,12 @@ function FriendSelectionModal({ isOpen, onClose, onAddFriend, existingParticipan
               <div key={friend.id} className="friend-item">
                 <div className="friend-info">
                   <img 
-                    src={friend.photoURL || '/default-avatar.png'} 
-                    alt={friend.displayName}
+                    src={friend.profile?.photoURL || '/default-avatar.png'} 
+                    alt={friend.profile?.displayName || 'Friend'}
                     className="friend-avatar"
                   />
                   <div className="friend-details">
-                    <span className="friend-name">{friend.displayName}</span>
+                    <span className="friend-name">{friend.profile?.displayName || friend.profile?.email || 'Unknown User'}</span>
                     {invitedFriends.has(friend.id) && (
                       <span className="invite-status">
                         <i className="fas fa-check-circle"></i>
