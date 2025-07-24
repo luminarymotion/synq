@@ -1895,35 +1895,35 @@
                             {user.name || 'Unknown User'}
                           </Typography>
                         }
-                        secondary={
-                          <FormControl size="small" sx={{ minWidth: 100, mt: 0.5 }}>
-                            <Select
-                              value={user.role}
-                              onChange={(e) => handleRoleChange(user.tempId, e.target.value)}
-                              sx={{ 
-                                background: '#fff',
-                                borderRadius: 1.5,
-                                height: 32,
-                                '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#e0c9b3'
-                                },
-                                '&:hover .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#b08968'
-                                }
-                              }}
-                            >
-                              <MenuItem value="driver">
-                                <CarIcon sx={{ mr: 1, fontSize: 14 }} />
-                                Driver
-                              </MenuItem>
-                              <MenuItem value="passenger">
-                                <PersonIcon sx={{ mr: 1, fontSize: 14 }} />
-                                Passenger
-                              </MenuItem>
-                            </Select>
-                          </FormControl>
-                        }
                       />
+                      <Box sx={{ mt: 0.5 }}>
+                        <FormControl size="small" sx={{ minWidth: 100 }}>
+                          <Select
+                            value={user.role}
+                            onChange={(e) => handleRoleChange(user.tempId, e.target.value)}
+                            sx={{ 
+                              background: '#fff',
+                              borderRadius: 1.5,
+                              height: 32,
+                              '& .MuiOutlinedInput-notchedOutline': {
+                                borderColor: '#e0c9b3'
+                              },
+                              '&:hover .MuiOutlinedInput-notchedOutline': {
+                                borderColor: '#b08968'
+                              }
+                            }}
+                          >
+                            <MenuItem value="driver">
+                              <CarIcon sx={{ mr: 1, fontSize: 14 }} />
+                              Driver
+                            </MenuItem>
+                            <MenuItem value="passenger">
+                              <PersonIcon sx={{ mr: 1, fontSize: 14 }} />
+                              Passenger
+                            </MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
                       <ListItemSecondaryAction>
                         <IconButton 
                           edge="end" 

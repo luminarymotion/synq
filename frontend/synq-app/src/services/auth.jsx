@@ -82,11 +82,8 @@ export function UserAuthContextProvider({ children }) {
 
     // Helper function to ensure user profile exists
     const ensureUserProfile = async (user) => {
-        if (!user) {
-            console.log('No user provided to ensureUserProfile');
-            return;
-        }
-
+        if (!user) return;
+        
         try {
             console.log('Ensuring user profile exists for:', user.uid);
             
@@ -193,6 +190,17 @@ export function UserAuthContextProvider({ children }) {
             }
         } catch (error) {
             console.error('Error ensuring user profile:', error);
+            
+            // Handle offline scenarios gracefully
+            if (error.message.includes('offline') || 
+                error.message.includes('Failed to get document') ||
+                error.message.includes('network') ||
+                error.message.includes('timeout')) {
+                console.warn('Firebase is offline or experiencing connectivity issues. App will continue in offline mode.');
+                // Don't set error state for connectivity issues
+                return;
+            }
+            
             setError(error.message || 'Failed to set up user profile');
         }
     };
@@ -398,6 +406,28 @@ export function UserAuthContextProvider({ children }) {
 
     if (error) {
         console.error('Auth provider error:', error);
+        // Handle offline scenarios gracefully
+        if (
+            error.toLowerCase().includes('offline') ||
+            error.toLowerCase().includes('failed to get document') ||
+            error.toLowerCase().includes('network') ||
+            error.toLowerCase().includes('timeout')
+        ) {
+            return (
+                <div className="auth-error">
+                    <div className="alert alert-warning" role="alert">
+                        <h4 className="alert-heading">Offline Mode</h4>
+                        <p>Cannot connect to the server. The app is running in offline mode. Some features may be unavailable.</p>
+                        <button 
+                            className="btn btn-outline-warning mt-2"
+                            onClick={() => window.location.reload()}
+                        >
+                            Retry
+                        </button>
+                    </div>
+                </div>
+            );
+        }
         return (
             <div className="auth-error">
                 <div className="alert alert-danger" role="alert">

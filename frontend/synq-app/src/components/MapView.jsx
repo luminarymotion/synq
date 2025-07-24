@@ -1,62 +1,52 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import 'ol/ol.css';
-import { Map, View } from 'ol';
-import { OSM } from 'ol/source';
-import { Tile as TileLayer, Vector as VectorLayer } from 'ol/layer';
-import { Vector as VectorSource } from 'ol/source';
-import { Feature } from 'ol';
-import Point from 'ol/geom/Point';
-import { Style, Fill, Stroke, Circle as CircleStyle, Icon, Text } from 'ol/style';
-import { fromLonLat, toLonLat } from 'ol/proj';
-import { boundingExtent } from 'ol/extent';
-import { defaults as defaultControls } from 'ol/control';
-import { LineString } from 'ol/geom';
-import { calculateOptimizedRoute } from '../services/routeOptimizerService';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 import { calculateDistance } from '../services/locationService';
 import '../styles/MapView.css';
-import { Overlay } from 'ol';
 
-function MapView({ users = [], destination, userLocation, calculatedRoute, onSetDestinationFromMap, onRouteUpdate, onMapClick }) {
-  const mapRef = useRef();
-  const vectorSourceRef = useRef(new VectorSource());
-  const mapInstanceRef = useRef(null);
+// Set Mapbox access token
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_PUBLIC_TOKEN || 'pk.eyJ1IjoibHVtaW5hcnkwIiwiYSI6ImNtY3c2M2VjYTA2OWsybXEwYm12emU2MnkifQ.nC7J3ggSse2k9HYdJ1sdYg';
+
+function MapView({ 
+  users = [], 
+  destination, 
+  userLocation, 
+  calculatedRoute, 
+  destinationSuggestions = [], // New prop for suggestions
+  onSetDestinationFromMap, 
+  onSuggestionSelect, // New prop for handling suggestion selections
+  onRouteUpdate, 
+  onMapClick,
+  mapClickMode = null // New prop for map click mode
+}) {
+  const mapContainer = useRef(null);
+  const map = useRef(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
   const [route, setRoute] = useState(null);
   const [trafficData, setTrafficData] = useState(null);
   const [error, setError] = useState(null);
   const [routeDetails, setRouteDetails] = useState(null);
   const [warning, setWarning] = useState(null);
-  const [routeLayer, setRouteLayer] = useState(null);
-  const [driverMarker, setDriverMarker] = useState(null);
   const [isRecalculating, setIsRecalculating] = useState(false);
 
+  // Initialize map
   useEffect(() => {
-    // Use OpenStreetMap tiles for better reliability
-    const baseLayer = new TileLayer({
-      source: new OSM()
-    });
+    if (map.current) return; // Initialize map only once
 
-    const vectorLayer = new VectorLayer({
-      source: vectorSourceRef.current,
-    });
+    try {
+      map.current = new mapboxgl.Map({
+        container: mapContainer.current,
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [-96.7970, 32.7767], // Dallas default
+        zoom: 12
+      });
 
-    const map = new Map({
-      target: mapRef.current,
-      layers: [baseLayer, vectorLayer],
-      view: new View({
-        center: fromLonLat([-96.7970, 32.7767]), // Dallas default
-        zoom: 12,
-      }),
-      controls: defaultControls({
-        zoom: true,
-        rotate: false,
-        attribution: true
-      }).extend([])
-    });
+      // Add navigation controls
+      map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
 
-    mapInstanceRef.current = map;
-    map.on('click', function (event) {
-        const coordinate = toLonLat(event.coordinate);
-        const [lng, lat] = coordinate;
+      // Add click handler
+      map.current.on('click', (e) => {
+        const { lng, lat } = e.lngLat;
         
         if (onMapClick) {
             // Use the new onMapClick handler for different click modes
@@ -67,41 +57,146 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
         }
     });
 
+      // Wait for map to load before adding sources/layers
+      map.current.on('load', () => {
+        console.log('Mapbox map loaded successfully');
+        setMapLoaded(true);
+      });
+
+      // Handle map errors
+      map.current.on('error', (e) => {
+        console.error('Mapbox error:', e);
+        setError('Failed to load map');
+      });
+
+    } catch (error) {
+      console.error('Error initializing map:', error);
+      setError('Failed to initialize map');
+    }
+
+    // Cleanup on unmount
     return () => {
-      map.setTarget(null);
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+        setMapLoaded(false);
+      }
     };
   }, []);
 
+  // Safe function to remove sources and layers
+  const safeRemoveSource = useCallback((sourceId) => {
+    if (!map.current || !mapLoaded) return;
+    
+    try {
+      if (map.current.getSource(sourceId)) {
+        map.current.removeSource(sourceId);
+      }
+    } catch (error) {
+      console.warn(`Error removing source ${sourceId}:`, error);
+    }
+  }, [mapLoaded]);
+
+  const safeRemoveLayer = useCallback((layerId) => {
+    if (!map.current || !mapLoaded) return;
+    
+    try {
+      if (map.current.getLayer(layerId)) {
+        map.current.removeLayer(layerId);
+      }
+    } catch (error) {
+      console.warn(`Error removing layer ${layerId}:`, error);
+    }
+  }, [mapLoaded]);
+
+  const safeAddSource = useCallback((sourceId, sourceData) => {
+    if (!map.current || !mapLoaded) return false;
+    
+    try {
+      if (!map.current.getSource(sourceId)) {
+        map.current.addSource(sourceId, sourceData);
+        return true;
+      }
+    } catch (error) {
+      console.warn(`Error adding source ${sourceId}:`, error);
+    }
+    return false;
+  }, [mapLoaded]);
+
+  const safeAddLayer = useCallback((layerData) => {
+    if (!map.current || !mapLoaded) return false;
+    
+    try {
+      if (!map.current.getLayer(layerData.id)) {
+        map.current.addLayer(layerData);
+        return true;
+      }
+    } catch (error) {
+      console.warn(`Error adding layer ${layerData.id}:`, error);
+    }
+    return false;
+  }, [mapLoaded]);
+
+  // Smooth map fitting function
+  const smoothFitMapToPoints = useCallback((points, padding = 50, duration = 1500) => {
+    if (!map.current || !mapLoaded || !points || points.length === 0) return;
+
+    try {
+      const bounds = new mapboxgl.LngLatBounds();
+      
+      // Add all points to bounds
+      points.forEach(point => {
+        if (point.lng && point.lat) {
+          bounds.extend([point.lng, point.lat]);
+        }
+      });
+
+      // Fit map to bounds with smooth animation
+      map.current.fitBounds(bounds, {
+        padding: padding,
+        duration: duration,
+        easing: (t) => t * (2 - t), // Smooth easing function
+        maxZoom: 16 // Prevent zooming in too far
+      });
+    } catch (error) {
+      console.warn('Error fitting map to points:', error);
+    }
+  }, [mapLoaded]);
+
   // Add effect to handle driver location updates
   useEffect(() => {
-    if (!mapInstanceRef.current || !userLocation) return;
+    if (!mapLoaded || !userLocation) return;
 
-    const map = mapInstanceRef.current;
-    const source = vectorSourceRef.current;
-          
-    // Update or create driver marker
-    const driverFeature = new Feature({
-      geometry: new Point(fromLonLat([userLocation.lng, userLocation.lat])),
-      name: 'Driver Location',
-    });
+    // Remove existing driver marker
+    safeRemoveLayer('driver-marker');
+    safeRemoveSource('driver-location');
 
-    driverFeature.setStyle(
-      new Style({
-        image: new CircleStyle({
-          radius: 10,
-          fill: new Fill({ color: '#2196F3' }),
-          stroke: new Stroke({ color: '#ffffff', width: 2 }),
-        }),
-      })
-    );
-
-    // Remove old driver marker if it exists
-    if (driverMarker) {
-      source.removeFeature(driverMarker);
+    // Add driver marker
+    if (safeAddSource('driver-location', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [userLocation.lng, userLocation.lat]
+        },
+        properties: {
+          name: 'Driver Location'
+        }
+      }
+    })) {
+      safeAddLayer({
+        id: 'driver-marker',
+        type: 'circle',
+        source: 'driver-location',
+        paint: {
+          'circle-radius': 10,
+          'circle-color': '#2196F3',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2
+        }
+      });
     }
-
-    source.addFeature(driverFeature);
-    setDriverMarker(driverFeature);
 
     // If we have a route, check if we need to recalculate
     if (route && !isRecalculating) {
@@ -110,14 +205,14 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
         const currentLocation = { lat: userLocation.lat, lng: userLocation.lng };
         const lastLocation = driver.userLocationCoords;
         
-        // If driver has moved more than 100 meters, notify parent to recalculate
+        // If driver has moved more than 0.1 miles, notify parent to recalculate
         if (lastLocation && calculateDistance(currentLocation, lastLocation) > 0.1) {
           console.log('Driver moved significantly, route may need recalculation');
           // Route recalculation should be handled by parent component
         }
       }
     }
-  }, [userLocation, users, route]);
+  }, [userLocation, users, route, mapLoaded, safeRemoveLayer, safeRemoveSource, safeAddSource, safeAddLayer]);
 
   // Add debugging for users prop
   useEffect(() => {
@@ -137,9 +232,7 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
   // Update internal route state when calculatedRoute prop changes
   useEffect(() => {
     console.log('MapView - calculatedRoute prop changed:', calculatedRoute);
-    if (calculatedRoute) {
-      setRoute(calculatedRoute);
-    }
+    setRoute(calculatedRoute); // Set route to null when calculatedRoute is null
   }, [calculatedRoute]);
 
   // Calculate estimated pickup time based on route segments
@@ -159,740 +252,914 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
 
   // Update the route visualization
   useEffect(() => {
-    const map = mapInstanceRef.current;
-    
-    if (!map || !route) return;
+    if (!mapLoaded) return;
+
+    // Clear route layers when route is null
+    if (!route) {
+      console.log('MapView - Clearing route layers');
+      // Remove existing route layers safely
+      for (let i = 0; i < 10; i++) {
+        const layerId = `route-line-${i}`;
+        const sourceId = `route-${i}`;
+        safeRemoveLayer(layerId);
+        safeRemoveSource(sourceId);
+      }
+      
+      safeRemoveLayer('route-line');
+      safeRemoveSource('route');
+      return;
+    }
 
     try {
-      // Clear existing route layer if it exists
-      if (routeLayer) {
-        map.removeLayer(routeLayer);
-        setRouteLayer(null);
+      // Remove existing route layers safely
+      for (let i = 0; i < 10; i++) {
+        const layerId = `route-line-${i}`;
+        const sourceId = `route-${i}`;
+        safeRemoveLayer(layerId);
+        safeRemoveSource(sourceId);
       }
+      
+      safeRemoveLayer('route-line');
+      safeRemoveSource('route');
 
       // Handle multi-vehicle routes
       if (route.routes && Array.isArray(route.routes)) {
         // Multi-vehicle route
         const routeColors = ['#2196F3', '#FF5722', '#4CAF50', '#9C27B0', '#FF9800'];
-        const routeFeatures = [];
         
         route.routes.forEach((vehicleRoute, index) => {
           if (vehicleRoute.waypoints && vehicleRoute.waypoints.length > 1) {
             const coordinates = vehicleRoute.waypoints.map(waypoint => 
-              fromLonLat([waypoint.location.lng, waypoint.location.lat])
+              [waypoint.location.lng, waypoint.location.lat]
             );
             
-            const routeFeature = new Feature({
-              geometry: new LineString(coordinates),
+            const routeId = `route-${index}`;
+            
+            if (safeAddSource(routeId, {
+              type: 'geojson',
+              data: {
+                type: 'Feature',
+                geometry: {
+                  type: 'LineString',
+                  coordinates: coordinates
+                },
+                properties: {
               name: `Route ${index + 1}`,
               driver: vehicleRoute.driver?.displayName || `Driver ${index + 1}`
-            });
-
-            // Style the route with different colors for each vehicle
-            const routeStyle = new Style({
-              stroke: new Stroke({
-                color: routeColors[index % routeColors.length],
-                width: 6,
-                lineDash: [8, 4],
-              }),
-            });
-
-            routeFeature.setStyle(routeStyle);
-            routeFeatures.push(routeFeature);
+                }
+              }
+            })) {
+              safeAddLayer({
+                id: `route-line-${index}`,
+                type: 'line',
+                source: routeId,
+                layout: {
+                  'line-join': 'round',
+                  'line-cap': 'round'
+                },
+                paint: {
+                  'line-color': routeColors[index % routeColors.length],
+                  'line-width': 6,
+                  'line-dasharray': [8, 4]
+                }
+              });
+            }
           }
         });
-
-        // Create route layer for all vehicles
-        const newRouteLayer = new VectorLayer({
-          source: new VectorSource({
-            features: routeFeatures
-          })
-        });
-
-        map.addLayer(newRouteLayer);
-        setRouteLayer(newRouteLayer);
-      } else if (route.features && route.features[0]) {
-        // Single vehicle route (existing logic)
-      const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
-      const routeFeature = new Feature({
-        geometry: new LineString(coordinates),
-        name: 'Route',
-      });
-
-      // Style the route with a more prominent line
-      const routeStyle = new Style({
-        stroke: new Stroke({
-          color: '#2196F3',
-          width: 8,
-          lineDash: [5, 5],
-        }),
-      });
-
-      routeFeature.setStyle(routeStyle);
-      vectorSourceRef.current.addFeature(routeFeature);
-
-      // Create a new vector layer for the route
-      const newRouteLayer = new VectorLayer({
-        source: new VectorSource({
-          features: [routeFeature]
-        })
-      });
-
-      map.addLayer(newRouteLayer);
-      setRouteLayer(newRouteLayer);
-      } else if (route.waypoints && route.waypoints.length > 1) {
-        // Simple route format
-        const coordinates = route.waypoints.map(waypoint => 
-          fromLonLat([waypoint.lng || waypoint.location.lng, waypoint.lat || waypoint.location.lat])
-        );
+      } else if (route.features && route.features.length > 0) {
+        // Single route
+        const routeFeature = route.features[0];
         
-        const routeFeature = new Feature({
-          geometry: new LineString(coordinates),
-          name: 'Route',
-        });
-
-        const routeStyle = new Style({
-          stroke: new Stroke({
-            color: '#2196F3',
-            width: 6,
-            lineDash: [5, 5],
-          }),
-        });
-
-        routeFeature.setStyle(routeStyle);
-        vectorSourceRef.current.addFeature(routeFeature);
+        if (safeAddSource('route', {
+          type: 'geojson',
+          data: routeFeature
+        })) {
+          safeAddLayer({
+            id: 'route-line',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round'
+            },
+            paint: {
+              'line-color': '#2196F3',
+              'line-width': 6
+            }
+          });
+        }
       }
 
-      // Get all features to include in the extent calculation
-      const allFeatures = vectorSourceRef.current.getFeatures();
-      const allCoordinates = allFeatures.map(feature => {
-        const geometry = feature.getGeometry();
-        if (geometry instanceof Point) {
-          return geometry.getCoordinates();
-        } else if (geometry instanceof LineString) {
-          return geometry.getCoordinates();
-        }
-        return null;
-      }).filter(coord => coord !== null).flat();
+      // Fit map to route bounds
+      if (route.features && route.features.length > 0) {
+        const coordinates = route.features[0].geometry.coordinates;
+        const bounds = coordinates.reduce((bounds, coord) => {
+          return bounds.extend(coord);
+        }, new mapboxgl.LngLatBounds(coordinates[0], coordinates[0]));
 
-      // Only fit map if we have valid coordinates
-      if (allCoordinates.length > 0) {
-        try {
-          // Calculate the extent with additional padding
-          const extent = boundingExtent(allCoordinates);
-          
-          // Validate extent before using it
-          if (extent && extent.length === 4 && 
-              extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
-              extent[0] !== extent[2] && extent[1] !== extent[3]) {
-            
-            // Add 20% padding to the extent
-            const [minX, minY, maxX, maxY] = extent;
-            const width = maxX - minX;
-            const height = maxY - minY;
-            const paddingX = width * 0.2;
-            const paddingY = height * 0.2;
-            
-            const paddedExtent = [minX - paddingX, minY - paddingY, maxX + paddingX, maxY + paddingY];
-            
-            map.getView().fit(paddedExtent, {
-              padding: [50, 50, 50, 50],
-              maxZoom: 16,
-              duration: 1000,
-            });
-          } else {
-            console.warn('Invalid extent from allCoordinates, skipping map fit');
-          }
-        } catch (error) {
-          console.warn('Error calculating extent from allCoordinates:', error);
-        }
+        map.current.fitBounds(bounds, {
+          padding: 50,
+          duration: 1000
+        });
       }
         } catch (error) {
       console.error('Error updating route visualization:', error);
+      setError('Failed to display route on map');
         }
-  }, [route]); // Only depend on route, not routeLayer to prevent infinite loops
+  }, [route, mapLoaded, safeRemoveLayer, safeRemoveSource, safeAddSource, safeAddLayer]);
 
+  // Add destination suggestions markers with enhanced coordinate handling
   useEffect(() => {
-    const source = vectorSourceRef.current;
-    const map = mapInstanceRef.current;
-    if (!map) return;
+    if (!mapLoaded) return;
 
-    source.clear();
+    // Remove existing suggestion layers and sources
+    safeRemoveLayer('suggestions-labels-layer');
+    safeRemoveLayer('suggestions-markers-layer');
+    safeRemoveSource('suggestions-markers');
 
-    const features = [];
-
-    // Add user location if available
-    if (userLocation) {
-      const userLocationFeature = new Feature({
-        geometry: new Point(fromLonLat([userLocation.lng, userLocation.lat])),
-        name: 'Your Location',
-      });
-
-      userLocationFeature.setStyle(
-        new Style({
-          image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/4CAF50/marker.png',
-            scale: 0.8,
-            anchor: [0.5, 1],
-          }),
-        })
-      );
-
-      features.push(userLocationFeature);
-    }
-
-    // Add users with different styles based on their role
-    users.forEach((user) => {
-      // Handle nested location data from participants
-      let userLat, userLng;
+    if (destinationSuggestions && destinationSuggestions.length > 0) {
+      console.log('🗺️ Processing destination suggestions:', destinationSuggestions.length);
+      console.log('🗺️ Raw destination suggestions:', destinationSuggestions);
       
-      // For drivers, prioritize currentLocation over location for real-time updates
-      if (user.role === 'driver' && user.currentLocation) {
-        // Use real-time current location for driver
-        userLat = user.currentLocation.lat;
-        userLng = user.currentLocation.lng;
-        console.log('Using driver currentLocation for real-time update:', userLat, userLng);
-      } else if (user.location) {
-        // Location data is nested in user.location
-        userLat = user.location.lat;
-        userLng = user.location.lng;
-      } else if (user.lat && user.lng) {
-        // Location data is directly on user object
-        userLat = user.lat;
-        userLng = user.lng;
-      } else {
-        // No location data available, skip this user
-        console.log('Skipping user without location data:', user.displayName || user.name);
-        return;
-      }
-
-      const userFeature = new Feature({
-        geometry: new Point(fromLonLat([userLng, userLat])),
-        name: user.displayName || user.name,
-      });
-
-      const userStyle = new Style({
-        image: new CircleStyle({
-          radius: 8,
-          fill: new Fill({ 
-            color: user.color || (user.role === 'driver' ? '#2196F3' : '#FF5722')
-          }),
-          stroke: new Stroke({ 
-            color: '#ffffff',
-            width: 2
-          }),
-        }),
-      });
-
-      userFeature.setStyle(userStyle);
-      features.push(userFeature);
+      // Enhanced coordinate validation and extraction
+      const suggestionsWithCoords = [];
+      const suggestionsWithoutCoords = [];
+      const invalidCoordinates = [];
       
-      console.log('Added user marker for:', user.displayName || user.name, 'at:', userLat, userLng, 'role:', user.role);
-    });
-
-    // Add destination if available
-    if (destination) {
-      const destFeature = new Feature({
-        geometry: new Point(fromLonLat([destination.lng, destination.lat])),
-        name: 'Destination',
-      });
-
-      destFeature.setStyle(
-        new Style({
-          image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/fa314a/marker.png',
-            scale: 0.8,
-            anchor: [0.5, 1],
-          }),
-        })
-      );
-
-      features.push(destFeature);
-    }
-
-    // Add route if available
-    if (route && route.features && route.features[0]) {
-      try {
-        console.log('Adding route to map:', route.features[0].geometry.coordinates);
-        const coordinates = route.features[0].geometry.coordinates.map(coord => fromLonLat(coord));
-        const routeFeature = new Feature({
-          geometry: new LineString(coordinates),
-          name: 'Route',
-        });
-
-        // Style the route with a more prominent line
-        const routeStyle = new Style({
-          stroke: new Stroke({
-            color: '#2196F3',
-            width: 8,
-            lineDash: [5, 5],
-          }),
-        });
-
-        routeFeature.setStyle(routeStyle);
-        features.push(routeFeature);
-      } catch (error) {
-        console.error('Error adding route to map:', error);
-      }
-    }
-
-    source.addFeatures(features);
-
-    if (features.length > 0) {
-      try {
-        const coordinates = features.map((f) => f.getGeometry().getCoordinates()).filter(coord => coord && coord.length > 0);
-        if (coordinates.length > 0) {
-          const extent = boundingExtent(coordinates);
-          // Validate extent before fitting
-          if (extent && extent.length === 4 && 
-              extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
-              extent[0] !== extent[2] && extent[1] !== extent[3]) {
-            map.getView().fit(extent, {
-              padding: [50, 50, 50, 50],
-              maxZoom: 16,
-              duration: 500,
+      destinationSuggestions.forEach((suggestion, index) => {
+        // Use enhanced coordinate validation - support both 'lon' and 'lng' properties
+        const lat = suggestion.lat;
+        const lng = suggestion.lng || suggestion.lon; // Support both lng and lon
+        
+        if (lat && lng) {
+          const parsedLat = parseFloat(lat);
+          const parsedLng = parseFloat(lng);
+          
+          // Validate coordinates using the same logic as the service
+          if (!isNaN(parsedLat) && !isNaN(parsedLng) && 
+              parsedLat >= -90 && parsedLat <= 90 && 
+              parsedLng >= -180 && parsedLng <= 180) {
+            suggestionsWithCoords.push({
+              ...suggestion,
+              lat: parsedLat,
+              lng: parsedLng,
+              originalIndex: index
             });
           } else {
-            console.warn('Invalid extent from features, using default view');
-            map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
-            map.getView().setZoom(12);
+            invalidCoordinates.push({
+              index,
+              name: suggestion.name || suggestion.display_name,
+              lat: suggestion.lat,
+              lng: suggestion.lng || suggestion.lon,
+              parsedLat: parsedLat,
+              parsedLng: parsedLng
+            });
           }
         } else {
-          console.warn('No valid coordinates from features, using default view');
-          map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
-          map.getView().setZoom(12);
-        }
-      } catch (error) {
-        console.warn('Error calculating extent from features:', error);
-        map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
-        map.getView().setZoom(12);
-      }
-    } else {
-      map.getView().setCenter(fromLonLat([-96.7970, 32.7767]));
-      map.getView().setZoom(12);
-    }
-  }, [users, destination, userLocation, route]);
-
-  // Helper function to get color based on traffic data
-  const getTrafficColor = (trafficData) => {
-    if (!trafficData || !trafficData.features || !trafficData.features[0]) {
-      return '#3388ff'; // Default blue
-    }
-    // This is a simple example - you might want to implement more sophisticated logic
-    const trafficLevel = trafficData.features[0].properties.traffic_level;
-    switch (trafficLevel) {
-      case 'low':
-        return '#4CAF50'; // Green
-      case 'medium':
-        return '#FFC107'; // Yellow
-      case 'high':
-        return '#F44336'; // Red
-      default:
-        return '#3388ff'; // Blue
-    }
-  };
-
-  // Helper function to format duration
-  const formatDuration = (seconds) => {
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) {
-      return `${minutes} min`;
-    }
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    return `${hours}h ${remainingMinutes}min`;
-  };
-
-  // Helper function to format distance
-  const formatDistance = (meters) => {
-    const kilometers = meters / 1000;
-    return `${kilometers.toFixed(1)} km`;
-  };
-
-  // Add method to update route from parent component
-  const updateRoute = useCallback((newRoute) => {
-    if (!newRoute || !mapInstanceRef.current) return;
-    
-    setRoute(newRoute);
-    setRouteDetails({
-      totalDistance: newRoute.features[0].properties.summary.distance,
-      totalDuration: newRoute.features[0].properties.summary.duration,
-      segments: []
-    });
-  }, []);
-
-  // Expose updateRoute method to parent component
-  useEffect(() => {
-    if (mapRef.current) {
-      mapRef.current.updateRoute = updateRoute;
-    }
-  }, [updateRoute]);
-
-  // Update route when calculatedRoute prop changes
-  useEffect(() => {
-    if (calculatedRoute && mapInstanceRef.current) {
-      console.log('=== MAPVIEW ROUTE UPDATE ===');
-      console.log('Calculated route data:', calculatedRoute);
-      console.log('Route type:', calculatedRoute.type);
-      console.log('Has routes array:', !!calculatedRoute.routes);
-      console.log('Routes count:', calculatedRoute.routes?.length || 0);
-      console.log('Has features array:', !!calculatedRoute.features);
-      console.log('Features count:', calculatedRoute.features?.length || 0);
-      
-      if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
-        const firstRoute = calculatedRoute.routes[0];
-        console.log('First route details:', {
-          type: firstRoute.type,
-          waypointsCount: firstRoute.waypoints?.length || 0,
-          totalDistance: firstRoute.totalDistance,
-          totalDuration: firstRoute.totalDuration,
-          firstWaypoint: firstRoute.waypoints?.[0],
-          lastWaypoint: firstRoute.waypoints?.[firstRoute.waypoints?.length - 1]
-        });
-      }
-      
-      console.log('Route features:', calculatedRoute.features);
-      console.log('Route geometry:', calculatedRoute.features?.[0]?.geometry);
-
-    // Remove existing route layer if it exists
-    if (routeLayer) {
-      mapInstanceRef.current.removeLayer(routeLayer);
-    }
-
-    try {
-        // Handle different route data formats
-        let routeFeatures = [];
-        
-        if (calculatedRoute.features && calculatedRoute.features.length > 0) {
-          // GeoJSON format
-          routeFeatures = calculatedRoute.features;
-        } else if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
-          // VRP format - convert to GeoJSON
-          const route = calculatedRoute.routes[0];
-          console.log('Processing VRP route:', route);
-          
-          if (route.waypoints && route.waypoints.length > 0) {
-            console.log('Route waypoints:', route.waypoints.length, 'points');
-            
-            // Extract coordinates from waypoints - these should be the road-following path
-            const coordinates = route.waypoints.map(wp => {
-              // Handle different waypoint formats
-              if (wp.lng && wp.lat) {
-                return [wp.lng, wp.lat];
-              } else if (wp.location && wp.location.lng && wp.location.lat) {
-                return [wp.location.lng, wp.location.lat];
-              } else {
-                console.warn('Invalid waypoint format:', wp);
-                return null;
-              }
-            }).filter(coord => coord !== null);
-            
-            console.log('Extracted coordinates:', coordinates.length, 'points');
-            console.log('First few coordinates:', coordinates.slice(0, 3));
-            console.log('Sample coordinate values:', coordinates.slice(0, 3).map(coord => ({
-              lng: coord[0],
-              lat: coord[1],
-              lngType: typeof coord[0],
-              latType: typeof coord[1],
-              lngValid: !isNaN(coord[0]) && coord[0] >= -180 && coord[0] <= 180,
-              latValid: !isNaN(coord[1]) && coord[1] >= -90 && coord[1] <= 90
-            })));
-            
-            // Debug: Show actual waypoint data structure
-            console.log('Sample waypoints from route:', route.waypoints.slice(0, 5).map(wp => ({
-              displayName: wp.displayName,
-              type: wp.type,
-              hasLngLat: !!(wp.lng && wp.lat),
-              hasLocation: !!(wp.location && wp.location.lng && wp.location.lat),
-              lng: wp.lng || wp.location?.lng,
-              lat: wp.lat || wp.location?.lat,
-              rawWaypoint: wp
-            })));
-            
-            if (coordinates.length >= 2) {
-            routeFeatures = [{
-              type: 'Feature',
-              geometry: {
-                type: 'LineString',
-                coordinates: coordinates
-              },
-              properties: {
-                summary: {
-                  distance: route.totalDistance || calculatedRoute.totalDistance || 0,
-                  duration: route.totalDuration || calculatedRoute.totalDuration || 0
-                }
-              }
-            }];
-          }
-          }
-        } else if (calculatedRoute.type === 'FeatureCollection' && calculatedRoute.features) {
-          // Direct GeoJSON FeatureCollection
-          routeFeatures = calculatedRoute.features;
-        }
-
-        if (routeFeatures.length > 0) {
-          const routeFeature = routeFeatures[0];
-          const coordinates = routeFeature.geometry.coordinates;
-          console.log('Route coordinates:', coordinates);
-          
-          // Debug: Check if route goes near passenger
-          const passengerLocation = users.find(u => u.role === 'passenger')?.location;
-          if (passengerLocation) {
-            console.log('Passenger location:', passengerLocation);
-            
-            // Find the closest point on the route to the passenger
-            let closestDistance = Infinity;
-            let closestPoint = null;
-            
-            coordinates.forEach((coord, index) => {
-              const distance = Math.sqrt(
-                Math.pow(coord[0] - passengerLocation.lng, 2) + 
-                Math.pow(coord[1] - passengerLocation.lat, 2)
-              );
-              if (distance < closestDistance) {
-                closestDistance = distance;
-                closestPoint = { coord, index, distance };
-              }
-            });
-            
-            console.log('Closest route point to passenger:', closestPoint);
-            console.log('Distance from passenger to route:', closestDistance, 'degrees');
-            
-            // Convert to approximate meters (rough conversion)
-            const distanceInMeters = closestDistance * 111000; // 1 degree ≈ 111km
-            console.log('Distance from passenger to route:', distanceInMeters, 'meters');
-          }
-          
-          if (!coordinates || coordinates.length < 2) {
-            console.warn('Invalid route coordinates:', coordinates);
-            return;
-          }
-          
-          // Validate coordinates before creating geometry
-          const validCoordinates = coordinates.filter(coord => {
-            if (!Array.isArray(coord) || coord.length !== 2) {
-              console.warn('Invalid coordinate format:', coord);
-              return false;
-            }
-            const [lng, lat] = coord;
-            if (typeof lng !== 'number' || typeof lat !== 'number' || 
-                isNaN(lng) || isNaN(lat) ||
-                lng < -180 || lng > 180 || lat < -90 || lat > 90) {
-              console.warn('Invalid coordinate values:', coord);
-              return false;
-            }
-            return true;
+          suggestionsWithoutCoords.push({
+            index,
+            name: suggestion.name || suggestion.display_name,
+            address: suggestion.address,
+            coordinateSource: suggestion.coordinateSource || 'none',
+            extractionMethod: suggestion.extractionMethod || 0
           });
-          
-          if (validCoordinates.length < 2) {
-            console.warn('Not enough valid coordinates for route:', validCoordinates);
-            return;
+        }
+      });
+      
+      // Log detailed coordinate analysis
+      console.log('🗺️ Coordinate analysis:', {
+        total: destinationSuggestions.length,
+        withValidCoordinates: suggestionsWithCoords.length,
+        withoutCoordinates: suggestionsWithoutCoords.length,
+        invalidCoordinates: invalidCoordinates.length,
+        successRate: `${((suggestionsWithCoords.length / destinationSuggestions.length) * 100).toFixed(1)}%`
+      });
+      
+      if (suggestionsWithoutCoords.length > 0) {
+        console.log('🗺️ Suggestions missing coordinates:', suggestionsWithoutCoords);
+      }
+      
+      if (invalidCoordinates.length > 0) {
+        console.log('🗺️ Suggestions with invalid coordinates:', invalidCoordinates);
+      }
+      
+      // Create features only for suggestions with valid coordinates
+      const suggestionFeatures = suggestionsWithCoords.map((suggestion) => {
+        return {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [suggestion.lng, suggestion.lat] // Mapbox expects [lng, lat] format
+          },
+          properties: {
+            id: `suggestion-${suggestion.originalIndex}`,
+            name: suggestion.name || suggestion.display_name,
+            distance: suggestion.distance,
+            address: suggestion.address,
+            category: suggestion.category,
+            availableServices: suggestion.availableServices,
+            coordinateSource: suggestion.coordinateSource || 'api',
+            extractionMethod: suggestion.extractionMethod || 0,
+            searchMetadata: suggestion.searchMetadata,
+            index: suggestion.originalIndex
           }
+        };
+      });
+
+      console.log('🗺️ Created suggestion features:', suggestionFeatures.length);
+      
+      if (suggestionFeatures.length > 0) {
+        console.log('🗺️ Adding suggestions source to map...');
+        
+        if (safeAddSource('suggestions-markers', {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: suggestionFeatures
+          }
+        })) {
+          console.log('🗺️ Successfully added suggestions source');
           
-          console.log('Creating LineString with valid coordinates:', validCoordinates.length, 'points');
+          // Enhanced marker styling with different colors based on coordinate source
+          const getMarkerColor = (coordinateSource) => {
+            switch (coordinateSource) {
+              case 'api': return '#FF1744'; // Bright red for API coordinates
+              case 'fallback_geocoding': return '#FF9800'; // Orange for geocoded coordinates
+              case 'coordinates': return '#4CAF50'; // Green for direct coordinates
+              case 'center': return '#2196F3'; // Blue for center coordinates
+              default: return '#9C27B0'; // Purple for unknown source
+            }
+          };
           
-          // Convert geographic coordinates to map projection coordinates
-          const projectedCoordinates = validCoordinates.map(coord => fromLonLat(coord));
-          console.log('Projected coordinates sample:', projectedCoordinates.slice(0, 3));
-          
-          const routeFeatureObj = new Feature({
-            geometry: new LineString(projectedCoordinates)
-        });
-
-        // Style the route
-        const routeStyle = new Style({
-          stroke: new Stroke({
-            color: '#2196F3',
-            width: 4,
-            lineDash: [10, 5]
-          })
-        });
-
-          routeFeatureObj.setStyle(routeStyle);
-
-        // Create route layer
-        const newRouteLayer = new VectorLayer({
-          source: new VectorSource({
-              features: [routeFeatureObj]
-          }),
-          zIndex: 10
-        });
-
-        // Add route layer to map
-        mapInstanceRef.current.addLayer(newRouteLayer);
-        setRouteLayer(newRouteLayer);
-
-        // Fit map to show the entire route
-          try {
-            const geometry = routeFeatureObj.getGeometry();
-            if (geometry && geometry.getExtent) {
-              const extent = geometry.getExtent();
-              console.log('Route extent:', extent);
-              console.log('Extent validation:', {
-                hasExtent: !!extent,
-                length: extent?.length,
-                allNumbers: extent?.every(coord => typeof coord === 'number'),
-                allFinite: extent?.every(coord => !isNaN(coord) && isFinite(coord)),
-                hasWidth: extent && extent[0] !== extent[2],
-                hasHeight: extent && extent[1] !== extent[3],
-                extentValues: extent
+          // Add markers with enhanced styling
+          if (safeAddLayer({
+            id: 'suggestions-markers-layer',
+            type: 'circle',
+            source: 'suggestions-markers',
+            paint: {
+              'circle-radius': [
+                'case',
+                ['==', ['get', 'coordinateSource'], 'fallback_geocoding'], 8, // Larger for geocoded
+                ['==', ['get', 'coordinateSource'], 'api'], 6, // Standard for API
+                7 // Default size
+              ],
+              'circle-color': [
+                'case',
+                ['==', ['get', 'coordinateSource'], 'api'], '#FF1744',
+                ['==', ['get', 'coordinateSource'], 'fallback_geocoding'], '#FF9800',
+                ['==', ['get', 'coordinateSource'], 'coordinates'], '#4CAF50',
+                ['==', ['get', 'coordinateSource'], 'center'], '#2196F3',
+                '#9C27B0' // Default purple
+              ],
+              'circle-stroke-color': '#ffffff',
+              'circle-stroke-width': 2,
+              'circle-opacity': 0.9
+            }
+          })) {
+            console.log('🔴 Successfully added enhanced markers layer');
+            
+            // Add enhanced text labels with more information
+            if (safeAddLayer({
+              id: 'suggestions-labels-layer',
+              type: 'symbol',
+              source: 'suggestions-markers',
+              layout: {
+                'text-field': [
+                  'concat',
+                  ['get', 'name'],
+                  '\n',
+                  ['case',
+                    ['has', 'distance'], 
+                    ['concat', ['number-format', ['get', 'distance'], { 'min-fraction-digits': 1, 'max-fraction-digits': 1 }], ' mi'],
+                    'Distance unknown'
+                  ]
+                ],
+                'text-font': ['Open Sans Semibold', 'Arial Unicode MS Bold'],
+                'text-offset': [0, 2.2],
+                'text-anchor': 'top',
+                'text-size': 11,
+                'text-max-width': 10
+              },
+              paint: {
+                'text-color': '#333333',
+                'text-halo-color': '#ffffff',
+                'text-halo-width': 2
+              }
+            })) {
+              console.log('🗺️ Successfully added enhanced text labels layer');
+            }
+            
+            // Auto-zoom to fit suggestions and user location
+            if (suggestionFeatures.length > 0) {
+              const bounds = new mapboxgl.LngLatBounds();
+              
+              // Add user location to bounds if available
+              if (userLocation && userLocation.lat && userLocation.lng) {
+                bounds.extend([userLocation.lng, userLocation.lat]);
+              }
+              
+              // Add all suggestions to bounds
+              suggestionFeatures.forEach(feature => {
+                const coords = feature.geometry.coordinates;
+                bounds.extend(coords);
               });
               
-              // Check if extent is valid (not empty or infinite)
-              if (extent && extent.length === 4 && 
-                  extent.every(coord => typeof coord === 'number' && !isNaN(coord) && isFinite(coord)) &&
-                  extent[0] !== extent[2] && extent[1] !== extent[3]) { // Ensure extent has width and height
-                
-                // Add some padding to the extent
-                const paddingX = (extent[2] - extent[0]) * 0.1;
-                const paddingY = (extent[3] - extent[1]) * 0.1;
-                const paddedExtent = [extent[0] - paddingX, extent[1] - paddingY, extent[2] + paddingX, extent[3] + paddingY];
-                
-                mapInstanceRef.current.getView().fit(paddedExtent, {
-                  padding: [50, 50, 50, 50],
-                  duration: 1000
-                });
-                console.log('Map fitted to route extent successfully');
-              } else {
-                throw new Error('Invalid or empty extent values');
-              }
-            } else {
-              throw new Error('Geometry has no getExtent method');
+              // Fit map to bounds with padding
+              map.current.fitBounds(bounds, {
+                padding: 80,
+                duration: 1000,
+                maxZoom: 15
+              });
+              
+              console.log('🗺️ Auto-zoomed to fit suggestions and user location');
             }
-          } catch (fitError) {
-            console.warn('Could not fit map to route extent:', fitError);
-            // Fallback: fit to a reasonable area around the route
-            try {
-              const geometry = routeFeatureObj.getGeometry();
-              if (geometry && geometry.getFirstCoordinate) {
-                const center = geometry.getFirstCoordinate();
-                if (center && center.length === 2 && 
-                    center.every(coord => typeof coord === 'number' && !isNaN(coord))) {
-                  console.log('Falling back to center on first coordinate:', center);
-                  // Convert center back to geographic coordinates for setCenter
-                  const geoCenter = toLonLat(center);
-                  mapInstanceRef.current.getView().setCenter(fromLonLat(geoCenter));
-                  mapInstanceRef.current.getView().setZoom(12);
-                } else {
-                  console.warn('Invalid center coordinate, using default view');
-                  // Set a default view around the area
-                  mapInstanceRef.current.getView().setCenter(fromLonLat([-96.7970, 32.7767])); // Dallas area
-                  mapInstanceRef.current.getView().setZoom(10);
-                }
+            
+            // Enhanced click handler with better popup content
+            map.current.on('click', 'suggestions-markers-layer', (e) => {
+              console.log('📍 Suggestion marker clicked:', e.features[0]?.properties);
+              
+              if (e.features.length > 0) {
+                const feature = e.features[0];
+                const properties = feature.properties;
+                
+                console.log('📍 Creating enhanced popup for:', properties.name);
+                
+                // Remove any existing popups first
+                const existingPopups = document.querySelectorAll('.mapboxgl-popup');
+                existingPopups.forEach(popup => popup.remove());
+                
+                // Create enhanced popup content with Google Maps-like design
+                const getCategoryIcon = (category) => {
+                  const categoryMap = {
+                    'gas_station': '⛽',
+                    'restaurant': '🍽️',
+                    'coffee_shop': '☕',
+                    'pharmacy': '💊',
+                    'grocery_store': '🛒',
+                    'hospital': '🏥',
+                    'bank': '🏦',
+                    'school': '🏫',
+                    'park': '🌳',
+                    'shopping': '🛍️',
+                    'entertainment': '🎬',
+                    'hotel': '🏨',
+                    'airport': '✈️',
+                    'default': '📍'
+                  };
+                  return categoryMap[category] || categoryMap[category?.toLowerCase()] || categoryMap.default;
+                };
+
+                const getCategoryName = (category) => {
+                  const nameMap = {
+                    'gas_station': 'Gas Station',
+                    'restaurant': 'Restaurant',
+                    'coffee_shop': 'Coffee Shop',
+                    'pharmacy': 'Pharmacy',
+                    'grocery_store': 'Grocery Store',
+                    'hospital': 'Hospital',
+                    'bank': 'Bank',
+                    'school': 'School',
+                    'park': 'Park',
+                    'shopping': 'Shopping',
+                    'entertainment': 'Entertainment',
+                    'hotel': 'Hotel',
+                    'airport': 'Airport',
+                    'poi': 'Point of Interest'
+                  };
+                  return nameMap[category] || nameMap[category?.toLowerCase()] || 'Location';
+                };
+
+                const formatDistance = (distance) => {
+                  if (!distance) return 'Distance unknown';
+                  if (distance < 0.1) return `${(distance * 5280).toFixed(0)} ft away`;
+                  return `${distance.toFixed(1)} mi away`;
+                };
+
+                const getBusinessHours = (category) => {
+                  // Mock business hours based on category - in real app, this would come from API
+                  const hoursMap = {
+                    'gas_station': '24/7',
+                    'restaurant': '11:00 AM - 10:00 PM',
+                    'coffee_shop': '6:00 AM - 8:00 PM',
+                    'pharmacy': '8:00 AM - 9:00 PM',
+                    'grocery_store': '6:00 AM - 11:00 PM',
+                    'bank': '9:00 AM - 5:00 PM',
+                    'default': 'Hours vary'
+                  };
+                  return hoursMap[category] || hoursMap[category?.toLowerCase()] || hoursMap.default;
+                };
+
+                const getRatingStars = () => {
+                  // Mock rating - in real app, this would come from API
+                  const rating = 4.2 + (Math.random() * 0.6); // Random rating between 4.2-4.8
+                  const fullStars = Math.floor(rating);
+                  const hasHalfStar = rating % 1 >= 0.5;
+                  const emptyStars = 5 - fullStars - (hasHalfStar ? 1 : 0);
+                  
+                  return '★'.repeat(fullStars) + (hasHalfStar ? '☆' : '') + '☆'.repeat(emptyStars);
+                };
+
+                const categoryIcon = getCategoryIcon(properties.category);
+                const categoryName = getCategoryName(properties.category);
+                const formattedDistance = formatDistance(properties.distance);
+                const businessHours = getBusinessHours(properties.category);
+                const ratingStars = getRatingStars();
+                const rating = 4.2 + (Math.random() * 0.6);
+
+                const popupContent = `
+                  <div class="poi-popup">
+                    <!-- Header with icon and basic info -->
+                    <div class="poi-header">
+                      <div class="poi-icon">${categoryIcon}</div>
+                      <div class="poi-title-section">
+                        <h3 class="poi-name">${properties.name}</h3>
+                        <div class="poi-category">${categoryName}</div>
+                    </div>
+                    </div>
+
+                    <!-- Rating and distance -->
+                    <div class="poi-rating-section">
+                      <div class="poi-rating">
+                        <span class="stars">${ratingStars}</span>
+                        <span class="rating-text">${rating.toFixed(1)}</span>
+                    </div>
+                      <div class="poi-distance">
+                        <span class="distance-icon">📍</span>
+                        <span class="distance-text">${formattedDistance}</span>
+                      </div>
+                    </div>
+
+                    <!-- Address -->
+                    <div class="poi-address">
+                      <span class="address-icon">🏠</span>
+                      <span class="address-text">${properties.address || 'Address not available'}</span>
+                    </div>
+
+                    <!-- Business hours -->
+                    <div class="poi-hours">
+                      <span class="hours-icon">🕒</span>
+                      <span class="hours-text">${businessHours}</span>
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div class="poi-actions">
+                      <button class="poi-action-btn primary" data-index="${properties.index}">
+                        <span class="btn-icon">✅</span>
+                        <span class="btn-text">Select Destination</span>
+                      </button>
+                      <button class="poi-action-btn secondary directions-btn" data-address="${properties.address}">
+                        <span class="btn-icon">🧭</span>
+                        <span class="btn-text">Directions</span>
+                    </button>
+                    </div>
+
+                    <!-- Additional info section -->
+                    <div class="poi-additional">
+                      <div class="additional-item">
+                        <span class="item-label">Type:</span>
+                        <span class="item-value">${categoryName}</span>
+                      </div>
+                      ${properties.coordinateSource ? `
+                        <div class="additional-item">
+                          <span class="item-label">Source:</span>
+                          <span class="item-value">${properties.coordinateSource.replace('_', ' ')}</span>
+                        </div>
+                      ` : ''}
+                    </div>
+                  </div>
+                `;
+
+                // Create POI popup with Google Maps-like styling
+                const popup = new mapboxgl.Popup({
+                  closeButton: true,
+                  closeOnClick: false,
+                  maxWidth: '380px',
+                  className: 'poi-popup-container',
+                  offset: 15,
+                  anchor: 'bottom'
+                })
+                .setLngLat(e.lngLat)
+                .setHTML(popupContent)
+                .addTo(map.current);
+
+                console.log('📍 Enhanced popup created and added to map');
+
+                // Enhanced event listener setup for new POI popup
+                const setupPOIPopupListeners = () => {
+                  console.log('📍 Setting up POI popup event listeners...');
+                  
+                  const popupContainer = document.querySelector('.mapboxgl-popup-content');
+                  if (popupContainer) {
+                    console.log('📍 Found POI popup container');
+                    
+                    // Select destination button
+                    const selectBtn = popupContainer.querySelector('.poi-action-btn.primary');
+                    if (selectBtn) {
+                      console.log('📍 Found select destination button, adding click listener');
+                      
+                      // Remove any existing listeners to prevent duplicates
+                      selectBtn.removeEventListener('click', handleSelectDestinationClick);
+                      selectBtn.addEventListener('click', handleSelectDestinationClick);
+                      
+                      function handleSelectDestinationClick(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        
+                        console.log('📍 Select destination button clicked!');
+                        
+                        const suggestionIndex = parseInt(selectBtn.getAttribute('data-index'));
+                        const selectedSuggestion = destinationSuggestions[suggestionIndex];
+                        
+                        console.log('📍 POI suggestion selection:', {
+                          index: suggestionIndex,
+                          suggestion: selectedSuggestion,
+                          hasHandler: !!onSuggestionSelect
+                        });
+                        
+                        if (selectedSuggestion && onSuggestionSelect) {
+                          console.log('📍 Calling onSuggestionSelect with POI data:', selectedSuggestion);
+                          onSuggestionSelect(selectedSuggestion);
+                          popup.remove();
+                        } else {
+                          console.log('❌ Could not find suggestion or handler:', { 
+                            suggestionIndex, 
+                            selectedSuggestion, 
+                            hasHandler: !!onSuggestionSelect 
+                          });
+                        }
+                      }
+                    } else {
+                      console.log('❌ Could not find select destination button in popup');
+                    }
+                    
+                    // Directions button
+                    const directionsBtn = popupContainer.querySelector('.poi-action-btn.secondary.directions-btn');
+                    if (directionsBtn) {
+                      console.log('📍 Found directions button, adding click listener');
+                      
+                      directionsBtn.removeEventListener('click', handleDirectionsClick);
+                      directionsBtn.addEventListener('click', handleDirectionsClick);
+                      
+                      function handleDirectionsClick(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        
+                        console.log('📍 Directions button clicked!');
+                        
+                        const address = directionsBtn.getAttribute('data-address');
+                        if (address) {
+                          // Open Google Maps directions
+                          const encodedAddress = encodeURIComponent(address);
+                          const directionsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodedAddress}`;
+                          window.open(directionsUrl, '_blank');
+                        }
+                      }
+                    }
+                    
+                    // Close button handling
+                    const closeBtn = popupContainer.parentElement?.querySelector('.mapboxgl-popup-close-button');
+                    if (closeBtn) {
+                      console.log('📍 Found close button, ensuring it works');
+                      
+                      closeBtn.removeEventListener('click', handleCloseClick);
+                      closeBtn.addEventListener('click', handleCloseClick);
+                      
+                      function handleCloseClick() {
+                        console.log('ℹ️ Close button clicked');
+                        popup.remove();
+                      }
+                    }
+                  } else {
+                    console.log('❌ Could not find POI popup container');
+                  }
+                };
+
+                // Try immediate setup first
+                setupPOIPopupListeners();
+                
+                // Also try with a small delay as backup
+                setTimeout(setupPOIPopupListeners, 50);
+
+                // Feedback when popup is closed
+                popup.on('close', () => {
+                  console.log('ℹ️ POI popup closed for:', properties.name);
+                });
               }
-            } catch (centerError) {
-              console.warn('Could not set center, using default view:', centerError);
-              mapInstanceRef.current.getView().setCenter(fromLonLat([-96.7970, 32.7767])); // Dallas area
-              mapInstanceRef.current.getView().setZoom(10);
+            });
+
+            // Enhanced cursor handling
+            map.current.on('mouseenter', 'suggestions-markers-layer', () => {
+              map.current.getCanvas().style.cursor = 'pointer';
+            });
+
+            map.current.on('mouseleave', 'suggestions-markers-layer', () => {
+              map.current.getCanvas().style.cursor = '';
+            });
+          } else {
+            console.log('❌ Failed to add enhanced markers layer');
+          }
+        } else {
+          console.log('❌ Failed to add suggestions source');
+        }
+      } else {
+        console.log('🗺️ No valid suggestions to display on map');
+      }
+    }
+  }, [users?.length, destination?.lat, destination?.lng, destinationSuggestions?.length, mapLoaded, safeRemoveLayer, safeRemoveSource, safeAddSource, safeAddLayer, onSuggestionSelect]);
+
+  // Enhanced map fitting with better handling of coordinate availability
+  useEffect(() => {
+    if (!mapLoaded) return;
+
+    const pointsToFit = [];
+
+    // Add user location if available
+    if (userLocation && userLocation.lat && userLocation.lng) {
+      pointsToFit.push({ lat: userLocation.lat, lng: userLocation.lng });
+    }
+
+    // Add destination if available
+    if (destination && destination.lat && destination.lng) {
+      pointsToFit.push({ lat: destination.lat, lng: destination.lng });
+    }
+
+    // Add suggestions with valid coordinates
+    if (destinationSuggestions && destinationSuggestions.length > 0) {
+      destinationSuggestions.forEach(suggestion => {
+        if (suggestion.lat && suggestion.lon) {
+          const lat = parseFloat(suggestion.lat);
+          const lon = parseFloat(suggestion.lon);
+          
+          // Only add if coordinates are valid
+          if (!isNaN(lat) && !isNaN(lon) && 
+              lat >= -90 && lat <= 90 && 
+              lon >= -180 && lon <= 180) {
+            pointsToFit.push({ lat: lat, lng: lon });
+          }
+        }
+      });
+    }
+
+    // Enhanced map fitting logic
+    if (pointsToFit.length > 0) {
+      console.log('🗺️ Enhanced map fitting with points:', pointsToFit.length);
+      
+      // Check if the points are too far apart
+      let shouldFitMap = true;
+      const maxDistance = 500; // miles
+      
+      if (pointsToFit.length >= 2) {
+        for (let i = 0; i < pointsToFit.length; i++) {
+          for (let j = i + 1; j < pointsToFit.length; j++) {
+            const distance = calculateDistance(pointsToFit[i], pointsToFit[j]);
+            if (distance > maxDistance) {
+              console.log('🗺️ Points too far apart, not fitting map:', {
+                point1: pointsToFit[i],
+                point2: pointsToFit[j],
+                distance: distance.toFixed(2) + ' miles'
+              });
+              shouldFitMap = false;
+              break;
             }
           }
-
-        console.log('Route displayed successfully on map');
-        } else {
-          console.warn('No valid route features found:', calculatedRoute);
+          if (!shouldFitMap) break;
+        }
       }
-    } catch (error) {
-        console.error('Error updating route visualization:', error);
+
+      // Additional check for destination and user location
+      if (shouldFitMap && destination && userLocation && destinationSuggestions.length === 0) {
+        const userDestDistance = calculateDistance(userLocation, destination);
+        if (userDestDistance > 200) {
+          console.log('🗺️ Destination too far from user, not fitting map:', {
+            userLocation,
+            destination,
+            distance: userDestDistance.toFixed(2) + ' miles'
+          });
+          shouldFitMap = false;
+        }
+      }
+
+      if (shouldFitMap) {
+        // Enhanced padding and duration based on content
+        let padding = 50;
+        let duration = 1500;
+
+        if (destinationSuggestions && destinationSuggestions.length > 0) {
+          // When showing suggestions, give more space and slower animation
+          padding = 80;
+          duration = 2000;
+          
+          // Adjust based on number of suggestions
+          if (destinationSuggestions.length > 5) {
+            padding = 100;
+            duration = 2500;
+          }
+        } else if (destination && userLocation) {
+          // When showing route between two points
+          padding = 60;
+          duration = 1200;
+        }
+
+        console.log('🗺️ Fitting map with enhanced parameters:', { padding, duration, pointsCount: pointsToFit.length });
+        smoothFitMapToPoints(pointsToFit, padding, duration);
+      }
+    }
+  }, [userLocation?.lat, userLocation?.lng, destination?.lat, destination?.lng, destinationSuggestions?.length, mapLoaded, smoothFitMapToPoints]);
+
+  // Traffic color utility function
+  const getTrafficColor = (trafficData) => {
+    if (!trafficData) return '#4CAF50';
+    
+    const severity = trafficData.severity || 'low';
+    switch (severity) {
+      case 'high': return '#FF5722';
+      case 'medium': return '#FF9800';
+      case 'low': return '#4CAF50';
+      default: return '#4CAF50';
+    }
+  };
+
+  // Format duration utility
+  const formatDuration = (seconds) => {
+    if (!seconds) return 'Unknown';
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} min`;
+  };
+
+  // Format distance utility (now in miles)
+  const formatDistance = (miles) => {
+    if (!miles) return 'Unknown';
+    if (miles < 1) {
+      return `${Math.round(miles * 5280)} ft`;
+    }
+    return `${miles.toFixed(1)} mi`;
+  };
+
+  // Calculate distance between two points using Haversine formula
+  const calculateDistance = (point1, point2) => {
+    const R = 3959; // Earth's radius in miles
+    const dLat = (point2.lat - point1.lat) * Math.PI / 180;
+    const dLon = (point2.lng - point1.lng) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(point1.lat * Math.PI / 180) * Math.cos(point2.lat * Math.PI / 180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c; // Distance in miles
+  };
+
+  // Add debug log for all suggestions
+  useEffect(() => {
+    if (destinationSuggestions && destinationSuggestions.length > 0) {
+      console.log('🗺️ All destination suggestions:', destinationSuggestions.map(s => ({
+        name: s.display_name,
+        address: s.address,
+        distance: s.distance,
+        lat: s.lat,
+        lon: s.lon,
+        category: s.category
+      })));
+      
+      // Force map to refresh when suggestions change
+      if (map.current && mapLoaded) {
+        console.log('🗺️ Forcing map refresh due to new suggestions');
+        map.current.triggerRepaint();
+      }
+    } else {
+      console.log('🗺️ No destination suggestions to display');
+    }
+  }, [destinationSuggestions?.length, mapLoaded]);
+
+  // Add user markers and destination marker
+  useEffect(() => {
+    if (!mapLoaded) return;
+
+    // Remove existing user markers and destination marker safely
+    safeRemoveLayer('users-markers-layer');
+    safeRemoveLayer('destination-marker-layer');
+    safeRemoveSource('users-markers');
+    safeRemoveSource('destination-marker');
+
+    // Add user markers
+    const userFeatures = users
+      .filter(user => user.location && user.location.lat && user.location.lng)
+      .map(user => ({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [user.location.lng, user.location.lat]
+        },
+        properties: {
+          id: user.uid,
+          name: user.displayName || user.name,
+          role: user.role,
+          isCreator: user.isCreator,
+          invitationStatus: user.invitationStatus
+        }
+      }));
+
+    if (userFeatures.length > 0) {
+      if (safeAddSource('users-markers', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: userFeatures
+        }
+      })) {
+        safeAddLayer({
+          id: 'users-markers-layer',
+          type: 'circle',
+          source: 'users-markers',
+          paint: {
+            'circle-radius': 8,
+            'circle-color': [
+              'case',
+              ['==', ['get', 'role'], 'driver'], '#2196F3',
+              ['==', ['get', 'role'], 'passenger'], '#4CAF50',
+              '#FF9800'
+            ],
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 2
+          }
+        });
+      }
     }
 
-      setRoute(calculatedRoute);
+    // Add destination marker
+    if (destination && destination.lat && destination.lng) {
+      if (safeAddSource('destination-marker', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [destination.lng, destination.lat]
+          },
+          properties: {
+            name: destination.display_name || 'Destination'
+          }
+        }
+      })) {
+        safeAddLayer({
+          id: 'destination-marker-layer',
+          type: 'circle',
+          source: 'destination-marker',
+          paint: {
+            'circle-radius': 12,
+            'circle-color': '#FF5722',
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 3
+          }
+        });
+      }
     }
-  }, [calculatedRoute]); // Removed displayRouteOnMap from dependencies
+  }, [users?.length, destination?.lat, destination?.lng, mapLoaded, safeRemoveLayer, safeRemoveSource, safeAddSource, safeAddLayer]);
 
   return (
-    <div className="map-and-details-container">
-      <div className="map-section">
-        <div
-          ref={mapRef}
-          className="map-container"
-        />
-        {error && (
-          <div className="error-message">
-            <i className="fas fa-exclamation-circle"></i>
-            <p>{error}</p>
-          </div>
-        )}
-        {isRecalculating && (
-          <div className="recalculating-message">
-            <i className="fas fa-sync fa-spin"></i>
-            <p>Updating route...</p>
-          </div>
-        )}
-        {warning && (
-          <div className="warning-message">
-            <i className="fas fa-exclamation-triangle"></i>
-            <p>{warning}</p>
-          </div>
-        )}
-      </div>
-      {routeDetails && (
-        <div className="route-details-section">
-          <div className="route-info">
-            <h5>Optimized Route Details</h5>
-            <div className="route-status">
-              <span className="last-update">
-                Last updated: {new Date(route.lastUpdate).toLocaleTimeString()}
-              </span>
-              {isRecalculating && (
-                <span className="updating-badge">
-                  <i className="fas fa-sync fa-spin"></i> Updating...
-                </span>
-              )}
+    <div className="map-container">
+      <div ref={mapContainer} className="map" />
+      
+      {/* Route Information Panel */}
+      {route && routeDetails && (
+        <div className="route-info-panel">
+          <h3>Route Information</h3>
+          <div className="route-stats">
+            <div className="stat">
+              <span className="label">Distance:</span>
+              <span className="value">{formatDistance(routeDetails.distance / 1609.34)}</span>
             </div>
-            <div className="total-info">
-              <p>
-                <i className="fas fa-road"></i>
-                Total Distance: {formatDistance(routeDetails.totalDistance)}
-              </p>
-              <p>
-                <i className="fas fa-clock"></i>
-                Total Duration: {formatDuration(routeDetails.totalDuration)}
-              </p>
+            <div className="stat">
+              <span className="label">Duration:</span>
+              <span className="value">{formatDuration(routeDetails.duration)}</span>
             </div>
-            <div className="segments-info">
-              <div className="segment start">
-                <h6>
-                  <i className="fas fa-car"></i>
-                  Starting Point
-                </h6>
-                <p>Driver's Current Location</p>
-              </div>
-              {routeDetails.segments.map((segment, index) => (
-                <div key={index} className="segment pickup">
-                  <h6>
-                    <i className="fas fa-user"></i>
-                    Pickup {index + 1}: {segment.passenger.name}
-                  </h6>
-                  <p>
-                    <i className="fas fa-map-marker-alt"></i>
-                    {segment.passenger.address}
-                  </p>
-                  <p>
-                    <i className="fas fa-road"></i>
-                    Distance: {formatDistance(segment.distance)}
-                  </p>
-                  <p>
-                    <i className="fas fa-clock"></i>
-                    Estimated Pickup Time: {formatDuration(segment.duration)}
-                  </p>
-                </div>
-              ))}
-              <div className="segment destination">
-                <h6>
-                  <i className="fas fa-flag-checkered"></i>
-                  Final Destination
-                </h6>
-                <p>
-                  <i className="fas fa-road"></i>
-                  Total Distance: {formatDistance(routeDetails.totalDistance)}
-                </p>
-                <p>
-                  <i className="fas fa-clock"></i>
-                  Total Duration: {formatDuration(routeDetails.totalDuration)}
-                </p>
-              </div>
+            <div className="stat">
+              <span className="label">Waypoints:</span>
+              <span className="value">{routeDetails.waypoints?.length || 0}</span>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="error-message">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+
+      {/* Warning Display */}
+      {warning && (
+        <div className="warning-message">
+          <span>{warning}</span>
+          <button onClick={() => setWarning(null)}>×</button>
+        </div>
+      )}
+
+      {/* Loading Indicator */}
+      {isRecalculating && (
+        <div className="loading-overlay">
+          <div className="loading-spinner"></div>
+          <span>Recalculating route...</span>
         </div>
       )}
     </div>
@@ -900,3 +1167,4 @@ function MapView({ users = [], destination, userLocation, calculatedRoute, onSet
 }
 
 export default MapView;
+

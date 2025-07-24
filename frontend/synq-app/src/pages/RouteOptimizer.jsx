@@ -18,12 +18,13 @@ import {
   sendRideInvitation,
   deleteRideInvitation
 } from '../services/firebaseOperations';
+// Location service imports (keeping getDirections for route calculation)
+// import { calculateDistance as calculateDistanceInternal } from '../services/locationService';
+import { getDirections } from '../services/locationService';
 import '../styles/RouteOptimizer.css';
 import locationTrackingService, { useLocation as useLocationTracking } from '../services/locationTrackingService';
 import { toast } from 'react-hot-toast';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import { Icon } from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+
 import { FaMapMarkerAlt, FaUserPlus, FaRoute, FaTimes, FaChevronLeft, FaChevronRight, FaCheck, FaExclamationTriangle } from 'react-icons/fa';
 import { showNotification } from '../utils/notifications';
 import SimpleLoading from '../components/SimpleLoading';
@@ -58,7 +59,8 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   Autocomplete,
-  Popper
+  Popper,
+  InputAdornment
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -73,15 +75,38 @@ import {
   Route as RouteIcon,
   Settings as SettingsIcon,
   Notifications as NotificationsIcon,
-  Edit as EditIcon
+  Edit as EditIcon,
+  DirectionsCar as DirectionsCarIcon,
+  AccessTime as AccessTimeIcon,
+  Straighten as StraightenIcon,
+  Search as SearchIcon,
+  Clear as ClearIcon
 } from '@mui/icons-material';
 
-// Import the real Mapbox service
-import { MAPBOX_SERVICE, calculateDistance, getCurrentLocation } from '../services/locationService';
+// COMMENTED OUT: Simplified location service - replacing with Search Box component
+// import { MAPBOX_SERVICE, searchDestinations, getCoordsFromAddress, calculateDistance, getCurrentLocation } from '../services/locationService';
+
+// Search Box component imports
+import { SearchBox } from '@mapbox/search-js-react';
+import mapboxgl from 'mapbox-gl';
+
+// Haversine formula to calculate distance between two points
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 3959; // Earth's radius in miles
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  const distance = R * c;
+  return distance;
+};
 
 const rateLimiter = {
   lastRequestTime: 0,
-  minInterval: 1000,
+  minInterval: 2000, // Increased from 1000ms to 2000ms (2 seconds between calls)
   async wait() {
     const now = Date.now();
     const timeSinceLastRequest = now - this.lastRequestTime;
@@ -92,8 +117,633 @@ const rateLimiter = {
   }
 };
 
+// Enhanced category mapping for better relevance and coverage
+const CATEGORY_MAP = {
+  // Food & Drink
+  'restaurants': 'restaurant',
+  'restaurant': 'restaurant',
+  'food': 'food_and_drink',
+  'food and drink': 'food_and_drink',
+  'dining': 'restaurant',
+  'eat': 'restaurant',
+  'coffee shops': 'coffee',
+  'coffee shop': 'coffee',
+  'coffee': 'coffee',
+  'cafe': 'coffee',
+  'cafes': 'coffee',
+  'starbucks': 'coffee',
+  'fast food': 'fast_food',
+  'fast food restaurants': 'fast_food',
+  'mcdonalds': 'fast_food',
+  'burger king': 'fast_food',
+  'wendys': 'fast_food',
+  'taco bell': 'fast_food',
+  'tacobell': 'fast_food',
+  'subway': 'fast_food',
+  'kfc': 'fast_food',
+  'kentucky fried chicken': 'fast_food',
+  'chipotle': 'fast_food',
+  'pizza': 'pizza',
+  'pizza places': 'pizza',
+  'dominos': 'pizza',
+  'pizza hut': 'pizza',
+  'bars': 'bar',
+  'bar': 'bar',
+  'pub': 'bar',
+  'pubs': 'bar',
+  'brewery': 'bar',
+  'breweries': 'bar',
+  
+  // Transportation - Enhanced with more variations
+  'gas stations': 'gas_station',
+  'gas station': 'gas_station',
+  'gas': 'gas_station',
+  'fuel': 'gas_station',
+  'petrol': 'gas_station',
+  'exxon': 'gas_station',
+  'shell': 'gas_station',
+  'chevron': 'gas_station',
+  'mobil': 'gas_station',
+  'bp': 'gas_station',
+  'charging stations': 'charging_station',
+  'charging station': 'charging_station',
+  'ev charging': 'charging_station',
+  'electric vehicle charging': 'charging_station',
+  'tesla supercharger': 'charging_station',
+  'supercharger': 'charging_station',
+  
+  // Shopping - Enhanced with brand names
+  'grocery stores': 'grocery_store',
+  'grocery store': 'grocery_store',
+  'supermarket': 'grocery_store',
+  'supermarkets': 'grocery_store',
+  'kroger': 'grocery_store',
+  'safeway': 'grocery_store',
+  'albertsons': 'grocery_store',
+  'walmart': 'department_store',
+  'target': 'department_store',
+  'costco': 'department_store',
+  'department stores': 'department_store',
+  'department store': 'department_store',
+  'pharmacies': 'pharmacy',
+  'pharmacy': 'pharmacy',
+  'drugstore': 'pharmacy',
+  'drugstores': 'pharmacy',
+  'cvs': 'pharmacy',
+  'walgreens': 'pharmacy',
+  'rite aid': 'pharmacy',
+  
+  // Services
+  'banks': 'bank',
+  'bank': 'bank',
+  'chase': 'bank',
+  'bank of america': 'bank',
+  'wells fargo': 'bank',
+  'atm': 'atm',
+  'atms': 'atm',
+  'post offices': 'post_office',
+  'post office': 'post_office',
+  'hospitals': 'hospital',
+  'hospital': 'hospital',
+  'urgent care': 'urgent_care',
+  'urgent care centers': 'urgent_care',
+  'clinic': 'hospital',
+  'medical center': 'hospital',
+  
+  // Entertainment
+  'movie theaters': 'movie_theater',
+  'movie theater': 'movie_theater',
+  'cinema': 'movie_theater',
+  'cinemas': 'movie_theater',
+  'amc': 'movie_theater',
+  'regal': 'movie_theater',
+  'gyms': 'gym',
+  'gym': 'gym',
+  'fitness centers': 'gym',
+  'fitness center': 'gym',
+  'planet fitness': 'gym',
+  'la fitness': 'gym',
+  '24 hour fitness': 'gym',
+  
+  // Education
+  'schools': 'school',
+  'school': 'school',
+  'elementary school': 'school',
+  'high school': 'school',
+  'universities': 'university',
+  'university': 'university',
+  'colleges': 'university',
+  'college': 'university',
+  
+  // Accommodation
+  'hotels': 'hotel',
+  'hotel': 'hotel',
+  'motels': 'motel',
+  'motel': 'motel',
+  'marriott': 'hotel',
+  'hilton': 'hotel',
+  'hyatt': 'hotel',
+  
+  // General
+  'stores': 'store',
+  'shop': 'store',
+  'shops': 'store',
+  'retail': 'store',
+  'convenience store': 'store',
+  '7-eleven': 'store',
+  'circle k': 'store'
+};
+
+// Brand names that should trigger brand-specific search
+const BRAND_NAMES = [
+  // Fast Food Brands
+  'taco bell', 'tacobell', 'mcdonalds', 'mcdonald', 'burger king', 'wendys', 'wendy',
+  'subway', 'kfc', 'kentucky fried chicken', 'chipotle', 'dominos', 'domino', 'pizza hut',
+  'starbucks', 'dunkin', 'dunkin donuts', 'popeyes', 'chick fil a', 'chick-fil-a',
+  
+  // Retail Brands
+  'walmart', 'target', 'costco', 'kroger', 'safeway', 'albertsons', 'cvs', 'walgreens',
+  'rite aid', '7-eleven', 'seven eleven', 'circle k',
+  
+  // Gas Station Brands
+  'exxon', 'shell', 'chevron', 'mobil', 'bp', 'texaco', 'valero', 'speedway',
+  
+  // Bank Brands
+  'chase', 'bank of america', 'wells fargo', 'citibank', 'us bank',
+  
+  // Hotel Brands
+  'marriott', 'hilton', 'hyatt', 'holiday inn', 'best western',
+  
+  // Other Common Brands
+  'amc', 'regal', 'planet fitness', 'la fitness', '24 hour fitness'
+];
+
+// Brand to category mapping for better search results
+const BRAND_TO_CATEGORY = {
+  // Fast Food Brands -> fast_food category
+  'taco bell': 'fast_food',
+  'tacobell': 'fast_food',
+  'mcdonalds': 'fast_food',
+  'mcdonald': 'fast_food',
+  'burger king': 'fast_food',
+  'wendys': 'fast_food',
+  'wendy': 'fast_food',
+  'subway': 'fast_food',
+  'kfc': 'fast_food',
+  'kentucky fried chicken': 'fast_food',
+  'chipotle': 'fast_food',
+  'dominos': 'fast_food',
+  'domino': 'fast_food',
+  'pizza hut': 'fast_food',
+  'starbucks': 'coffee',
+  'dunkin': 'coffee',
+  'dunkin donuts': 'coffee',
+  'popeyes': 'fast_food',
+  'chick fil a': 'fast_food',
+  'chick-fil-a': 'fast_food',
+  
+  // Retail Brands -> appropriate categories
+  'walmart': 'department_store',
+  'target': 'department_store',
+  'costco': 'department_store',
+  'kroger': 'grocery_store',
+  'safeway': 'grocery_store',
+  'albertsons': 'grocery_store',
+  'cvs': 'pharmacy',
+  'walgreens': 'pharmacy',
+  'rite aid': 'pharmacy',
+  '7-eleven': 'store',
+  'seven eleven': 'store',
+  'circle k': 'store',
+  
+  // Gas Station Brands -> gas_station category
+  'exxon': 'gas_station',
+  'shell': 'gas_station',
+  'chevron': 'gas_station',
+  'mobil': 'gas_station',
+  'bp': 'gas_station',
+  'texaco': 'gas_station',
+  'valero': 'gas_station',
+  'speedway': 'gas_station',
+  
+  // Bank Brands -> bank category
+  'chase': 'bank',
+  'bank of america': 'bank',
+  'wells fargo': 'bank',
+  'citibank': 'bank',
+  'us bank': 'bank',
+  
+  // Hotel Brands -> hotel category
+  'marriott': 'hotel',
+  'hilton': 'hotel',
+  'hyatt': 'hotel',
+  'holiday inn': 'hotel',
+  'best western': 'hotel',
+  
+  // Other Common Brands -> appropriate categories
+  'amc': 'movie_theater',
+  'regal': 'movie_theater',
+  'planet fitness': 'gym',
+  'la fitness': 'gym',
+  '24 hour fitness': 'gym'
+};
+
+// Function to detect if query is a brand name
+const detectBrand = (query) => {
+  if (!query) return null;
+  
+  const cleanQuery = query.toLowerCase().trim();
+  
+  // Check for exact brand matches
+  if (BRAND_NAMES.includes(cleanQuery)) {
+    console.log(`🏪 Brand detected: "${cleanQuery}"`);
+    return cleanQuery;
+  }
+  
+  // Check for partial brand matches
+  for (const brand of BRAND_NAMES) {
+    if (cleanQuery.includes(brand) || brand.includes(cleanQuery)) {
+      console.log(`🏪 Brand detected (partial match): "${cleanQuery}" -> "${brand}"`);
+      return brand;
+    }
+  }
+  
+  console.log(`🏪 No brand detected for: "${cleanQuery}"`);
+  return null;
+};
+
+// Function to detect category from user query
+const detectCategory = (query) => {
+  if (!query) return null;
+  
+  // Clean the query - remove location modifiers
+  const cleanQuery = query.toLowerCase()
+    .replace(/\s+in\s+(my area|the area|near me|nearby|dallas|plano|richardson|frisco|mckinney|allen|garland|mesquite|irving|arlington|fort worth|fort worth|dallas fort worth|dfw)?/gi, '')
+    .replace(/\s+near\s+me/gi, '')
+    .replace(/\s+close\s+by/gi, '')
+    .replace(/\s+around\s+here/gi, '')
+    .replace(/\s+in\s+the\s+area/gi, '')
+    .trim();
+  
+  console.log(`📍 Category detection - Original: "${query}" -> Cleaned: "${cleanQuery}"`);
+  
+  // Check for exact matches first
+  if (CATEGORY_MAP[cleanQuery]) {
+    console.log(`📍 Exact category match: ${cleanQuery} -> ${CATEGORY_MAP[cleanQuery]}`);
+    return CATEGORY_MAP[cleanQuery];
+  }
+  
+  // Check for partial matches with priority scoring
+  let bestMatch = null;
+  let bestScore = 0;
+  
+  for (const [pattern, category] of Object.entries(CATEGORY_MAP)) {
+    let score = 0;
+    
+    // Exact word match gets highest score
+    if (cleanQuery === pattern) {
+      score = 100;
+    }
+    // Starts with pattern gets high score
+    else if (cleanQuery.startsWith(pattern)) {
+      score = 80;
+    }
+    // Ends with pattern gets high score
+    else if (cleanQuery.endsWith(pattern)) {
+      score = 70;
+    }
+    // Contains pattern gets medium score
+    else if (cleanQuery.includes(pattern)) {
+      score = 50;
+    }
+    // Pattern contains query gets low score
+    else if (pattern.includes(cleanQuery)) {
+      score = 30;
+    }
+    
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = category;
+    }
+  }
+  
+  if (bestMatch && bestScore >= 30) {
+    console.log(`📍 Category detected: "${cleanQuery}" -> ${bestMatch} (score: ${bestScore})`);
+    return bestMatch;
+  }
+  
+  console.log(`📍 No category detected for: "${cleanQuery}"`);
+  return null;
+};
+
+// Function to call Mapbox Search Box suggest endpoint for brand searches
+const callSuggestEndpoint = async (query, userLocation) => {
+  try {
+    console.log(`🔍 Calling suggest endpoint for: ${query}`);
+    
+    // Rate limiting - wait before making API call
+    await rateLimiter.wait();
+    
+    // Use user location or fallback to Dallas area
+    const proximityLng = userLocation?.lng || -96.9353651;
+    const proximityLat = userLocation?.lat || 32.8626712;
+    
+    // Generate session token for deduplication
+    const sessionToken = crypto.randomUUID();
+    
+    const params = new URLSearchParams({
+      q: query,
+      proximity: `${proximityLng},${proximityLat}`,
+      country: 'US',
+      language: 'en',
+      types: 'poi',
+      limit: '3', // Reduced from 5 to 3 to minimize API calls
+      session_token: sessionToken,
+      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
+    });
+    
+    const url = `https://api.mapbox.com/search/searchbox/v1/suggest?${params}`;
+    console.log(`🔍 Suggest URL: ${url}`);
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error(`Rate limited (429) - please wait a moment and try again`);
+      }
+      throw new Error(`Suggest endpoint failed: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`🔍 Suggest results for ${query}:`, data.suggestions?.length || 0);
+    
+    return data.suggestions || [];
+  } catch (error) {
+    console.error(`🔍 Suggest endpoint error for ${query}:`, error);
+    return [];
+  }
+};
+
+// Function to call Mapbox Search Box retrieve endpoint for detailed results
+const callRetrieveEndpoint = async (mapboxId) => {
+  try {
+    console.log(`🔍 Calling retrieve endpoint for mapbox_id: ${mapboxId}`);
+    
+    // Rate limiting - wait before making API call
+    await rateLimiter.wait();
+    
+    // Generate session token for deduplication
+    const sessionToken = crypto.randomUUID();
+    
+    const params = new URLSearchParams({
+      mapbox_id: mapboxId,
+      session_token: sessionToken,
+      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
+    });
+    
+    const url = `https://api.mapbox.com/search/searchbox/v1/retrieve?${params}`;
+    console.log(`🔍 Retrieve URL: ${url}`);
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error(`Rate limited (429) - please wait a moment and try again`);
+      } else if (response.status === 404) {
+        console.log(`🔍 Mapbox ID not found (404): ${mapboxId}`);
+        return null; // Don't throw error for 404, just return null
+      }
+      throw new Error(`Retrieve endpoint failed: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`🔍 Retrieve result:`, data?.features?.[0] || null);
+    
+    return data?.features?.[0] || null;
+  } catch (error) {
+    console.error(`🔍 Retrieve endpoint error for ${mapboxId}:`, error);
+    return null;
+  }
+};
+
+// Function to search for general POIs using Mapbox Places API (fallback for unrecognized terms)
+const searchGeneralPOI = async (query, userLocation, limit = 15) => {
+  try {
+    console.log(`🔍 General search for: ${query}`);
+    console.log(`📍 User location:`, userLocation);
+    
+    // Use user location or fallback to Dallas area
+    const proximityLng = userLocation?.lng || -96.9353651;
+    const proximityLat = userLocation?.lat || 32.8626712;
+    
+    // Build parameters for general POI search using Mapbox Places API
+    const params = new URLSearchParams({
+      proximity: `${proximityLng},${proximityLat}`,
+      limit: limit.toString(),
+      country: 'US',
+      language: 'en',
+      types: 'poi', // Only POIs (Points of Interest)
+      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
+    });
+    
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params}`;
+    console.log(`🔍 General search URL: ${url}`);
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`General search failed: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`🔍 General search results for ${query}:`, data.features?.length || 0);
+    
+    if (!data.features || data.features.length === 0) {
+      console.log(`🔍 No general results found for: ${query}`);
+      return [];
+    }
+    
+    // Transform results
+    const results = data.features
+      .map(feature => {
+        // Calculate distance using Haversine formula
+        const distance = calculateDistance(
+          proximityLat, 
+          proximityLng, 
+          feature.center[1], 
+          feature.center[0]
+        );
+        
+        return {
+          name: feature.text || feature.place_name,
+          display_name: feature.text || feature.place_name,
+          address: feature.place_name,
+          lat: feature.center[1],
+          lng: feature.center[0],
+          lon: feature.center[0],
+          distance: distance,
+          fullAddress: feature.place_name,
+          type: 'general_search',
+          feature_type: feature.properties?.category,
+          poi_category: feature.properties?.category,
+          brand: feature.text,
+          relevance: feature.relevance || 0
+        };
+      })
+      .filter(result => {
+        // Filter by distance (15 miles max)
+        const maxDistance = 15;
+        return result.distance === null || result.distance <= maxDistance;
+      })
+      .sort((a, b) => {
+        // Sort by distance first, then by relevance
+        if (a.distance !== null && b.distance !== null) {
+          return a.distance - b.distance;
+        }
+        return (b.relevance || 0) - (a.relevance || 0);
+      });
+    
+    console.log(`🔍 Filtered general results: ${results.length} results within 15 miles`);
+    console.log(`🔍 First few results:`, results.slice(0, 3));
+    
+    return results;
+  } catch (error) {
+    console.error(`🔍 General search error for ${query}:`, error);
+    return [];
+  }
+};
+
+// Function to call Mapbox category endpoint
+// Enhanced function to call Mapbox category endpoint with better relevance
+const searchCategoryPOI = async (category, userLocation, limit = 15) => {
+  try {
+    console.log(`📍 Searching category: ${category}`);
+    console.log(`📍 User location:`, userLocation);
+    
+    // Use user location or fallback to Dallas area
+    const proximityLng = userLocation?.lng || -96.9353651;
+    const proximityLat = userLocation?.lat || 32.8626712;
+    
+    // Build parameters with enhanced proximity
+    const params = new URLSearchParams({
+      proximity: `${proximityLng},${proximityLat}`,
+      limit: limit.toString(),
+      country: 'US',
+      language: 'en',
+      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
+    });
+    
+    // Add bounding box if map is available and zoomed in (optional enhancement)
+    // This helps constrain results to the visible map area
+    if (typeof window !== 'undefined' && window.mapRef?.current) {
+      try {
+        const map = window.mapRef.current;
+        if (map && map.getBounds) {
+          const bounds = map.getBounds();
+          const bbox = [
+            bounds.getWest(),
+            bounds.getSouth(),
+            bounds.getEast(),
+            bounds.getNorth(),
+          ].join(',');
+          params.append('bbox', bbox);
+          console.log(`📍 Added bounding box: ${bbox}`);
+        }
+      } catch (bboxError) {
+        console.log('📍 Bounding box not available, using proximity only');
+      }
+    }
+    
+    const url = `https://api.mapbox.com/search/searchbox/v1/category/${category}?${params}`;
+    console.log(`📍 Category search URL:`, url.replace(import.meta.env.VITE_MAPBOX_API_KEY, '***'));
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    console.log(`📍 Category search results for ${category}:`, data.features?.length || 0);
+    
+    // Transform features to match our expected format
+    let results = data.features?.map(feature => {
+      const lat = feature.geometry?.coordinates?.[1];
+      const lng = feature.geometry?.coordinates?.[0];
+      
+      // Calculate distance if we have user location
+      let distance = null;
+      if (userLocation && lat && lng) {
+        const R = 3959; // Earth's radius in miles
+        const dLat = (lat - userLocation.lat) * Math.PI / 180;
+        const dLng = (lng - userLocation.lng) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        distance = R * c;
+      }
+      
+      return {
+        name: feature.properties?.name || feature.place_name,
+        display_name: feature.properties?.name || feature.place_name,
+        address: feature.properties?.address || feature.place_name,
+        lat: lat,
+        lng: lng,
+        lon: lng,
+        category: category,
+        distance: distance,
+        fullAddress: feature.place_name,
+        type: 'category_search',
+        feature_type: feature.feature_type,
+        poi_category: feature.poi_category,
+        brand: feature.brand,
+        relevance: feature.properties?.relevance || 0
+      };
+    }) || [];
+    
+    // Enhanced filtering: tighter distance limits for better relevance
+    if (userLocation) {
+      // Use tighter distance limits: 15 miles for urban areas, 25 miles for rural
+      const maxDistance = 25; // Temporarily increased to debug gas station issue
+      
+      results = results
+        .filter(result => {
+          // Keep results with no distance (fallback) or within max distance
+          if (result.distance === null) return true;
+          return result.distance <= maxDistance;
+        })
+        .sort((a, b) => {
+          // Sort by distance first, then by relevance
+          if (a.distance === null && b.distance === null) {
+            return (b.relevance || 0) - (a.relevance || 0);
+          }
+          if (a.distance === null) return 1;
+          if (b.distance === null) return -1;
+          
+          // If distances are very close (within 0.5 miles), sort by relevance
+          if (Math.abs(a.distance - b.distance) < 0.5) {
+            return (b.relevance || 0) - (a.relevance || 0);
+          }
+          return a.distance - b.distance;
+        });
+    }
+    
+    console.log(`📍 Filtered category results:`, results.length, `results within ${userLocation ? '15' : 'unlimited'} miles`);
+    console.log(`📍 First few results:`, results.slice(0, 3).map(r => ({
+      name: r.name,
+      distance: r.distance?.toFixed(1) + ' mi',
+      address: r.address,
+      relevance: r.relevance
+    })));
+    
+    return results;
+    
+  } catch (error) {
+    console.error(`📍 Category search error for ${category}:`, error);
+    return [];
+  }
+};
+
 function RouteOptimizer({ mode = 'create' }) {
-  console.log('RouteOptimizer component initializing...', { mode });
+  // console.log('RouteOptimizer component initializing...', { mode }); // Commented out to reduce excessive logging
   const navigate = useNavigate();
   const location = useLocation();
   const { user, error: authError } = useUserAuth();
@@ -194,6 +844,7 @@ function RouteOptimizer({ mode = 'create' }) {
         case 'active':
           // Clear any existing errors when tracking becomes active
           setLocationError(null);
+          setHasLocationError(false);
           setLocationStatusMessage('Location tracking active');
           break;
         case 'manual':
@@ -201,11 +852,12 @@ function RouteOptimizer({ mode = 'create' }) {
           setLocationError(null);
           setLocationStatusMessage('Location tracking in manual mode - set your location manually');
           break;
-        case 'inactive':
+        case 'stopped':
           // Show "stopped" message
           setLocationStatusMessage('Location tracking stopped');
           setUserLocation(null);
           setHasValidLocation(false); // Reset valid location state
+          setHasLocationError(false);
           break;
         case 'error':
           // Set error status and reset tracking state
@@ -218,6 +870,9 @@ function RouteOptimizer({ mode = 'create' }) {
         case 'syncing':
           setLocationStatusMessage('Syncing location data...');
           break;
+        default:
+          console.log('Unknown location status:', status);
+          setLocationStatusMessage(`Location status: ${status}`);
       }
     }
   });
@@ -268,6 +923,8 @@ function RouteOptimizer({ mode = 'create' }) {
   const [calculatedRoute, setCalculatedRoute] = useState(null);
   const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
   const [routeDetails, setRouteDetails] = useState(null);
+  const [showRoutePreview, setShowRoutePreview] = useState(false);
+  const [routePreviewData, setRoutePreviewData] = useState(null);
   
   // Add missing state variables
   const [mapClickMode, setMapClickMode] = useState(null);
@@ -275,18 +932,22 @@ function RouteOptimizer({ mode = 'create' }) {
   // Add a counter for unique notification IDs
   const notificationIdCounter = useRef(0);
 
-  // Destination search state
+  // Destination search state (keeping for compatibility with existing code)
   const [destinationSuggestions, setDestinationSuggestions] = useState([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isProcessingDestination, setIsProcessingDestination] = useState(false);
   const searchTimeoutRef = useRef(null);
   
-  // Get user location from location tracking service
-  const { location: trackedLocation, isTracking: isLocationTracking } = useLocationTracking();
-
-
-
-
+  // Search Box component state variables
+  const [searchBoxValue, setSearchBoxValue] = useState('');
+  const [isSearchBoxLoading, setIsSearchBoxLoading] = useState(false);
+  const [categorySearchResults, setCategorySearchResults] = useState([]);
+  const [isCategorySearching, setIsCategorySearching] = useState(false);
+  const [searchBoxSuggestions, setSearchBoxSuggestions] = useState([]);
+  const [hybridResults, setHybridResults] = useState([]);
+  
+  // Remove duplicate hook usage - we already have the location tracking hook above
 
   // Add notification function - moved to top to avoid initialization error
   const showLocalNotification = (message, type = 'success') => {
@@ -299,113 +960,8 @@ function RouteOptimizer({ mode = 'create' }) {
     }, 3000);
   };
 
-  // Simplified destination search
-  const searchDestinationsLocal = async (query) => {
-    console.log('🔍 [ROUTE_OPTIMIZER] searchDestinationsLocal called with:', query);
-    
-    if (!query || query.length < 2) {
-      console.log('🔍 [ROUTE_OPTIMIZER] Query too short, clearing suggestions');
-      setDestinationSuggestions([]);
-      setIsDropdownOpen(false);
-      return;
-    }
-
-    // Clear previous timeout
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-
-    // Debounce search
-    searchTimeoutRef.current = setTimeout(async () => {
-      console.log('🔍 [ROUTE_OPTIMIZER] Starting search for:', query);
-      setIsLoadingSuggestions(true);
-      setIsDropdownOpen(true);
-
-      try {
-        const searchOptions = {
-          limit: 8,
-          maxDistance: 50 // 50 mile radius
-        };
-        
-        // Add user location if available
-        if (userLocation) {
-          searchOptions.userLocation = userLocation;
-          console.log('🔍 [ROUTE_OPTIMIZER] Searching with user location:', userLocation);
-          console.log('🔍 [ROUTE_OPTIMIZER] User location type:', typeof userLocation);
-          console.log('🔍 [ROUTE_OPTIMIZER] User location has lat/lng:', userLocation.lat && userLocation.lng);
-        } else {
-          console.log('🔍 [ROUTE_OPTIMIZER] No user location available');
-        }
-
-        console.log('🔍 [ROUTE_OPTIMIZER] Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
-        
-        // Test if MAPBOX_SERVICE is available
-        if (!MAPBOX_SERVICE) {
-          console.error('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE is not available');
-          throw new Error('Mapbox service not available');
-        }
-        
-        if (!MAPBOX_SERVICE.searchDestinations) {
-          console.error('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations is not available');
-          throw new Error('Mapbox search function not available');
-        }
-        
-        console.log('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations type:', typeof MAPBOX_SERVICE.searchDestinations);
-        console.log('🔍 [ROUTE_OPTIMIZER] MAPBOX_SERVICE.searchDestinations:', MAPBOX_SERVICE.searchDestinations);
-        
-        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
-        console.log('🔍 [ROUTE_OPTIMIZER] Search results:', results);
-        
-        if (results && results.length > 0) {
-          // Debug: Log each result's distance
-          results.forEach((result, index) => {
-            console.log(`🔍 [ROUTE_OPTIMIZER] Result ${index}:`, {
-              display_name: result.display_name,
-              distance: result.distance,
-              isError: result.isError,
-              type: result.type,
-              lat: result.lat,
-              lon: result.lon
-            });
-          });
-          
-          // Filter out error messages and distant results
-          const validResults = results.filter(result => {
-            if (result.isError) {
-              console.log(`🔍 [ROUTE_OPTIMIZER] Filtering out error result:`, result.display_name);
-              return false;
-            }
-            
-            // If we have user location and distance, filter by distance
-            if (userLocation && result.distance !== undefined) {
-              const isValid = result.distance <= 50; // Only show results within 50 miles
-              if (!isValid) {
-                console.log(`🔍 [ROUTE_OPTIMIZER] Filtering out distant result: ${result.display_name} (${result.distance} miles)`);
-              }
-              return isValid;
-            }
-            
-            // If no user location or no distance info, include all valid results
-            return true;
-          });
-          
-          console.log('🔍 [ROUTE_OPTIMIZER] Valid results:', validResults);
-          setDestinationSuggestions(validResults);
-          setIsDropdownOpen(true);
-        } else {
-          console.log('🔍 [ROUTE_OPTIMIZER] No results found');
-          setDestinationSuggestions([]);
-          setIsDropdownOpen(false);
-        }
-      } catch (error) {
-        console.error('🔍 [ROUTE_OPTIMIZER] Search failed:', error);
-        setDestinationSuggestions([]);
-        setIsDropdownOpen(false);
-      } finally {
-        setIsLoadingSuggestions(false);
-      }
-    }, 300); // 300ms debounce
-  };
+  // Simplified destination search - REMOVED (using handleDestinationInputChange instead)
+  // const searchDestinationsLocal = async (query) => {
 
   // Define calculateAndDisplayRoute function before it's used in useEffect
   const calculateAndDisplayRoute = useCallback(async (startLocation, endLocation) => {
@@ -467,41 +1023,134 @@ function RouteOptimizer({ mode = 'create' }) {
         lng: wp.lng
       })));
       
-      // Route optimization temporarily disabled - Mapbox integration pending
-      console.log('Route optimization temporarily disabled - Mapbox integration pending');
-      const route = null;
+      // Get realistic driving directions from Mapbox
+      console.log('Calculating realistic route preview from user location to destination');
       
-      console.log('=== ROUTE CALCULATION COMPLETED ===');
-      console.log('Route result:', {
-        routeType: route?.type,
-        hasRoutes: !!route?.routes,
-        routesCount: route?.routes?.length || 0,
-        totalDistance: route?.totalDistance,
-        totalDuration: route?.totalDuration,
-        firstRoute: route?.routes?.[0] ? {
-          type: route.routes[0].type,
-          waypointsCount: route.routes[0].waypoints?.length || 0,
-          totalDistance: route.routes[0].totalDistance,
-          totalDuration: route.routes[0].totalDuration
-        } : null
-      });
-
-      setCalculatedRoute(route);
-      
-      // Update route details for display
-      if (route && route.properties && route.properties.summary) {
-        const summary = route.properties.summary;
-        setRouteDetails({
-          distance: summary.distance,
-          duration: summary.duration,
-          waypoints: summary.waypoints
+      try {
+        const directions = await getDirections(startLocation, endLocation);
+        
+        const route = {
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: directions.geometry,
+            properties: {
+              name: 'Route Preview',
+              summary: {
+                distance: directions.distance * 1609.34, // Convert miles to meters
+                duration: directions.duration * 60, // Convert minutes to seconds
+                waypoints: waypoints
+              }
+            }
+          }],
+          totalDistance: directions.distance * 1609.34,
+          totalDuration: directions.duration * 60
+        };
+        
+        console.log('=== ROUTE CALCULATION COMPLETED ===');
+        console.log('Route result:', {
+          routeType: route?.type,
+          hasFeatures: !!route?.features,
+          featuresCount: route?.features?.length || 0,
+          totalDistance: route?.totalDistance,
+          totalDuration: route?.totalDuration,
+          firstFeature: route?.features?.[0] ? {
+            type: route.features[0].type,
+            geometryType: route.features[0].geometry?.type,
+            coordinatesCount: route.features[0].geometry?.coordinates?.length || 0
+          } : null
         });
 
-        // Show success notification with route details
-        const distanceMi = (summary.distance / 1609.34).toFixed(1);
-        const durationMin = Math.round(summary.duration / 60);
-        showLocalNotification(`Route optimized: ${distanceMi}mi, ${durationMin}min`, 'success');
+        setCalculatedRoute(route);
+        
+        // Update route details for display
+        if (route && route.features && route.features.length > 0) {
+          const feature = route.features[0];
+          const summary = feature.properties?.summary || {};
+          
+          setRouteDetails({
+            distance: summary.distance || route.totalDistance,
+            duration: summary.duration || route.totalDuration,
+            waypoints: summary.waypoints
+          });
+
+                  // Show route preview modal
+        const distanceInMiles = ((summary.distance || route.totalDistance) / 1609.34).toFixed(1);
+        const durationInMinutes = Math.round((summary.duration || route.totalDuration) / 60);
+        
+        setRoutePreviewData({
+          distance: distanceInMiles,
+          duration: durationInMinutes,
+          destination: endLocation.name || 'Selected Destination'
+        });
+        setShowRoutePreview(true);
+        }
+        
+        return route;
+      } catch (error) {
+        console.error('Error getting directions, falling back to simple route:', error);
+        
+        // Fallback to simple straight-line route
+        const route = {
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            geometry: {
+              type: 'LineString',
+              coordinates: [
+                [startLocation.lng, startLocation.lat],
+                [endLocation.lng, endLocation.lat]
+              ]
+            },
+            properties: {
+              name: 'Route Preview (Fallback)',
+              summary: {
+                distance: calculateDistanceInternal(startLocation, endLocation) * 1609.34, // Convert miles to meters
+                duration: calculateDistanceInternal(startLocation, endLocation) * 60 * 2, // Rough estimate: 2 minutes per mile
+                waypoints: waypoints
+              }
+            }
+          }],
+          totalDistance: calculateDistanceInternal(startLocation, endLocation) * 1609.34,
+          totalDuration: calculateDistanceInternal(startLocation, endLocation) * 60 * 2
+        };
+        
+        console.log('=== FALLBACK ROUTE CALCULATION COMPLETED ===');
+        console.log('Fallback route result:', {
+          routeType: route?.type,
+          hasFeatures: !!route?.features,
+          featuresCount: route?.features?.length || 0
+        });
+
+        setCalculatedRoute(route);
+        
+        // Update route details for display
+        if (route && route.features && route.features.length > 0) {
+          const feature = route.features[0];
+          const summary = feature.properties?.summary || {};
+          
+          setRouteDetails({
+            distance: summary.distance || route.totalDistance,
+            duration: summary.duration || route.totalDuration,
+            waypoints: summary.waypoints
+          });
+
+          // Show route preview modal
+          const distanceInMiles = ((summary.distance || route.totalDistance) / 1609.34).toFixed(1);
+          const durationInMinutes = Math.round((summary.duration || route.totalDuration) / 60);
+          
+          setRoutePreviewData({
+            distance: distanceInMiles,
+            duration: durationInMinutes,
+            destination: endLocation.name || 'Selected Destination'
+          });
+          setShowRoutePreview(true);
+        }
+        
+        return route;
       }
+      
+
 
     } catch (error) {
       console.error('Error calculating route:', error);
@@ -635,6 +1284,14 @@ function RouteOptimizer({ mode = 'create' }) {
     };
   }, []);
 
+  // Auto-hide route preview modal when no route is active
+  useEffect(() => {
+    if (!calculatedRoute && showRoutePreview) {
+      setShowRoutePreview(false);
+      setRoutePreviewData(null);
+    }
+  }, [calculatedRoute, showRoutePreview]);
+
   // Clean up the timeout on unmount
   useEffect(() => {
     return () => {
@@ -653,59 +1310,667 @@ function RouteOptimizer({ mode = 'create' }) {
     };
   }, []);
 
-  // Update userLocation when trackedLocation changes
+  // Debug effect to monitor dropdown state
   useEffect(() => {
-    if (trackedLocation && trackedLocation.lat && trackedLocation.lng) {
-      console.log('📍 Location tracking service provided location:', trackedLocation);
-      setUserLocation(trackedLocation);
-      setIsTracking(isLocationTracking);
+    console.log('🔍 [DEBUG] Dropdown state changed:', {
+      isDropdownOpen,
+      suggestionsCount: destinationSuggestions.length,
+      isLoadingSuggestions,
+      hasSuggestions: destinationSuggestions.length > 0
+    });
+    
+    // Check for duplicate names or keys
+    if (destinationSuggestions.length > 0) {
+      const names = destinationSuggestions.map(s => s.name || s.display_name);
+      const uniqueNames = [...new Set(names)];
+      console.log('🔍 Name analysis:', {
+        total: names.length,
+        unique: uniqueNames.length,
+        duplicates: names.length - uniqueNames.length
+      });
+      
+      if (names.length !== uniqueNames.length) {
+        console.warn('🔍 Duplicate names found:', names.filter((name, index) => names.indexOf(name) !== index));
+      }
+      
+      // Log all suggestions for debugging
+      console.log('🔍 All suggestions:', destinationSuggestions.map((s, i) => ({
+        index: i,
+        name: s.name || s.display_name,
+        address: s.address,
+        lat: s.lat,
+        lng: s.lng,
+        distance: s.distance
+      })));
     }
-  }, [trackedLocation, isLocationTracking]);
+  }, [isDropdownOpen, destinationSuggestions.length, isLoadingSuggestions]);
+
+  // Update userLocation when location changes
+  useEffect(() => {
+    if (location && location.latitude && location.longitude) {
+      console.log('📍 Location tracking service provided location:', location);
+      setUserLocation({ lat: location.latitude, lng: location.longitude });
+    }
+  }, [location]);
   
-  // Auto-start location tracking when user is driver
+  // Auto-start location tracking when user is driver (optional - don't block app if it fails)
   useEffect(() => {
     if (user && creatorRole === 'driver' && !isTracking) {
       console.log('🚗 Auto-starting location tracking for driver');
-      locationTrackingService.startTracking(user?.uid, { preset: 'office' });
+      startTracking(user?.uid).catch(error => {
+        console.warn('⚠️ Location tracking failed to start, but app will continue:', error.message);
+        // Don't block the app if location tracking fails
+      });
     }
-  }, [user, creatorRole, isTracking]);
+  }, [user, creatorRole, isTracking, startTracking]);
 
+  // Update status message based on actual tracking state
+  useEffect(() => {
+    if (isTracking && location) {
+      const accuracy = location.accuracy ? Math.round(location.accuracy) : 'unknown';
+      setLocationStatusMessage(`Location tracking active (accuracy: ${accuracy}m)`);
+    } else if (isTracking && !location) {
+      setLocationStatusMessage('Location tracking active - acquiring position...');
+    } else if (!isTracking && location) {
+      setLocationStatusMessage('Location available (tracking stopped)');
+    } else if (!isTracking && !location) {
+      setLocationStatusMessage('Location tracking stopped');
+    }
+  }, [isTracking, location]);
 
+  // Test function to debug search issues
+  const testSearchAndMarkers = async () => {
+    console.log('🧪 ===== TESTING SEARCH AND MARKERS =====');
+    console.log('🧪 Current user location:', userLocation);
+    console.log('🧪 Current destination suggestions:', destinationSuggestions);
+    
+    try {
+      // Test search
+      const testResults = await MAPBOX_SERVICE.searchDestinations('food', {
+        limit: 5,
+        maxDistance: 50,
+        userLocation: userLocation
+      });
+      
+      console.log('🧪 Test search results:', testResults);
+      console.log('🧪 Results with coordinates:', testResults.filter(r => r.lat && r.lon).length);
+      
+      // Set test suggestions
+      setDestinationSuggestions(testResults);
+      
+      console.log('🧪 Test suggestions set, check map for markers');
+    } catch (error) {
+      console.error('🧪 Test search failed:', error);
+    }
+  };
 
+  // Debug function to check current state
+  const debugCurrentState = () => {
+    console.log('🔍 ===== DEBUG CURRENT STATE =====');
+    console.log('🔍 destinationSuggestions:', destinationSuggestions);
+    console.log('🔍 destinationSuggestions.length:', destinationSuggestions.length);
+    console.log('🔍 isLoadingSuggestions:', isLoadingSuggestions);
+    console.log('🔍 isDropdownOpen:', isDropdownOpen);
+    console.log('🔍 userLocation:', userLocation);
+    console.log('🔍 Sample suggestion:', destinationSuggestions[0]);
+    
+    if (destinationSuggestions.length > 0) {
+      console.log('🔍 All suggestions with coordinates:');
+      destinationSuggestions.forEach((suggestion, index) => {
+        console.log(`  ${index}:`, {
+          name: suggestion.display_name || suggestion.name,
+          lat: suggestion.lat,
+          lon: suggestion.lon,
+          hasCoords: !!(suggestion.lat && suggestion.lon),
+          distance: suggestion.distance
+        });
+      });
+    }
+  };
 
+  // Add test button to global scope for debugging
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.testSearchAndMarkers = testSearchAndMarkers;
+      window.debugCurrentState = debugCurrentState;
+      window.testCategorySearch = async (query = 'gas station') => {
+        console.log(`🧪 Testing enhanced category search for: "${query}"`);
+        const category = detectCategory(query);
+        console.log(`🧪 Detected category: ${category}`);
+        
+        if (category) {
+          const results = await searchCategoryPOI(category, userLocation, 15);
+          console.log(`🧪 Category search results:`, results);
+          
+          // Test hybrid results creation
+          if (results.length > 0 && searchBoxSuggestions.length > 0) {
+            const hybrid = createHybridResults(results, searchBoxSuggestions);
+            console.log(`🧪 Hybrid results:`, hybrid);
+          }
+          
+          return results;
+        } else {
+          console.log(`🧪 No category detected for: "${query}"`);
+          return [];
+        }
+      };
+      
+      window.testCategoryMapping = (query) => {
+        console.log(`🧪 Testing category mapping for: "${query}"`);
+        const category = detectCategory(query);
+        console.log(`🧪 Result: ${category}`);
+        return category;
+      };
+      
+      // Comprehensive test for gas station vs coffee shop issue
+      window.debugGasStationIssue = async () => {
+        console.log('🔍 ===== DEBUGGING GAS STATION vs COFFEE SHOP ISSUE =====');
+        
+        if (!userLocation) {
+          console.log('❌ No user location available');
+          return;
+        }
+        
+        const testQueries = [
+          'gas station',
+          'gas',
+          'gas station near me',
+          'coffee shop',
+          'coffee shop near',
+          'coffee'
+        ];
+        
+        for (const query of testQueries) {
+          console.log(`\n🔍 Testing: "${query}"`);
+          
+          // Test 1: Category detection
+          const category = detectCategory(query);
+          console.log(`  Category detected: ${category}`);
+          
+          if (category) {
+            // Test 2: Raw API call
+            try {
+              const results = await searchCategoryPOI(category, userLocation, 20);
+              console.log(`  Raw API results: ${results.length}`);
+              
+              // Test 3: Distance analysis
+              const nearby = results.filter(r => r.distance && r.distance <= 10);
+              const far = results.filter(r => r.distance && r.distance > 10);
+              const noDistance = results.filter(r => !r.distance);
+              
+              console.log(`  Distance breakdown:`);
+              console.log(`    Nearby (≤10mi): ${nearby.length}`);
+              console.log(`    Far (>10mi): ${far.length}`);
+              console.log(`    No distance: ${noDistance.length}`);
+              
+              if (nearby.length > 0) {
+                console.log(`  Nearby examples:`);
+                nearby.slice(0, 3).forEach((r, i) => {
+                  console.log(`    ${i+1}. ${r.name} (${r.distance?.toFixed(1)} mi) - ${r.address}`);
+                });
+              }
+              
+              if (far.length > 0) {
+                console.log(`  Far examples:`);
+                far.slice(0, 2).forEach((r, i) => {
+                  console.log(`    ${i+1}. ${r.name} (${r.distance?.toFixed(1)} mi) - ${r.address}`);
+                });
+              }
+              
+            } catch (error) {
+              console.error(`  API call failed:`, error);
+            }
+          }
+        }
+        
+        console.log('\n🔍 ===== END DEBUGGING =====');
+      };
+      
+      // Test the full searchCategoryPOI function
+      window.testFullCategorySearch = async (query = 'gas station') => {
+        console.log(`🔍 Testing full category search for: "${query}"`);
+        
+        if (!userLocation) {
+          console.log('❌ No user location available');
+          return;
+        }
+        
+        const category = detectCategory(query);
+        console.log(`🔍 Detected category: ${category}`);
+        
+        if (category) {
+          try {
+            const results = await searchCategoryPOI(category, userLocation, 20);
+            console.log(`🔍 Full search results: ${results.length}`);
+            
+            if (results.length > 0) {
+              console.log(`🔍 First 5 results:`);
+              results.slice(0, 5).forEach((result, i) => {
+                console.log(`  ${i+1}. ${result.name}`);
+                console.log(`     Address: ${result.address || 'No address'}`);
+                console.log(`     Distance: ${result.distance?.toFixed(2)} mi`);
+                console.log(`     Coordinates: ${result.lat}, ${result.lng}`);
+                console.log(`     Type: ${result.type}`);
+                console.log('     ---');
+              });
+            }
+            
+            return results;
+          } catch (error) {
+            console.error(`🔍 Full search failed:`, error);
+            return [];
+          }
+        } else {
+          console.log(`🔍 No category detected for: "${query}"`);
+          return [];
+        }
+      };
+      
+      // Test Search Box override issue
+      window.testSearchBoxOverride = async () => {
+        console.log('🔍 ===== TESTING SEARCH BOX OVERRIDE ISSUE =====');
+        
+        if (!userLocation) {
+          console.log('❌ No user location available');
+          return;
+        }
+        
+        console.log('🔍 Step 1: Test category search directly');
+        const categoryResults = await window.testFullCategorySearch('gas station');
+        
+        console.log('\n🔍 Step 2: Simulate Search Box suggestions (distant results)');
+        const mockSearchBoxSuggestions = [
+          {
+            name: 'Conoco Gas Station',
+            address: '1610 Utica Avenue, Brooklyn, New York',
+            distance: 2188, // Very far
+            lat: 40.6189,
+            lng: -73.9235
+          },
+          {
+            name: 'Costco Gas Station', 
+            address: '4849 NE 138th Ave, Portland, Oregon',
+            distance: 2594, // Very far
+            lat: 45.5152,
+            lng: -122.6784
+          }
+        ];
+        
+        console.log('🔍 Mock Search Box suggestions:', mockSearchBoxSuggestions);
+        
+        console.log('\n🔍 Step 3: Test if category results take priority');
+        if (categoryResults.length > 0) {
+          console.log('✅ Category results should take priority over Search Box suggestions');
+          console.log('✅ You should see Kroger Fuel Center, Exxon, RaceTrac (nearby)');
+          console.log('❌ NOT Conoco Brooklyn, Costco Portland (distant)');
+        }
+        
+        console.log('\n🔍 ===== END TEST =====');
+      };
+      
+      // Test raw API response without filtering
+      window.testRawCategoryAPI = async (category = 'gas_station') => {
+        console.log(`🔍 Testing raw category API for: ${category}`);
+        
+        if (!userLocation) {
+          console.log('❌ No user location available');
+          return;
+        }
+        
+        try {
+          const proximityLng = userLocation.lng;
+          const proximityLat = userLocation.lat;
+          
+          const params = new URLSearchParams({
+            proximity: `${proximityLng},${proximityLat}`,
+            limit: '20',
+            country: 'US',
+            language: 'en',
+            access_token: import.meta.env.VITE_MAPBOX_API_KEY,
+          });
+          
+          const url = `https://api.mapbox.com/search/searchbox/v1/category/${category}?${params}`;
+          console.log(`🔍 API URL:`, url.replace(import.meta.env.VITE_MAPBOX_API_KEY, '***'));
+          
+          const response = await fetch(url);
+          const data = await response.json();
+          
+          console.log(`🔍 Raw API response:`, data);
+          console.log(`🔍 Features count:`, data.features?.length || 0);
+          
+          if (data.features && data.features.length > 0) {
+            console.log(`🔍 First 3 features:`);
+            data.features.slice(0, 3).forEach((feature, i) => {
+              console.log(`  ${i+1}. Name: ${feature.properties?.name || 'Unknown'}`);
+              console.log(`     Address: ${feature.place_name || 'No address'}`);
+              console.log(`     Coordinates: ${feature.geometry?.coordinates?.join(', ') || 'No coords'}`);
+              console.log(`     Type: ${feature.feature_type || 'Unknown'}`);
+              console.log(`     Category: ${feature.poi_category || 'Unknown'}`);
+            });
+            
+            // Test distance calculation
+            console.log(`🔍 Distance calculation test:`);
+            data.features.slice(0, 3).forEach((feature, i) => {
+              const lat = feature.geometry?.coordinates?.[1];
+              const lng = feature.geometry?.coordinates?.[0];
+              
+              if (lat && lng) {
+                const R = 3959; // Earth's radius in miles
+                const dLat = (lat - userLocation.lat) * Math.PI / 180;
+                const dLng = (lng - userLocation.lng) * Math.PI / 180;
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                          Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
+                          Math.sin(dLng/2) * Math.sin(dLng/2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                const distance = R * c;
+                
+                console.log(`  ${i+1}. ${feature.properties?.name}: ${distance.toFixed(2)} miles`);
+              }
+            });
+          }
+          
+        } catch (error) {
+          console.error(`🔍 Raw API test failed:`, error);
+        }
+      };
+      console.log('🧪 Test functions available:');
+      console.log('  - window.testSearchAndMarkers()');
+      console.log('  - window.debugCurrentState()');
+      console.log('  - window.testCategorySearch("gas stations")');
+      console.log('  - window.debugGasStationIssue()');
+      console.log('  - window.testRawCategoryAPI("gas_station")');
+      console.log('  - window.testRawCategoryAPI("coffee")');
+      console.log('  - window.testFullCategorySearch("gas station")');
+      console.log('  - window.testSearchBoxOverride()');
+    }
+  }, [userLocation, destinationSuggestions]);
 
-  // Show loading state
-  if (isLoading) {
-    return (
-      <SimpleLoading 
-        message="Loading route optimizer..."
-        size="large"
-      />
-    );
-  }
+  // Debug function to test specific searches
+  const testSpecificSearch = async (query) => {
+    console.log('=== TESTING SPECIFIC SEARCH ===');
+    console.log('Query:', query);
+    console.log('User Location:', userLocation);
+    
+    try {
+      const results = await MAPBOX_SERVICE.searchDestinations(query, {
+        userLocation: userLocation,
+        limit: 5
+      });
+      
+      console.log('Search results:', results);
+      
+      if (results && results.length > 0) {
+        const realResults = results.filter(result => !result.isError);
+        console.log('Real results:', realResults);
+        
+        if (realResults.length > 0) {
+          const bestResult = realResults[0];
+          console.log('Best result:', {
+            display_name: bestResult.display_name,
+            lat: bestResult.lat,
+            lon: bestResult.lon,
+            distance: bestResult.distance,
+            quality: bestResult.quality,
+            type: bestResult.type
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Test failed:', error);
+    }
+  };
 
-  // Debug panel for geolocation issues - temporarily removed to fix hooks issue
-  // const DebugPanel = () => {
-  //   // ... component code removed
-  // };
+  // Add a simple test function to manually set suggestions
+  const testSetSuggestions = () => {
+    console.log('🧪 Manually setting test suggestions...');
+    const testSuggestions = [
+      {
+        display_name: 'Test Walmart',
+        name: 'Walmart',
+        lat: 33.1087872,
+        lon: -96.7606272,
+        distance: 2.5,
+        address: '123 Test St, Plano, TX'
+      },
+      {
+        display_name: 'Test Target',
+        name: 'Target',
+        lat: 33.1100000,
+        lon: -96.7650000,
+        distance: 3.1,
+        address: '456 Test Ave, Plano, TX'
+      }
+    ];
+    
+    console.log('🧪 Setting test suggestions:', testSuggestions);
+    setDestinationSuggestions(testSuggestions);
+    console.log('🧪 Test suggestions set, check map for red markers');
+  };
 
-  // Show error state
-  if (error) {
-    return (
-      <div className="route-optimizer-error">
-        <div className="alert alert-danger" role="alert">
-          <h4 className="alert-heading">Error</h4>
-          <p>{error.message}</p>
-          <button 
-            className="btn btn-outline-danger mt-2"
-            onClick={() => window.location.reload()}
-          >
-            Reload Page
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Add test function to global scope
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.testSetSuggestions = testSetSuggestions;
+      window.setDefaultLocation = () => {
+        console.log('🧪 Setting default test location...');
+        const defaultLocation = {
+          lat: 33.1087872,
+          lng: -96.7606272,
+          address: 'Plano, TX, USA'
+        };
+        setManualLocation(defaultLocation.lat, defaultLocation.lng, defaultLocation.address);
+        setUserLocation(defaultLocation);
+        setHasValidLocation(true);
+        setHasLocationError(false);
+        setLocationError(null);
+        setLocationStatusMessage('Default test location set');
+        showLocalNotification('Default test location set successfully', 'success');
+      };
+      window.testWalmartSearchRaw = async () => {
+        console.log('🧪 [RAW DIAGNOSTIC] Testing raw Walmart search without grouping...');
+        try {
+          // Test 1: Direct API call to see raw response
+          console.log('🧪 [RAW DIAGNOSTIC] Test 1: Direct API call...');
+          const response = await fetch(`https://api.mapbox.com/search/searchbox/v1/suggest?access_token=${MAPBOX_CONFIG.apiKey}&session_token=${MAPBOX_SERVICE.generateSessionToken()}&q=walmart&limit=25&language=en&types=poi%2Caddress&country=us&proximity=${userLocation.lng}%2C${userLocation.lat}`);
+          
+          const data = await response.json();
+          console.log('🧪 [RAW DIAGNOSTIC] Raw API response:', data);
+          console.log('🧪 [RAW DIAGNOSTIC] Total suggestions from API:', data.suggestions?.length || 0);
+          
+          // Test 6: Compare grouped vs ungrouped results
+          console.log('🧪 [RAW DIAGNOSTIC] Test 6: Comparing grouped vs ungrouped results...');
+          const groupedResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
+            limit: 25,
+            userLocation,
+            enableAdaptiveRadius: true,
+            bypassGrouping: false
+          });
+          
+          const ungroupedResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
+            limit: 25,
+            userLocation,
+            enableAdaptiveRadius: true,
+            bypassGrouping: true
+          });
+          
+          console.log('🧪 [RAW DIAGNOSTIC] Grouped results count:', groupedResults.length);
+          console.log('🧪 [RAW DIAGNOSTIC] Ungrouped results count:', ungroupedResults.length);
+          console.log('🧪 [RAW DIAGNOSTIC] Grouping reduction:', groupedResults.length - ungroupedResults.length, 'results');
+          
+          // Set ungrouped results for display
+          setDestinationSuggestions(ungroupedResults);
+          showLocalNotification(`Found ${ungroupedResults.length} individual Walmart services (vs ${groupedResults.length} grouped)`, 'success');
+          
+          // Test 2: Process each result to see coordinate extraction
+          console.log('🧪 [RAW DIAGNOSTIC] Test 2: Coordinate extraction analysis...');
+          const processedResults = [];
+          for (const suggestion of data.suggestions || []) {
+            const result = {
+              name: suggestion.name,
+              address: suggestion.full_address,
+              mapboxId: suggestion.mapbox_id,
+              coordinates: suggestion.coordinates,
+              distance: suggestion.distance,
+              relevance: suggestion.relevance
+            };
+            
+            // Try to extract coordinates
+            try {
+              const coords = await MAPBOX_SERVICE.CoordinateUtils.extractCoordinates(suggestion, 'raw_diagnostic');
+              result.extractedCoords = coords;
+              result.hasValidCoords = !!(coords.lat && coords.lon);
+            } catch (error) {
+              result.extractionError = error.message;
+              result.hasValidCoords = false;
+            }
+            
+            processedResults.push(result);
+          }
+          
+          console.log('🧪 [RAW DIAGNOSTIC] Processed results:', processedResults);
+          console.log('🧪 [RAW DIAGNOSTIC] Results with valid coordinates:', processedResults.filter(r => r.hasValidCoords).length);
+          console.log('🧪 [RAW DIAGNOSTIC] Results without coordinates:', processedResults.filter(r => !r.hasValidCoords).length);
+          
+          // Test 3: Use searchByText function
+          console.log('🧪 [RAW DIAGNOSTIC] Test 3: Using searchByText function...');
+          const searchByTextResults = await MAPBOX_SERVICE.searchByText('walmart', userLocation, 25);
+          console.log('🧪 [RAW DIAGNOSTIC] searchByText results:', searchByTextResults.map(r => ({
+            name: r.name,
+            address: r.address,
+            lat: r.lat,
+            lon: r.lon,
+            distance: r.distance
+          })));
+          
+          // Test 4: Use full searchDestinations function
+          console.log('🧪 [RAW DIAGNOSTIC] Test 4: Using full searchDestinations function...');
+          const fullResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
+            limit: 25,
+            userLocation,
+            enableAdaptiveRadius: true
+          });
+          console.log('🧪 [RAW DIAGNOSTIC] Full searchDestinations results:', fullResults);
+          
+          // Test 5: Use searchDestinations with bypass grouping
+          console.log('🧪 [RAW DIAGNOSTIC] Test 5: Using searchDestinations with bypass grouping...');
+          const bypassResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
+            limit: 25,
+            userLocation,
+            enableAdaptiveRadius: true,
+            bypassGrouping: true
+          });
+          console.log('🧪 [RAW DIAGNOSTIC] Bypass grouping results:', bypassResults);
+          
+          // Set raw results without grouping for display
+          setDestinationSuggestions(searchByTextResults);
+          showLocalNotification(`Found ${searchByTextResults.length} raw Walmart locations`, 'success');
+          
+          return { processedResults, searchByTextResults, fullResults };
+        } catch (error) {
+          console.error('🧪 [RAW DIAGNOSTIC] Error:', error);
+          showLocalNotification('Raw search failed', 'error');
+          return null;
+        }
+      };
+      
+      // Toggle between grouped and ungrouped Walmart results
+      window.toggleWalmartGrouping = async () => {
+        console.log('🧪 [TOGGLE] Switching Walmart grouping mode...');
+        try {
+          const currentSuggestions = destinationSuggestions;
+          
+          // Better detection of current mode - check if we have grouped services or if results look grouped
+          const hasGroupedServices = currentSuggestions.some(s => s.groupedServices && s.groupedServices.count > 0);
+          const hasMultipleServicesAtSameLocation = currentSuggestions.some(s => 
+            s.name && s.name.includes('Walmart') && 
+            currentSuggestions.filter(other => 
+              other.lat === s.lat && other.lon === s.lon && other !== s
+            ).length > 0
+          );
+          
+          const isCurrentlyGrouped = hasGroupedServices || !hasMultipleServicesAtSameLocation;
+          const newMode = !isCurrentlyGrouped;
+          
+          console.log('🧪 [TOGGLE] Current suggestions count:', currentSuggestions.length);
+          console.log('🧪 [TOGGLE] Has grouped services:', hasGroupedServices);
+          console.log('🧪 [TOGGLE] Has multiple services at same location:', hasMultipleServicesAtSameLocation);
+          console.log('🧪 [TOGGLE] Current mode:', isCurrentlyGrouped ? 'grouped' : 'ungrouped');
+          console.log('🧪 [TOGGLE] Switching to:', newMode ? 'grouped' : 'ungrouped');
+          
+          const results = await MAPBOX_SERVICE.searchDestinations('walmart', {
+            limit: 25,
+            userLocation,
+            enableAdaptiveRadius: true,
+            bypassGrouping: !newMode // Invert the logic - bypassGrouping: false = grouped, bypassGrouping: true = ungrouped
+          });
+          
+          setDestinationSuggestions(results);
+          showLocalNotification(`Switched to ${newMode ? 'grouped' : 'ungrouped'} view: ${results.length} results`, 'success');
+          
+        } catch (error) {
+          console.error('🧪 [TOGGLE] Error:', error);
+          showLocalNotification('Toggle failed', 'error');
+        }
+      };
+      
+      // Comprehensive search validation test
+      window.testComprehensiveSearch = async (query = 'walmart') => {
+        console.log('🧪 [COMPREHENSIVE] Starting comprehensive search validation...');
+        try {
+          await MAPBOX_SERVICE.testComprehensiveSearch(query, userLocation);
+        } catch (error) {
+          console.error('🧪 [COMPREHENSIVE] Error:', error);
+        }
+      };
+      
+      // Show current Walmart results analysis
+      window.analyzeWalmartResults = () => {
+        console.log('🔍 [ANALYSIS] Current Walmart results analysis:');
+        console.log('🔍 [ANALYSIS] Total suggestions:', destinationSuggestions.length);
+        
+        if (destinationSuggestions.length === 0) {
+          console.log('🔍 [ANALYSIS] No suggestions to analyze');
+          return;
+        }
+        
+        // Group by location
+        const locationGroups = new Map();
+        destinationSuggestions.forEach(suggestion => {
+          if (suggestion.lat && suggestion.lon) {
+            const key = `${suggestion.lat.toFixed(4)}_${suggestion.lon.toFixed(4)}`;
+            if (!locationGroups.has(key)) {
+              locationGroups.set(key, {
+                location: { lat: suggestion.lat, lon: suggestion.lon },
+                address: suggestion.address,
+                services: []
+              });
+            }
+            locationGroups.get(key).services.push(suggestion.name);
+          }
+        });
+        
+        console.log('🔍 [ANALYSIS] Unique locations:', locationGroups.size);
+        locationGroups.forEach((group, key) => {
+          console.log(`🔍 [ANALYSIS] Location ${key}:`);
+          console.log(`  Address: ${group.address}`);
+          console.log(`  Services (${group.services.length}): ${group.services.join(', ')}`);
+        });
+        
+        // Check for grouped services
+        const hasGroupedServices = destinationSuggestions.some(s => s.groupedServices && s.groupedServices.count > 0);
+        console.log('🔍 [ANALYSIS] Has grouped services:', hasGroupedServices);
+        
+        if (hasGroupedServices) {
+          destinationSuggestions.forEach(s => {
+            if (s.groupedServices) {
+              console.log(`🔍 [ANALYSIS] Grouped services for "${s.name}":`, s.groupedServices);
+            }
+          });
+        }
+      };
+              console.log('🧪 Test functions available: window.testSetSuggestions(), window.setDefaultLocation(), window.testWalmartSearchRaw(), window.toggleWalmartGrouping(), window.analyzeWalmartResults(), and window.testComprehensiveSearch()');
+    }
+  }, [userLocation]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -723,8 +1988,7 @@ function RouteOptimizer({ mode = 'create' }) {
         
         // If changing from driver to passenger, stop location tracking
         if (creatorRole === 'driver' && value === 'passenger') {
-          locationTrackingService.stopTracking();
-          setIsTracking(false);
+          stopTracking();
           setUserLocation(null);
         }
       }
@@ -743,119 +2007,864 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  const getAddressFromCoords = async (lat, lng) => {
-    try {
-      return await MAPBOX_SERVICE.getAddressFromCoords(lat, lng);
-    } catch (error) {
-      console.error('Error getting address from coordinates:', error);
-      return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
-    }
+  // Add a function to clear route calculation cache
+  const clearRouteCalculationCache = () => {
+    lastRouteCalculationRef.current = null;
+    console.log('🧹 Route calculation cache cleared');
   };
-
-  const geocodeAddress = async (address) => {
-    if (!address) return null;
+  
+  // Test Mapbox integration
+  const testMapboxIntegration = async () => {
+    console.log('🧪 Testing Mapbox integration...');
+    
     try {
-      const result = await MAPBOX_SERVICE.getCoordsFromAddress(address);
-      return { lat: result.lat, lng: result.lng, address: result.address };
-    } catch (error) {
-      console.error('Error geocoding address:', error);
-    return null;
-    }
-  };
-
-  const addUser = async (userData) => {
-    try {
-      console.log('Adding user with data:', {
-        userData,
-        creatorRole,
-        isCreator: userData.isCreator,
-        currentDestination: destination
+      // Test geocoding
+      console.log('🧪 Testing geocoding...');
+      const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress('Starbucks, Plano, TX');
+      console.log('🧪 Geocoding result:', geocodeResult);
+      
+      // Test search
+      console.log('🧪 Testing search...');
+      const searchResult = await MAPBOX_SERVICE.searchDestinations('walmart', {
+        limit: 3,
+        userLocation: userLocation
       });
-
-      // Only require destination for the creator/driver, not for friends being added
-      if (userData.isCreator && !userData.destination && !destination) {
-        throw new Error('Please set a destination for the ride before adding participants');
+      console.log('🧪 Search result:', searchResult);
+      
+      // Test reverse geocoding
+      if (userLocation) {
+        console.log('🧪 Testing reverse geocoding...');
+        const reverseResult = await MAPBOX_SERVICE.getAddressFromCoords(userLocation.lat, userLocation.lng);
+        console.log('🧪 Reverse geocoding result:', reverseResult);
       }
+      
+    } catch (error) {
+      console.error('🧪 Mapbox integration test failed:', error);
+    }
+  };
 
-      // Use the destination from userData if provided, otherwise use the global destination
-      const destinationToUse = userData.destination || destination;
-
-      // If this is the creator being added as a driver, use their current location
-      if (userData.isCreator && userData.role === 'driver' && userLocation) {
-        console.log('Adding creator as driver with current location:', userLocation);
-        userData.userLocationCoords = userLocation;
+  // Test search with different strategies
+  const testSearchStrategies = async () => {
+    console.log('🧪 Testing Mapbox Search Box API...');
+    const query = 'kroger';
+    const userLocation = { lat: 33.1087872, lng: -96.7606272 };
+    
+    try {
+      // Test 1: Full Search Box API search
+      console.log('🧪 Test 1: Full Search Box API search');
+      const searchResults = await MAPBOX_SERVICE.searchDestinations(query, {
+        limit: 10,
+        maxDistance: 100,
+        userLocation
+      });
+      console.log('🧪 Search Box API results:', searchResults);
+      
+      // Test 2: Direct Search Box API calls
+      console.log('🧪 Test 2: Direct Search Box API calls');
+      
+      // Test suggest endpoint
+      const suggestUrl = `https://api.mapbox.com/search/searchbox/v1/suggest?access_token=${MAPBOX_CONFIG.apiKey}&q=${encodeURIComponent(query)}&limit=10&country=US&types=poi&proximity=${userLocation.lng},${userLocation.lat}`;
+      console.log('🧪 Suggest URL:', suggestUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
+      
+      const suggestResponse = await fetch(suggestUrl);
+      const suggestData = await suggestResponse.json();
+      console.log('🧪 Suggest results:', suggestData);
+      
+      // Test forward endpoint
+      const forwardUrl = `https://api.mapbox.com/search/searchbox/v1/forward?access_token=${MAPBOX_CONFIG.apiKey}&q=${encodeURIComponent(query)}&limit=10&country=US&types=poi&proximity=${userLocation.lng},${userLocation.lat}`;
+      console.log('🧪 Forward URL:', forwardUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
+      
+      const forwardResponse = await fetch(forwardUrl);
+      const forwardData = await forwardResponse.json();
+      console.log('🧪 Forward results:', forwardData);
+      
+      // Test 3: Test retrieve endpoint if we have suggestions
+      if (suggestData.suggestions && suggestData.suggestions.length > 0) {
+        console.log('🧪 Test 3: Testing retrieve endpoint');
+        const firstSuggestion = suggestData.suggestions[0];
+        const retrieveUrl = `https://api.mapbox.com/search/searchbox/v1/retrieve?access_token=${MAPBOX_CONFIG.apiKey}&id=${firstSuggestion.id}`;
+        console.log('🧪 Retrieve URL:', retrieveUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
+        
+        const retrieveResponse = await fetch(retrieveUrl);
+        const retrieveData = await retrieveResponse.json();
+        console.log('🧪 Retrieve results:', retrieveData);
       }
+      
+      // Test 4: Compare with Geocoding API
+      console.log('🧪 Test 4: Compare with Geocoding API');
+      const geocodingUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_CONFIG.apiKey}&types=poi&limit=10&country=US&proximity=${userLocation.lng},${userLocation.lat}&autocomplete=true`;
+      console.log('🧪 Geocoding URL:', geocodingUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
+      
+      const geocodingResponse = await fetch(geocodingUrl);
+      const geocodingData = await geocodingResponse.json();
+      console.log('🧪 Geocoding results:', geocodingData.features?.length || 0, 'features');
+      
+      showLocalNotification('Search Box API test completed', 'success');
+    } catch (error) {
+      console.error('🧪 Search test failed:', error);
+      showLocalNotification('Search strategy test failed', 'error');
+    }
+  };
 
-      // If destinationToUse is a string, geocode it
-      let destinationCoords = null;
-      if (destinationToUse) {
-      if (typeof destinationToUse === 'string') {
-        destinationCoords = await geocodeAddress(destinationToUse);
-        if (!destinationCoords) {
-          throw new Error('Could not find the destination address');
+  // Test functions commented out - Mapbox integration pending
+  /*
+  const testSearchAPIv2 = async () => {
+    console.log('🧪 Testing Search API v2 directly...');
+    
+    if (!userLocation) {
+      console.log('❌ No user location available for test');
+      return;
+    }
+    
+    console.log('🧪 User location for test:', userLocation);
+    
+    // Test different parameter combinations
+    const testCases = [
+      {
+        name: 'Original parameters',
+        params: {
+          maxMatches: '5',
+          shapePoints: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          search: 'starbucks'
+        }
+      },
+      {
+        name: 'Alternative parameters (center instead of shapePoints)',
+        params: {
+          maxMatches: '5',
+          center: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          search: 'starbucks'
+        }
+      },
+      {
+        name: 'Without hostedData',
+        params: {
+          maxMatches: '5',
+          center: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          search: 'starbucks'
+        }
+      },
+      {
+        name: 'Basic search without location',
+        params: {
+          maxMatches: '5',
+          search: 'starbucks'
+        }
+      }
+    ];
+    
+    for (const testCase of testCases) {
+      try {
+        console.log(`🧪 Testing: ${testCase.name}`);
+        
+        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
+        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
+        
+        // Add all parameters for this test case
+        Object.entries(testCase.params).forEach(([key, value]) => {
+          searchUrl.searchParams.append(key, value);
+        });
+        
+        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
+        
+        const response = await fetch(searchUrl.toString());
+        console.log(`🧪 ${testCase.name} response status:`, response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`🧪 ${testCase.name} error:`, errorText);
+          continue;
+        }
+        
+        const data = await response.json();
+        console.log(`🧪 ${testCase.name} response:`, data);
+        
+        if (data.searchResults && data.searchResults.length > 0) {
+          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
+          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
+        } else {
+          console.log(`🧪 ${testCase.name} returned no results`);
+        }
+      } catch (error) {
+        console.error(`🧪 ${testCase.name} failed:`, error);
+      }
+      
+      // Wait a bit between tests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  };
+  
+  // Test different business types to see what's available
+  const testBusinessTypes = async () => {
+    console.log('🧪 Testing different business types...');
+    
+    if (!userLocation) {
+      console.log('❌ No user location available for test');
+      return;
+    }
+    
+    const businessTypes = ['starbucks', 'mcdonalds', 'walmart', 'target', 'kroger', 'restaurant', 'gas', 'bank'];
+    
+    for (const businessType of businessTypes) {
+      try {
+        console.log(`🧪 Testing business type: ${businessType}`);
+        
+        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
+        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
+        searchUrl.searchParams.append('maxMatches', '3');
+        searchUrl.searchParams.append('shapePoints', `${userLocation.lat},${userLocation.lng}`);
+        searchUrl.searchParams.append('radius', '80');
+        searchUrl.searchParams.append('units', 'k');
+        searchUrl.searchParams.append('hostedData', 'mqap.ntpois');
+        searchUrl.searchParams.append('search', businessType);
+        
+        console.log(`🧪 ${businessType} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
+        
+        const response = await fetch(searchUrl.toString());
+        
+        if (!response.ok) {
+          console.log(`🧪 ${businessType} failed with status:`, response.status);
+          continue;
+        }
+        
+        const data = await response.json();
+        
+        if (data.searchResults && data.searchResults.length > 0) {
+          console.log(`🧪 ${businessType} found ${data.searchResults.length} results:`);
+          data.searchResults.forEach((result, index) => {
+            console.log(`  ${index + 1}. ${result.name} (${result.distance}km away)`);
+          });
+      } else {
+          console.log(`🧪 ${businessType} returned no results`);
+        }
+      } catch (error) {
+        console.error(`🧪 ${businessType} failed:`, error);
+      }
+      
+      // Wait a bit between tests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  };
+
+  // Test the actual search function used in the app
+  const testAppSearch = async (query = 'starbucks') => {
+    console.log('🧪 Testing app search function with query:', query);
+    
+    if (!userLocation) {
+      console.log('❌ No user location available for test');
+      return;
+    }
+    
+    try {
+      const searchOptions = {
+        limit: 5,
+        maxDistance: 50,
+        userLocation: userLocation
+      };
+      
+              console.log('🧪 Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
+        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
+      
+      console.log('🧪 App search results:', results);
+      
+      if (results && results.length > 0) {
+        console.log('🧪 Found', results.length, 'results:');
+        results.forEach((result, index) => {
+          console.log(`  ${index + 1}. ${result.display_name} (${result.distance}km away)`);
+        });
+      } else {
+        console.log('🧪 No results found');
+      }
+    } catch (error) {
+      console.error('🧪 App search failed:', error);
+    }
+  };
+
+  // Test API parameters systematically
+  const testAPIParameters = async () => {
+    console.log('🧪 Testing API parameters systematically...');
+    
+    if (!userLocation) {
+      console.log('❌ No user location available for test');
+      return;
+    }
+    
+    const testCases = [
+      {
+        name: 'Basic shapePoints with search',
+        params: {
+          maxMatches: '3',
+          shapePoints: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          search: 'starbucks'
+        }
+      },
+      {
+        name: 'Basic center with search',
+        params: {
+          maxMatches: '3',
+          center: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          search: 'starbucks'
+        }
+      },
+      {
+        name: 'shapePoints with q parameter',
+        params: {
+          maxMatches: '3',
+          shapePoints: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          q: 'starbucks'
+        }
+      },
+      {
+        name: 'center with q parameter',
+        params: {
+          maxMatches: '3',
+          center: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          hostedData: 'mqap.ntpois',
+          q: 'starbucks'
+        }
+      },
+      {
+        name: 'Without hostedData',
+        params: {
+          maxMatches: '3',
+          center: `${userLocation.lat},${userLocation.lng}`,
+          radius: '80',
+          units: 'k',
+          search: 'starbucks'
+        }
+      }
+    ];
+    
+    for (const testCase of testCases) {
+      try {
+        console.log(`🧪 Testing: ${testCase.name}`);
+        
+        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
+        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
+        
+        // Add all parameters for this test case
+        Object.entries(testCase.params).forEach(([key, value]) => {
+          searchUrl.searchParams.append(key, value);
+        });
+        
+        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
+        
+        const response = await fetch(searchUrl.toString());
+        console.log(`🧪 ${testCase.name} response status:`, response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`🧪 ${testCase.name} HTTP error:`, errorText);
+          continue;
+        }
+        
+        const data = await response.json();
+        console.log(`🧪 ${testCase.name} response keys:`, Object.keys(data));
+        
+        if (data.searchResults && data.searchResults.length > 0) {
+          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
+          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
+        } else if (data.results && data.results.length > 0) {
+          console.log(`🧪 ${testCase.name} found ${data.results.length} results (alternative structure)`);
+          console.log(`🧪 ${testCase.name} first result:`, data.results[0]);
+        } else {
+          console.log(`🧪 ${testCase.name} returned no results`);
+          if (data.info) {
+            console.log(`🧪 ${testCase.name} info:`, data.info);
+          }
+        }
+      } catch (error) {
+        console.error(`🧪 ${testCase.name} failed:`, error);
+      }
+      
+      // Wait a bit between tests to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  };
+
+  // Add debug functions to global scope for testing
+  if (typeof window !== 'undefined') {
+    window.testGeolocation = testGeolocation;
+    window.testSpecificSearch = testSpecificSearch;
+    window.clearRouteCache = clearRouteCalculationCache;
+    window.testMapbox = testMapboxIntegration;
+    window.testSearchStrategies = testSearchStrategies;
+    window.userLocation = userLocation;
+    window.trackedLocation = location;
+  }
+  */
+
+  // Handle destination selection
+  const handleDestinationSelect = async (selectedOption) => {
+    if (!selectedOption) return;
+    
+    try {
+      let coords;
+      
+      if (selectedOption.lat && selectedOption.lng) {
+        // Use the provided coordinates (new format uses lng instead of lon)
+        coords = {
+          lat: parseFloat(selectedOption.lat),
+          lng: parseFloat(selectedOption.lng),
+          address: selectedOption.address || selectedOption.name
+        };
+      } else if (selectedOption.lat && selectedOption.lon) {
+        // Handle old format for backward compatibility
+        coords = {
+          lat: parseFloat(selectedOption.lat),
+          lng: parseFloat(selectedOption.lon),
+          address: selectedOption.address || selectedOption.name
+        };
+      } else {
+        // Try to geocode the name/address
+        const geocodeResult = await getCoordsFromAddress(selectedOption.name || selectedOption.display_name);
+        if (geocodeResult) {
+          coords = {
+            lat: geocodeResult.lat,
+            lng: geocodeResult.lng,
+            address: geocodeResult.address
+          };
+        }
+      }
+      
+      if (coords) {
+        // Add destination name to coords for the route preview modal
+        coords.name = selectedOption.name || selectedOption.display_name || 'Selected Destination';
+        
+        // Set destination
+        await handleDestinationChange(coords);
+        setForm(prev => ({ ...prev, destination: coords.address }));
+        
+        // Clear suggestions after a short delay to prevent map zoom issues
+        setTimeout(() => {
+          setDestinationSuggestions([]);
+          setCategorySearchResults([]); // Clear category search results
+          setSearchBoxSuggestions([]); // Clear search box suggestions
+          setHybridResults([]); // Clear hybrid results
+        }, 100);
+        
+        // Automatically calculate route if user is driver and has location
+        if (creatorRole === 'driver' && userLocation) {
+          console.log('🚗 Auto-calculating route for driver');
+          await calculateAndDisplayRoute(userLocation, coords);
         }
       } else {
-        // If it's already an object with coordinates, use it directly
-        destinationCoords = destinationToUse;
-        }
-      }
-
-      // If user is a passenger, geocode their location too
-      let userLocationCoords = null;
-      if (userData.isCreator && userData.role === 'passenger') {
-        userLocationCoords = await geocodeAddress(userData.userLocation);
-        if (!userLocationCoords) {
-          throw new Error('Could not find the pickup location address');
-        }
-      }
-
-      // If creator is driver, use their current location
-      if (userData.isCreator && userData.role === 'driver' && userLocation) {
-        userLocationCoords = userLocation;
-      } else if (userData.isCreator && userData.role === 'passenger' && !userData.userLocation) {
-        throw new Error('Pickup location is required for passengers');
-      }
-
-      // Generate a random color for the user
-      const color = `#${Math.floor(Math.random()*16777215).toString(16)}`;
-
-      // Create the new user entry with location
-      const newUser = {
-        id: userData.id || `temp-${Date.now()}`,
-        name: userData.name || userData.profile?.displayName || userData.displayName || 'Unknown User',
-        displayName: userData.profile?.displayName || userData.displayName || userData.name || 'Unknown User',
-        role: userData.role || 'passenger',
-        destination: destinationCoords?.address || destinationCoords || null,
-        destinationCoords,
-        color,
-        photoURL: userData.profile?.photoURL || userData.photoURL || '',
-        email: userData.profile?.email || userData.email || '',
-        isCreator: userData.isCreator,
-        invitationStatus: userData.invitationStatus || 'pending',
-        ...(userLocationCoords && {
-          userLocation: userData.userLocation || 'Current Location',
-          userLocationCoords
-        })
-      };
-
-      // Update users state
-      setUsers(prevUsers => [...prevUsers, newUser]);
-
-      // If this is the first user (creator), update the destination in state
-      if (users.length === 0 && destinationCoords) {
-        setDestination(destinationCoords);
-      }
-
-      // If this is a friend being added, log it
-      if (userData.id) {
-        console.log('Friend added:', userData);
-        // Note: Invitations will be sent when the group is created, not when users are added
+        console.warn('⚠️ Could not get coordinates for selected destination');
+        setForm(prev => ({ ...prev, destination: selectedOption.name || selectedOption.display_name }));
       }
 
     } catch (error) {
-      console.error('Error adding user:', error);
-      throw error;
+      console.error('❌ Error setting destination:', error);
+      setForm(prev => ({ ...prev, destination: selectedOption.name || selectedOption.display_name }));
     }
+  };
+
+  // COMMENTED OUT: Current search logic - replacing with Search Box component
+  /*
+  const handleDestinationInputChange = (event) => {
+    const query = event.target.value.trim();
+    
+    // Clear any existing timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    
+    // If query is empty, clear suggestions immediately
+    if (!query || query.length === 0) {
+      setDestinationSuggestions([]);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+    
+    // Don't search for very short queries
+    if (query.length < 2) {
+      return;
+    }
+    
+    // Set loading state
+    setIsLoadingSuggestions(true);
+    
+    // Set a new timeout to debounce the search (reduced from 300ms to 150ms)
+    searchTimeoutRef.current = setTimeout(async () => {
+      // Double-check that query is still valid
+      if (!query || query.length < 2) {
+        setIsLoadingSuggestions(false);
+        return;
+      }
+      
+      try {
+        // Simple search with the new architecture
+        const results = await searchDestinations(query, {
+          limit: 8,
+          userLocation: userLocation || null,
+          enableFallback: true
+        });
+        
+        if (results && results.length > 0) {
+          setDestinationSuggestions(results);
+          showLocalNotification(`Found ${results.length} locations`, 'success');
+            } else {
+          setDestinationSuggestions([]);
+          showLocalNotification('No locations found. Try a different search term.', 'info');
+        }
+      } catch (error) {
+        console.error('Search failed:', error);
+        setDestinationSuggestions([]);
+        
+        let errorMessage = 'Search temporarily unavailable. Please try again.';
+        
+        if (error.message.includes('API key')) {
+          errorMessage = 'Search service not configured. Please check your settings.';
+        } else if (error.message.includes('network') || error.message.includes('timeout')) {
+          errorMessage = 'Network error. Please check your connection and try again.';
+        } else if (error.message.includes('rate limit')) {
+          errorMessage = 'Too many requests. Please wait a moment and try again.';
+        }
+        
+        showLocalNotification(errorMessage, 'error');
+      } finally {
+        setIsLoadingSuggestions(false);
+      }
+    }, 150); // Reduced debounce for better responsiveness
+  };
+  */
+  
+  // Function to create hybrid results from category and Search Box suggestions
+  const createHybridResults = (categoryResults, searchBoxResults) => {
+    if (!categoryResults.length && !searchBoxResults.length) {
+      return [];
+    }
+    
+    const hybrid = [];
+    
+    // Add top category results first (up to 5)
+    if (categoryResults.length > 0) {
+      hybrid.push(...categoryResults.slice(0, 5).map(result => ({
+        ...result,
+        source: 'category',
+        priority: 1
+      })));
+    }
+    
+    // Add top Search Box results (up to 3) if we have space
+    if (searchBoxResults.length > 0 && hybrid.length < 8) {
+      const remainingSlots = 8 - hybrid.length;
+      const searchBoxSlice = searchBoxResults.slice(0, remainingSlots);
+      
+      hybrid.push(...searchBoxSlice.map(result => ({
+        ...result,
+        source: 'searchbox',
+        priority: 2
+      })));
+    }
+    
+    // Sort by priority first, then by distance
+    hybrid.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+      if (a.distance === null && b.distance === null) return 0;
+      if (a.distance === null) return 1;
+      if (b.distance === null) return -1;
+      return a.distance - b.distance;
+    });
+    
+    return hybrid;
+  };
+
+  // Enhanced search function that prioritizes category search over Search Box
+  const handleEnhancedSearch = async (query) => {
+    if (!query || query.trim().length < 2) {
+      setCategorySearchResults([]);
+      setSearchBoxSuggestions([]);
+      setHybridResults([]);
+      setIsCategorySearching(false);
+      return;
+    }
+
+    const trimmedQuery = query.trim();
+    console.log(`📍 Enhanced search for: "${trimmedQuery}"`);
+
+    // First, check if this is a brand search
+    const detectedBrand = detectBrand(trimmedQuery);
+    
+    if (detectedBrand) {
+      console.log(`🏪 Detected brand: ${detectedBrand}`);
+      
+      setIsCategorySearching(true);
+      setCategorySearchResults([]); // Clear previous results
+      setSearchBoxSuggestions([]); // Clear Search Box suggestions to prevent conflicts
+      setHybridResults([]); // Clear hybrid results
+      
+      try {
+        // Try Search Box API first (optimized for brand searches)
+        console.log(`🏪 Trying Search Box API for brand: ${detectedBrand}`);
+        const suggestResults = await callSuggestEndpoint(detectedBrand, userLocation);
+        
+        if (suggestResults && suggestResults.length > 0) {
+          console.log(`🏪 Found ${suggestResults.length} suggestions, retrieving details...`);
+          
+          // Get detailed results for each suggestion (limit to top 2 to reduce API calls)
+          const detailedResults = [];
+          for (const suggestion of suggestResults.slice(0, 2)) { // Reduced from 3 to 2
+            try {
+              const detail = await callRetrieveEndpoint(suggestion.mapbox_id);
+              if (detail) {
+                // Calculate distance
+                const distance = calculateDistance(
+                  userLocation?.lat || 32.8626712,
+                  userLocation?.lng || -96.9353651,
+                  detail.geometry.coordinates[1],
+                  detail.geometry.coordinates[0]
+                );
+                
+                const result = {
+                  name: detail.properties?.name || detail.text || suggestion.name,
+                  display_name: detail.properties?.name || detail.text || suggestion.name,
+                  address: detail.properties?.full_address || detail.place_name || suggestion.full_address,
+                  lat: detail.geometry.coordinates[1],
+                  lng: detail.geometry.coordinates[0],
+                  lon: detail.geometry.coordinates[0],
+                  distance: distance,
+                  fullAddress: detail.properties?.full_address || detail.place_name || suggestion.full_address,
+                  type: 'brand_search',
+                  feature_type: detail.properties?.feature_type,
+                  poi_category: detail.properties?.poi_category,
+                  brand: detail.properties?.brand || suggestion.brand,
+                  relevance: suggestion.relevance || 0
+                };
+                
+                detailedResults.push(result);
+              }
+            } catch (retrieveError) {
+              console.log(`🔍 Skipping suggestion due to retrieve error:`, retrieveError.message);
+              continue; // Skip this suggestion and continue with the next one
+            }
+          }
+          
+          // Filter by distance and sort
+          const filteredResults = detailedResults
+            .filter(result => result.distance <= 15) // 15 miles max
+            .sort((a, b) => a.distance - b.distance);
+          
+          setCategorySearchResults(filteredResults);
+          
+          if (filteredResults.length > 0) {
+            const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
+            showLocalNotification(`Found ${filteredResults.length} ${brandName} locations nearby (Search Box API)`, 'success');
+            
+            console.log(`🏪 Search Box API successful for "${detectedBrand}":`, {
+              totalResults: filteredResults.length,
+              firstResult: filteredResults[0] ? {
+                name: filteredResults[0].name,
+                distance: filteredResults[0].distance?.toFixed(1) + ' mi',
+                address: filteredResults[0].address
+              } : null,
+              allResults: filteredResults.map(r => ({
+                name: r.name,
+                distance: r.distance?.toFixed(1) + ' mi',
+                address: r.address
+              }))
+            });
+          } else {
+            throw new Error('No results within 15 miles');
+          }
+        } else {
+          throw new Error('No suggestions found');
+        }
+      } catch (error) {
+        console.error('🏪 Search Box API failed:', error);
+        
+        // Fallback to category search
+        console.log(`🏪 Falling back to category search for brand: ${detectedBrand}`);
+        const brandCategory = BRAND_TO_CATEGORY[detectedBrand];
+        
+        if (brandCategory) {
+          try {
+            const results = await searchCategoryPOI(brandCategory, userLocation, 15);
+            
+            // Filter results to prioritize the specific brand
+            const brandResults = results.filter(result => {
+              const resultName = result.name?.toLowerCase() || '';
+              const resultBrand = result.brand?.toLowerCase() || '';
+              const searchBrand = detectedBrand.toLowerCase();
+              
+              return resultName.includes(searchBrand) || 
+                     resultBrand.includes(searchBrand) ||
+                     searchBrand.includes(resultBrand);
+            });
+            
+            // If we found brand-specific results, use those; otherwise use all category results
+            const finalResults = brandResults.length > 0 ? brandResults : results;
+            setCategorySearchResults(finalResults);
+            
+            if (finalResults.length > 0) {
+              const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
+              const resultType = brandResults.length > 0 ? 'brand-specific' : 'category';
+              showLocalNotification(`Found ${finalResults.length} ${brandName} locations nearby (${resultType} fallback)`, 'success');
+            } else {
+              showLocalNotification(`No ${detectedBrand} locations found within 15 miles`, 'info');
+            }
+          } catch (categoryError) {
+            console.error('🏪 Category fallback also failed:', categoryError);
+            showLocalNotification(`No ${detectedBrand} locations found`, 'warning');
+            setCategorySearchResults([]);
+          }
+        } else {
+          // Final fallback to general search
+          console.log(`🏪 No category mapping, trying general search for brand: ${detectedBrand}`);
+          try {
+            const results = await searchGeneralPOI(detectedBrand, userLocation, 12);
+            setCategorySearchResults(results);
+            
+            if (results.length > 0) {
+              const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
+              showLocalNotification(`Found ${results.length} ${brandName} locations nearby (general search)`, 'success');
+            } else {
+              showLocalNotification(`No ${detectedBrand} locations found within 15 miles`, 'info');
+            }
+          } catch (generalError) {
+            console.error('🏪 General search also failed:', generalError);
+            showLocalNotification(`No ${detectedBrand} locations found`, 'warning');
+            setCategorySearchResults([]);
+          }
+        }
+      } finally {
+        setIsCategorySearching(false);
+      }
+      return; // Exit early since we handled brand search
+    }
+
+    // If not a brand, check if this is a category search
+    const detectedCategory = detectCategory(trimmedQuery);
+    
+    if (detectedCategory) {
+      console.log(`📍 Detected category: ${detectedCategory}`);
+      setIsCategorySearching(true);
+      setCategorySearchResults([]); // Clear previous results
+      setSearchBoxSuggestions([]); // Clear Search Box suggestions to prevent conflicts
+      setHybridResults([]); // Clear hybrid results
+      
+      try {
+        const results = await searchCategoryPOI(detectedCategory, userLocation, 12);
+        setCategorySearchResults(results);
+        
+        if (results.length > 0) {
+          const categoryName = detectedCategory.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+          showLocalNotification(`Found ${results.length} ${categoryName} locations nearby`, 'success');
+          
+          // Log the results for debugging
+          console.log(`📍 Category search successful for "${detectedCategory}":`, {
+            totalResults: results.length,
+            firstResult: results[0] ? {
+              name: results[0].name,
+              distance: results[0].distance?.toFixed(1) + ' mi',
+              address: results[0].address
+            } : null,
+            allResults: results.map(r => ({
+              name: r.name,
+              distance: r.distance?.toFixed(1) + ' mi',
+              address: r.address
+            }))
+          });
+        } else {
+          showLocalNotification(`No ${detectedCategory.replace('_', ' ')} found within 25 miles`, 'info');
+        }
+      } catch (error) {
+        console.error('📍 Category search failed:', error);
+        showLocalNotification('Category search failed, falling back to regular search', 'warning');
+        setCategorySearchResults([]);
+      } finally {
+        setIsCategorySearching(false);
+      }
+    } else {
+      console.log('🔍 No brand or category detected, trying general search');
+      
+      // Try general search as fallback
+      setIsCategorySearching(true);
+      setCategorySearchResults([]);
+      setSearchBoxSuggestions([]);
+      setHybridResults([]);
+      
+      try {
+        const results = await searchGeneralPOI(trimmedQuery, userLocation, 12);
+        setCategorySearchResults(results);
+        
+        if (results.length > 0) {
+          showLocalNotification(`Found ${results.length} locations for "${trimmedQuery}"`, 'success');
+          
+          // Log the results for debugging
+          console.log(`🔍 General search successful for "${trimmedQuery}":`, {
+            totalResults: results.length,
+            firstResult: results[0] ? {
+              name: results[0].name,
+              distance: results[0].distance?.toFixed(1) + ' mi',
+              address: results[0].address
+            } : null,
+            allResults: results.map(r => ({
+              name: r.name,
+              distance: r.distance?.toFixed(1) + ' mi',
+              address: r.address
+            }))
+          });
+        } else {
+          showLocalNotification(`No locations found for "${trimmedQuery}"`, 'info');
+        }
+      } catch (error) {
+        console.error('🔍 General search failed:', error);
+        showLocalNotification('Search failed, please try a different term', 'warning');
+        setCategorySearchResults([]);
+      } finally {
+        setIsCategorySearching(false);
+      }
+    }
+  };
+
+  // Enhanced destination input change handler
+  const handleDestinationInputChange = (event) => {
+    const query = event.target.value.trim();
+    setSearchBoxValue(query);
+    
+    // Clear any existing timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    
+    // If query is empty, clear results
+    if (!query || query.length === 0) {
+      setCategorySearchResults([]);
+      setIsCategorySearching(false);
+      return;
+    }
+    
+    // Don't search for very short queries
+    if (query.length < 2) {
+      return;
+    }
+    
+    // Debounce the search
+    searchTimeoutRef.current = setTimeout(() => {
+      handleEnhancedSearch(query);
+    }, 300);
   };
 
   const handleDelete = async (userId) => {
@@ -918,8 +2927,16 @@ function RouteOptimizer({ mode = 'create' }) {
     }
 
     try {
-      // Get the address for the coordinates
-      const address = await getAddressFromCoords(lat, lng);
+      // Use the address from coords if provided (from suggestion selection)
+      // Otherwise, get the address from coordinates via reverse geocoding
+      let address = coords.address;
+      
+      if (!address) {
+        console.log('No address provided in coords, performing reverse geocoding...');
+        address = await getAddressFromCoords(lat, lng);
+      } else {
+        console.log('Using provided address from suggestion:', address);
+      }
       
       console.log('Destination coordinates and address:', {
         coords: { lat, lng },
@@ -930,7 +2947,8 @@ function RouteOptimizer({ mode = 'create' }) {
       const destinationData = {
         lat: lat,
         lng: lng,
-        address: address
+        address: address,
+        name: coords.name || address // Include name for route preview modal
       };
       
       // Update both the destination state and form state
@@ -939,6 +2957,9 @@ function RouteOptimizer({ mode = 'create' }) {
         ...prev,
         destination: address
       }));
+
+      // Hide route preview modal when destination changes (it will be shown again when route is calculated)
+      setShowRoutePreview(false);
       
       console.log('Destination set successfully:', destinationData);
       
@@ -1025,7 +3046,6 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Add this function to handle role changes
   const handleRoleChange = (tempId, newRole) => {
     setUsers(prevUsers => 
       prevUsers.map(user => 
@@ -1345,7 +3365,6 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Add click handler for sidebar toggle
   const handleSidebarClick = (e) => {
     // Only toggle if clicking the sidebar itself, not its children
     if (e.target === e.currentTarget) {
@@ -1353,7 +3372,6 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Add a helper function to diagnose geolocation issues
   const diagnoseGeolocation = () => {
     const diagnostics = {
       supported: 'geolocation' in navigator,
@@ -1501,7 +3519,10 @@ function RouteOptimizer({ mode = 'create' }) {
         setLocationStatusMessage(errorMessage);
         
         // Force stop tracking to reset the button state
-        stopTracking(true);
+        stopTracking();
+        
+        // Show a helpful notification to the user
+        showLocalNotification('Location tracking failed. You can still use the app by setting your location manually.', 'warning');
         
         console.log('Set locationStatusMessage to:', errorMessage);
       } finally {
@@ -1510,7 +3531,6 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Update the handleCreateRide function to handle both modes
   const handleCreateRide = async () => {
     if (mode === 'join') {
       // Handle joining existing ride
@@ -1523,7 +3543,7 @@ function RouteOptimizer({ mode = 'create' }) {
           userCount: users.length
         });
         showLocalNotification('Please add at least one participant and set the destination location', 'error');
-        return;0
+        return;
       }
 
       // ... rest of the existing create ride logic ...
@@ -1532,7 +3552,7 @@ function RouteOptimizer({ mode = 'create' }) {
 
   const handleSetDestinationFromMap = () => {
     setMapClickMode('destination');
-    showLocalNotification('Click on the map to set the destination location');
+    showLocalNotification('Click on the map to set the destination location', 'info');
   };
 
   const handleSetManualLocationFromMap = () => {
@@ -1584,476 +3604,118 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  // Add a test function for debugging geolocation
-  const testGeolocation = () => {
-    console.log('=== Testing Geolocation ===');
-    
-    // Test 1: Check if geolocation is supported
-    console.log('1. Geolocation supported:', 'geolocation' in navigator);
-    
-    // Test 2: Run diagnostics
-    const diagnosticError = diagnoseGeolocation();
-    console.log('2. Diagnostics result:', diagnosticError || 'PASSED');
-    
-    // Test 3: Try to get current position
-    if ('geolocation' in navigator) {
-      console.log('3. Testing getCurrentPosition...');
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          console.log('✅ Geolocation SUCCESS:', {
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy,
-            timestamp: new Date(position.timestamp).toISOString()
-          });
-        },
-        (error) => {
-          console.error('❌ Geolocation FAILED:', {
-            code: error.code,
-            message: error.message
-          });
-        },
-        {
-          enableHighAccuracy: false,
-          timeout: 10000,
-          maximumAge: 60000
-        }
-      );
-    } else {
-      console.error('❌ Geolocation not supported');
+  const getAddressFromCoords = async (lat, lng) => {
+    try {
+      return await MAPBOX_SERVICE.getAddressFromCoords(lat, lng);
+    } catch (error) {
+      console.error('Error getting address from coordinates:', error);
+      return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
     }
   };
 
-  // Make the test function available globally for debugging
-  if (typeof window !== 'undefined') {
-    window.testGeolocation = testGeolocation;
-  }
-
-  // Debug function to test specific searches
-  const testSpecificSearch = async (query) => {
-    console.log('=== TESTING SPECIFIC SEARCH ===');
-    console.log('Query:', query);
-    console.log('User Location:', userLocation);
-    
+  const geocodeAddress = async (address) => {
+    if (!address) return null;
     try {
-              const results = await MAPBOX_SERVICE.searchDestinations(query, {
-        userLocation: userLocation,
-        limit: 5
+      const result = await MAPBOX_SERVICE.getCoordsFromAddress(address);
+      return { lat: result.lat, lng: result.lng, address: result.address };
+    } catch (error) {
+      console.error('Error geocoding address:', error);
+      return null;
+    }
+  };
+
+  const addUser = async (userData) => {
+    try {
+      console.log('Adding user with data:', {
+        userData,
+        creatorRole,
+        isCreator: userData.isCreator,
+        currentDestination: destination
       });
-      
-      console.log('Search results:', results);
-      
-      if (results && results.length > 0) {
-        const realResults = results.filter(result => !result.isError);
-        console.log('Real results:', realResults);
-        
-        if (realResults.length > 0) {
-          const bestResult = realResults[0];
-          console.log('Best result:', {
-            display_name: bestResult.display_name,
-            lat: bestResult.lat,
-            lon: bestResult.lon,
-            distance: bestResult.distance,
-            quality: bestResult.quality,
-            type: bestResult.type
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Test failed:', error);
-    }
-  };
 
-  // Add a function to clear route calculation cache
-  const clearRouteCalculationCache = () => {
-    lastRouteCalculationRef.current = null;
-    console.log('🧹 Route calculation cache cleared');
-  };
-  
-  // Test Mapbox integration
-  const testMapboxIntegration = async () => {
-    console.log('🧪 Testing Mapbox integration...');
-    
-    try {
-      // Test geocoding
-      console.log('🧪 Testing geocoding...');
-      const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress('Starbucks, Plano, TX');
-      console.log('🧪 Geocoding result:', geocodeResult);
-      
-      // Test search
-      console.log('🧪 Testing search...');
-      const searchResult = await MAPBOX_SERVICE.searchDestinations('walmart', {
-        limit: 3,
-        userLocation: userLocation
-      });
-      console.log('🧪 Search result:', searchResult);
-      
-      // Test reverse geocoding
-      if (userLocation) {
-        console.log('🧪 Testing reverse geocoding...');
-        const reverseResult = await MAPBOX_SERVICE.getAddressFromCoords(userLocation.lat, userLocation.lng);
-        console.log('🧪 Reverse geocoding result:', reverseResult);
+      // Only require destination for the creator/driver, not for friends being added
+      if (userData.isCreator && !userData.destination && !destination) {
+        throw new Error('Please set a destination for the ride before adding participants');
       }
-      
-    } catch (error) {
-      console.error('🧪 Mapbox integration test failed:', error);
-    }
-  };
 
-  // Test functions commented out - Mapbox integration pending
-  /*
-  const testSearchAPIv2 = async () => {
-    console.log('🧪 Testing Search API v2 directly...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    console.log('🧪 User location for test:', userLocation);
-    
-    // Test different parameter combinations
-    const testCases = [
-      {
-        name: 'Original parameters',
-        params: {
-          maxMatches: '5',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Alternative parameters (center instead of shapePoints)',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic search without location',
-        params: {
-          maxMatches: '5',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response:`, data);
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-  
-  // Test different business types to see what's available
-  const testBusinessTypes = async () => {
-    console.log('🧪 Testing different business types...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const businessTypes = ['starbucks', 'mcdonalds', 'walmart', 'target', 'kroger', 'restaurant', 'gas', 'bank'];
-    
-    for (const businessType of businessTypes) {
-      try {
-        console.log(`🧪 Testing business type: ${businessType}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        searchUrl.searchParams.append('maxMatches', '3');
-        searchUrl.searchParams.append('shapePoints', `${userLocation.lat},${userLocation.lng}`);
-        searchUrl.searchParams.append('radius', '80');
-        searchUrl.searchParams.append('units', 'k');
-        searchUrl.searchParams.append('hostedData', 'mqap.ntpois');
-        searchUrl.searchParams.append('search', businessType);
-        
-        console.log(`🧪 ${businessType} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        
-        if (!response.ok) {
-          console.log(`🧪 ${businessType} failed with status:`, response.status);
-          continue;
-        }
-        
-        const data = await response.json();
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${businessType} found ${data.searchResults.length} results:`);
-          data.searchResults.forEach((result, index) => {
-            console.log(`  ${index + 1}. ${result.name} (${result.distance}km away)`);
-          });
-        } else {
-          console.log(`🧪 ${businessType} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${businessType} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-  };
+      // Use the destination from userData if provided, otherwise use the global destination
+      const destinationToUse = userData.destination || destination;
 
-  // Test the actual search function used in the app
-  const testAppSearch = async (query = 'starbucks') => {
-    console.log('🧪 Testing app search function with query:', query);
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    try {
-      const searchOptions = {
-        limit: 5,
-        maxDistance: 50,
-        userLocation: userLocation
-      };
-      
-              console.log('🧪 Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
-        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
-      
-      console.log('🧪 App search results:', results);
-      
-      if (results && results.length > 0) {
-        console.log('🧪 Found', results.length, 'results:');
-        results.forEach((result, index) => {
-          console.log(`  ${index + 1}. ${result.display_name} (${result.distance}km away)`);
-        });
-      } else {
-        console.log('🧪 No results found');
+      // If this is the creator being added as a driver, use their current location
+      if (userData.isCreator && userData.role === 'driver' && userLocation) {
+        console.log('Adding creator as driver with current location:', userLocation);
+        userData.userLocationCoords = userLocation;
       }
-    } catch (error) {
-      console.error('🧪 App search failed:', error);
-    }
-  };
 
-  // Test API parameters systematically
-  const testAPIParameters = async () => {
-    console.log('🧪 Testing API parameters systematically...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const testCases = [
-      {
-        name: 'Basic shapePoints with search',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic center with search',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'shapePoints with q parameter',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'center with q parameter',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} HTTP error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response keys:`, Object.keys(data));
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else if (data.results && data.results.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.results.length} results (alternative structure)`);
-          console.log(`🧪 ${testCase.name} first result:`, data.results[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-          if (data.info) {
-            console.log(`🧪 ${testCase.name} info:`, data.info);
+      // If destinationToUse is a string, geocode it
+      let destinationCoords = null;
+      if (destinationToUse) {
+        if (typeof destinationToUse === 'string') {
+          destinationCoords = await geocodeAddress(destinationToUse);
+          if (!destinationCoords) {
+            throw new Error('Could not find the destination address');
           }
+        } else {
+          // If it's already an object with coordinates, use it directly
+          destinationCoords = destinationToUse;
         }
+      }
+
+      // If user is a passenger, geocode their location too
+      let userLocationCoords = null;
+      if (userData.isCreator && userData.role === 'passenger') {
+        userLocationCoords = await geocodeAddress(userData.userLocation);
+        if (!userLocationCoords) {
+          throw new Error('Could not find the pickup location address');
+        }
+      }
+
+      // If creator is driver, use their current location
+      if (userData.isCreator && userData.role === 'driver' && userLocation) {
+        userLocationCoords = userLocation;
+      } else if (userData.isCreator && userData.role === 'passenger' && !userData.userLocation) {
+        throw new Error('Pickup location is required for passengers');
+      }
+
+      // Generate a random color for the user
+      const color = `#${Math.floor(Math.random()*16777215).toString(16)}`;
+
+      // Create the new user entry with location
+      const newUser = {
+        id: userData.id || `temp-${Date.now()}`,
+        name: userData.name || userData.profile?.displayName || userData.displayName || 'Unknown User',
+        displayName: userData.profile?.displayName || userData.displayName || userData.name || 'Unknown User',
+        role: userData.role || 'passenger',
+        destination: destinationCoords?.address || destinationCoords || null,
+        destinationCoords,
+        color,
+        photoURL: userData.profile?.photoURL || userData.photoURL || '',
+        email: userData.profile?.email || userData.email || '',
+        isCreator: userData.isCreator,
+        invitationStatus: userData.invitationStatus || 'pending',
+        ...(userLocationCoords && {
+          userLocation: userData.userLocation || 'Current Location',
+          userLocationCoords
+        })
+      };
+
+      // Update users state
+      setUsers(prevUsers => [...prevUsers, newUser]);
+
+      // If this is the first user (creator), update the destination in state
+      if (users.length === 0 && destinationCoords) {
+        setDestination(destinationCoords);
+      }
+
+      // If this is a friend being added, log it
+      if (userData.id) {
+        console.log('Friend added:', userData);
+        // Note: Invitations will be sent when the group is created, not when users are added
+      }
+
       } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-
-  // Add debug functions to global scope for testing
-  if (typeof window !== 'undefined') {
-    window.testGeolocation = testGeolocation;
-    window.testSpecificSearch = testSpecificSearch;
-    window.clearRouteCache = clearRouteCalculationCache;
-    window.testMapbox = testMapboxIntegration;
-    window.userLocation = userLocation;
-    window.trackedLocation = trackedLocation;
-  }
-  */
-
-  // Handle destination selection
-  const handleDestinationSelect = async (selectedOption) => {
-    if (!selectedOption) return;
-    
-    try {
-      let coords;
-      
-      if (selectedOption.lat && selectedOption.lon) {
-        // Use the provided coordinates
-        coords = {
-          lat: parseFloat(selectedOption.lat),
-          lng: parseFloat(selectedOption.lon),
-          address: selectedOption.display_name
-        };
-      } else {
-        // Try to geocode the display name
-        const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress(selectedOption.display_name);
-        if (geocodeResult) {
-          coords = {
-            lat: geocodeResult.lat,
-            lng: geocodeResult.lng,
-            address: geocodeResult.address
-          };
-        }
-      }
-      
-      if (coords) {
-        // Set destination
-        await handleDestinationChange(coords);
-        setForm(prev => ({ ...prev, destination: coords.address }));
-        
-        // Clear suggestions and close dropdown
-        setDestinationSuggestions([]);
-        setIsDropdownOpen(false);
-        
-        // Automatically calculate route if user is driver and has location
-        if (creatorRole === 'driver' && userLocation) {
-          console.log('🚗 Auto-calculating route for driver');
-          await calculateAndDisplayRoute(userLocation, coords);
-        }
-      } else {
-        console.warn('⚠️ Could not get coordinates for selected destination');
-        setForm(prev => ({ ...prev, destination: selectedOption.display_name }));
-      }
-      
-    } catch (error) {
-      console.error('❌ Error setting destination:', error);
-      setForm(prev => ({ ...prev, destination: selectedOption.display_name }));
+      console.error('Error adding user:', error);
+      throw error;
     }
   };
 
@@ -2379,6 +4041,8 @@ function RouteOptimizer({ mode = 'create' }) {
                       onClick={() => {
                         setDestination(null);
                         setForm(prev => ({ ...prev, destination: '' }));
+                        setShowRoutePreview(false);
+                        setRoutePreviewData(null);
                       }}
                       sx={{ 
                         color: '#b08968',
@@ -2440,116 +4104,274 @@ function RouteOptimizer({ mode = 'create' }) {
                   
                   {/* Test buttons removed - Mapbox integration pending */}
                   
-                  <Autocomplete
-                    freeSolo
-                    options={destinationSuggestions}
-                    getOptionLabel={(option) => {
-                      if (typeof option === 'string') return option;
-                      return option.display_name || '';
+                  {/* Destination setting options */}
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<MapIcon fontSize="small" />}
+                    onClick={handleSetDestinationFromMap}
+                    sx={{ 
+                      width: '100%',
+                      color: '#b08968', 
+                      borderColor: '#b08968',
+                      borderRadius: 1.5,
+                      py: 0.5,
+                      mb: 1.5,
+                      '&:hover': {
+                        borderColor: '#a47551',
+                        background: '#f9f6ef'
+                      }
                     }}
-                    loading={isLoadingSuggestions}
-                    open={isDropdownOpen}
-                    onOpen={() => setIsDropdownOpen(true)}
-                    onClose={() => setIsDropdownOpen(false)}
-                    onInputChange={(event, newInputValue, reason) => {
-                      console.log('🔤 onInputChange called:', { newInputValue, reason });
-                      setForm(prev => ({ ...prev, destination: newInputValue }));
+                  >
+                    Click on Map to Set Destination
+                  </Button>
+                  
+                  {/* Custom Search Input with Category Detection */}
+                  <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="Search destination, place, or POI (try: gas stations, coffee, restaurants)"
+                    value={searchBoxValue}
+                    onChange={(event) => {
+                      const query = event.target.value;
+                      setSearchBoxValue(query);
                       
-                      if (reason === 'input') {
-                        // User is typing - search for suggestions
-                        console.log('🔤 User typing, calling local searchDestinations');
-                        // Call our local searchDestinations function that includes user location
-                        searchDestinationsLocal(newInputValue);
-                      } else if (reason === 'clear') {
-                        // User cleared the input - clear everything
-                        console.log('🔤 User cleared input');
-                        setDestinationSuggestions([]);
-                        setDestination(null);
-                        setCalculatedRoute(null);
-                        setRouteDetails(null);
-                        setIsDropdownOpen(false);
-                        
-                        // Clear search timeout
-                        if (searchTimeoutRef.current) {
-                          clearTimeout(searchTimeoutRef.current);
+                      // Trigger enhanced search for category detection
+                      if (query.trim().length >= 2) {
+                        handleEnhancedSearch(query);
+                      } else {
+                        setCategorySearchResults([]);
+                        setSearchBoxSuggestions([]);
+                        setHybridResults([]);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        // Handle Enter key - could trigger a search or select first result
+                        console.log('📍 Enter pressed, current search value:', searchBoxValue);
+                      }
+                    }}
+                    sx={{ 
+                      mb: 1.5,
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 1.5,
+                        background: '#fff',
+                        '& fieldset': {
+                          borderColor: '#e0c9b3'
+                        },
+                        '&:hover fieldset': {
+                          borderColor: '#b08968'
+                        },
+                        '&.Mui-focused fieldset': {
+                          borderColor: '#b08968'
                         }
                       }
                     }}
-                    onChange={(event, newValue) => {
-                      handleDestinationSelect(newValue);
-                    }}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        size="small"
-                        placeholder="Enter destination (e.g., American Airlines Center, DFW Airport)"
-                        InputProps={{
-                          ...params.InputProps,
-                          endAdornment: (
-                            <>
-                              {isLoadingSuggestions && <SimpleLoading size="small" />}
-                              {destinationSuggestions.length > 0 && !isLoadingSuggestions && (
-                                <Box sx={{ color: '#b08968', fontSize: '0.75rem', mr: 1 }}>
-                                  {destinationSuggestions.length} found
-                                </Box>
-                              )}
-                              {params.InputProps.endAdornment}
-                            </>
-                          ),
-                        }}
-                        sx={{ 
-                          '& .MuiOutlinedInput-root': {
-                            borderRadius: 1.5,
-                            background: '#fff',
-                            '& fieldset': {
-                              borderColor: destinationSuggestions.length > 0 ? '#b08968' : '#e0c9b3'
-                            },
-                            '&:hover fieldset': {
-                              borderColor: '#b08968'
-                            },
-                            '&.Mui-focused fieldset': {
-                              borderColor: '#b08968'
-                            }
-                          }
-                        }}
-                      />
-                    )}
-                    renderOption={(props, option) => (
-                      <Box component="li" {...props} sx={{ py: 1 }}>
-                            <Box>
-                          <Typography variant="body2" color="#4e342e" fontWeight={500}>
-                            📍 {option.display_name}
-                              </Typography>
-                            {option.distance && option.distance > 0 && (
-                            <Typography variant="caption" color="#b08968">
-                                {option.distance < 1 ? `${(option.distance * 1000).toFixed(0)}m` : `${option.distance.toFixed(1)}km`} away
-                            </Typography>
-                            )}
-                          </Box>
-                        </Box>
-                    )}
-                    PopperComponent={(props) => (
-                      <Popper
-                        {...props}
-                        placement="bottom-start"
-                        sx={{
-                          '& .MuiAutocomplete-paper': {
-                            background: '#fff',
-                            border: '1px solid #e0c9b3',
-                            borderRadius: 2,
-                            boxShadow: '0 4px 20px rgba(176, 137, 104, 0.15)',
-                            mt: 0.5,
-                            zIndex: 9999
-                          }
-                        }}
-                      />
-                    )}
-                    sx={{
-                      '& .MuiAutocomplete-inputRoot': {
-                        padding: '8px 12px'
-                      }
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ color: '#b08968' }} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: searchBoxValue && (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            onClick={() => {
+                              setSearchBoxValue('');
+                              setCategorySearchResults([]);
+                              setSearchBoxSuggestions([]);
+                              setHybridResults([]);
+                            }}
+                            sx={{ color: '#b08968' }}
+                          >
+                            <ClearIcon fontSize="small" />
+                          </IconButton>
+                        </InputAdornment>
+                      )
                     }}
                   />
+                  
+                  {/* Category Search Results Display */}
+                  {categorySearchResults.length > 0 && (
+                    <Box mt={1.5} mb={1.5}>
+                      <Box sx={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        mb: 1,
+                        p: 1,
+                        backgroundColor: '#f9f6ef',
+                        borderRadius: 1,
+                        border: '1px solid #b08968'
+                      }}>
+                        <Typography variant="subtitle2" color="#4e342e" sx={{ fontWeight: 600 }}>
+                          🎯 Category Search Results ({categorySearchResults.length})
+                        </Typography>
+                        <Typography variant="caption" color="#b08968" sx={{ ml: 1 }}>
+                          • Click to select destination
+                        </Typography>
+                      </Box>
+                      <Box sx={{ maxHeight: '250px', overflowY: 'auto' }}>
+                        {categorySearchResults.map((result, index) => (
+                          <Box
+                            key={`${result.name}-${result.lat}-${result.lng}-${index}`}
+                            sx={{
+                              p: 1.5,
+                              mb: 0.5,
+                              border: '1px solid #e0c9b3',
+                              borderRadius: 1,
+                              cursor: 'pointer',
+                              backgroundColor: '#fff',
+                              transition: 'all 0.2s ease',
+                              '&:hover': {
+                                backgroundColor: '#f9f6ef',
+                                borderColor: '#b08968',
+                                transform: 'translateY(-1px)',
+                                boxShadow: '0 2px 8px rgba(176, 137, 104, 0.15)'
+                              }
+                            }}
+                            onClick={() => {
+                              if (result.lat && result.lng) {
+                                // Use the same handler as map markers for consistency
+                                handleDestinationSelect(result);
+                                showLocalNotification('Destination set from category search!', 'success');
+                              }
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <Box sx={{ flex: 1 }}>
+                                <Typography variant="body2" color="#4e342e" fontWeight={500} sx={{ mb: 0.5 }}>
+                                  {result.name || result.display_name}
+                                </Typography>
+                                <Typography variant="caption" color="#b08968" sx={{ display: 'block' }}>
+                                  {result.address || result.fullAddress}
+                                </Typography>
+                                {result.brand && result.brand.length > 0 && (
+                                  <Typography variant="caption" color="#4caf50" sx={{ display: 'block', mt: 0.5 }}>
+                                    Brand: {result.brand.join(', ')}
+                                  </Typography>
+                                )}
+                              </Box>
+                              {result.distance && (
+                                <Typography variant="caption" color="#b08968" sx={{ 
+                                  fontWeight: 600,
+                                  backgroundColor: '#f0f0f0',
+                                  px: 1,
+                                  py: 0.5,
+                                  borderRadius: 0.5,
+                                  ml: 1
+                                }}>
+                                  {result.distance.toFixed(1)} mi
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  {/* Hybrid Results Display */}
+                  {hybridResults.length > 0 && (
+                    <Box mt={1.5} mb={1.5}>
+                      <Box sx={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        mb: 1,
+                        p: 1,
+                        backgroundColor: '#e8f5e8',
+                        borderRadius: 1,
+                        border: '1px solid #4caf50'
+                      }}>
+                        <Typography variant="subtitle2" color="#2e7d32" sx={{ fontWeight: 600 }}>
+                          🔄 Hybrid Results ({hybridResults.length})
+                        </Typography>
+                        <Typography variant="caption" color="#4caf50" sx={{ ml: 1 }}>
+                          • Category + Search Box suggestions
+                        </Typography>
+                      </Box>
+                      <Box sx={{ maxHeight: '300px', overflowY: 'auto' }}>
+                        {hybridResults.map((result, index) => (
+                          <Box
+                            key={`hybrid-${result.name}-${result.lat}-${result.lng}-${index}`}
+                            sx={{
+                              p: 1.5,
+                              mb: 0.5,
+                              border: `1px solid ${result.source === 'category' ? '#b08968' : '#4caf50'}`,
+                              borderRadius: 1,
+                              cursor: 'pointer',
+                              backgroundColor: result.source === 'category' ? '#f9f6ef' : '#f1f8e9',
+                              transition: 'all 0.2s ease',
+                              '&:hover': {
+                                backgroundColor: result.source === 'category' ? '#f0e6d9' : '#e8f5e8',
+                                borderColor: result.source === 'category' ? '#a47551' : '#388e3c',
+                                transform: 'translateY(-1px)',
+                                boxShadow: `0 2px 8px rgba(${result.source === 'category' ? '176, 137, 104' : '76, 175, 80'}, 0.15)`
+                              }
+                            }}
+                            onClick={() => {
+                              if (result.lat && result.lng) {
+                                // Use the same handler as map markers for consistency
+                                handleDestinationSelect(result);
+                                showLocalNotification(`Destination set from ${result.source} search!`, 'success');
+                              }
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <Box sx={{ flex: 1 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+                                  <Typography variant="body2" color="#2e7d32" fontWeight={500}>
+                                    {result.name || result.display_name}
+                                  </Typography>
+                                  <Typography variant="caption" sx={{ 
+                                    ml: 1, 
+                                    px: 0.5, 
+                                    py: 0.25, 
+                                    borderRadius: 0.5,
+                                    backgroundColor: result.source === 'category' ? '#b08968' : '#4caf50',
+                                    color: '#fff',
+                                    fontSize: '0.7rem'
+                                  }}>
+                                    {result.source}
+                                  </Typography>
+                                </Box>
+                                <Typography variant="caption" color="#666" sx={{ display: 'block' }}>
+                                  {result.address || result.fullAddress}
+                                </Typography>
+                                {result.brand && result.brand.length > 0 && (
+                                  <Typography variant="caption" color="#4caf50" sx={{ display: 'block', mt: 0.5 }}>
+                                    Brand: {result.brand.join(', ')}
+                                  </Typography>
+                                )}
+                              </Box>
+                              {result.distance && (
+                                <Typography variant="caption" color="#666" sx={{ 
+                                  fontWeight: 600,
+                                  backgroundColor: '#f0f0f0',
+                                  px: 1,
+                                  py: 0.5,
+                                  borderRadius: 0.5,
+                                  ml: 1
+                                }}>
+                                  {result.distance.toFixed(1)} mi
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
+                    </Box>
+                  )}
+                  
+                  {/* Category Search Loading */}
+                  {isCategorySearching && (
+                    <Box mt={1.5} sx={{ display: 'flex', alignItems: 'center', color: '#b08968' }}>
+                      <SimpleLoading size="small" />
+                      <Typography variant="body2" sx={{ ml: 1 }}>
+                        Searching category...
+                      </Typography>
+                    </Box>
+                  )}
                   
                   {/* Route Status Display */}
                   {destination && userLocation && creatorRole === 'driver' && (
@@ -2580,6 +4402,8 @@ function RouteOptimizer({ mode = 'create' }) {
                               console.log('🧹 Clearing route');
                               setCalculatedRoute(null);
                               setRouteDetails(null);
+                              setShowRoutePreview(false);
+                              setRoutePreviewData(null);
                             }}
                             sx={{ 
                               color: '#b08968', 
@@ -2595,6 +4419,44 @@ function RouteOptimizer({ mode = 'create' }) {
                       ) : null}
                     </Box>
                   )}
+                  
+                  {/* Debug Button */}
+                  <Box mt={1}>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={testSearchAndMarkers}
+                      sx={{ 
+                        color: '#b08968', 
+                        borderColor: '#e0c9b3',
+                        fontSize: '0.75rem',
+                        '&:hover': {
+                          background: '#f9f6ef'
+                        }
+                      }}
+                    >
+                      🧪 Test Search & Markers
+                    </Button>
+                  </Box>
+                  
+                  {/* Additional Debug Button */}
+                  <Box mt={1}>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      onClick={testSetSuggestions}
+                      sx={{ 
+                        color: '#b08968', 
+                        borderColor: '#e0c9b3',
+                        fontSize: '0.75rem',
+                        '&:hover': {
+                          background: '#f9f6ef'
+                        }
+                      }}
+                    >
+                      🧪 Test Set Suggestions
+                    </Button>
+                  </Box>
                 </Box>
               )}
             </CardContent>
@@ -2707,8 +4569,9 @@ function RouteOptimizer({ mode = 'create' }) {
                             {user.name || 'Unknown User'}
                           </Typography>
                         }
-                        secondary={
-                          <FormControl size="small" sx={{ minWidth: 100, mt: 0.5 }}>
+                      />
+                      <Box sx={{ mt: 0.5 }}>
+                        <FormControl size="small" sx={{ minWidth: 100 }}>
                             <Select
                               value={user.role}
                               onChange={(e) => handleRoleChange(user.tempId, e.target.value)}
@@ -2734,8 +4597,7 @@ function RouteOptimizer({ mode = 'create' }) {
                               </MenuItem>
                             </Select>
                           </FormControl>
-                        }
-                      />
+                      </Box>
                       <ListItemSecondaryAction>
                         <IconButton 
                           edge="end" 
@@ -2872,7 +4734,12 @@ function RouteOptimizer({ mode = 'create' }) {
       </Paper>
 
       {/* Map Container */}
-      <Box sx={{ flex: 1, position: 'relative' }}>
+      <Box sx={{ 
+        flex: 1, 
+        position: 'relative',
+        width: isSidebarOpen ? 'calc(100% - 420px)' : '100%',
+        transition: 'width 0.3s ease'
+      }}>
         <Box sx={{ position: 'absolute', top: 16, left: 16, zIndex: 1000 }}>
           <Fab
             color="primary"
@@ -2890,20 +4757,78 @@ function RouteOptimizer({ mode = 'create' }) {
           </Fab>
         </Box>
 
-        <Box sx={{ height: '100vh', width: '100%' }}>
+        <Box sx={{ height: '100vh', width: '100%', position: 'relative' }}>
           <MapView 
             ref={mapRef}
             users={users} 
             destination={destination}
             userLocation={userLocation}
             calculatedRoute={calculatedRoute}
+            destinationSuggestions={categorySearchResults.length > 0 ? categorySearchResults : destinationSuggestions}
             onSetDestinationFromMap={(coords) => handleDestinationChange(coords)}
+            onSuggestionSelect={handleDestinationSelect}
             onRouteUpdate={(route) => {
               console.log('Route updated:', route);
               setCalculatedRoute(route);
             }}
             onMapClick={handleMapClick}
+            mapClickMode={mapClickMode}
           />
+          
+          {/* Map Click Mode Indicator */}
+          {mapClickMode && (
+            <>
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  background: 'rgba(176, 137, 104, 0.9)',
+                  color: '#fff',
+                  padding: '12px 24px',
+                  borderRadius: '8px',
+                  fontSize: '16px',
+                  fontWeight: 500,
+                  zIndex: 1000,
+                  pointerEvents: 'none',
+                  animation: 'pulse 2s infinite',
+                  '@keyframes pulse': {
+                    '0%': { opacity: 1 },
+                    '50%': { opacity: 0.7 },
+                    '100%': { opacity: 1 }
+                  }
+                }}
+              >
+                {mapClickMode === 'destination' ? 'Click to set destination' : 'Click to set location'}
+              </Box>
+              
+              {/* Cancel Button */}
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 80,
+                  right: 16,
+                  zIndex: 1000
+                }}
+              >
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={() => setMapClickMode(null)}
+                  sx={{
+                    background: '#f44336',
+                    color: '#fff',
+                    '&:hover': {
+                      background: '#d32f2f'
+                    }
+                  }}
+                >
+                  Cancel
+                </Button>
+              </Box>
+            </>
+          )}
         </Box>
       </Box>
 
@@ -2999,8 +4924,171 @@ function RouteOptimizer({ mode = 'create' }) {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Sleek Compact Route Preview Modal */}
+      {showRoutePreview && routePreviewData && (
+        <Box
+          sx={{
+            position: 'fixed',
+            bottom: 20,
+            left: isSidebarOpen ? 'calc(50% + 200px)' : '50%', // Center over map area
+            transform: 'translateX(-50%)',
+            zIndex: 2000,
+            background: 'rgba(255, 255, 255, 0.94)',
+            backdropFilter: 'blur(20px)',
+            borderRadius: '12px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08)',
+            border: '1px solid rgba(255, 255, 255, 0.5)',
+            width: '420px',
+            maxWidth: 'calc(100vw - 40px)',
+            overflow: 'hidden',
+            animation: 'slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            '@keyframes slideUp': {
+              '0%': {
+                opacity: 0,
+                transform: 'translateX(-50%) translateY(12px)',
+              },
+              '100%': {
+                opacity: 1,
+                transform: 'translateX(-50%) translateY(0)',
+              }
+            }
+          }}
+        >
+          {/* Ultra Compact Header */}
+          <Box
+            sx={{
+              background: 'linear-gradient(135deg, rgba(76, 175, 80, 0.9), rgba(69, 160, 73, 0.9))',
+              backdropFilter: 'blur(10px)',
+              color: 'white',
+              padding: '8px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.15)'
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <DirectionsCarIcon sx={{ fontSize: 16, color: 'white' }} />
+              <Typography variant="body2" fontWeight={600} sx={{ fontSize: '0.9rem' }}>
+                {routePreviewData.destination}
+              </Typography>
+            </Box>
+            <IconButton
+              onClick={() => {
+                // Clear the route preview modal
+                setShowRoutePreview(false);
+                setRoutePreviewData(null);
+                
+                // Clear the destination and route data
+                setDestination(null);
+                setCalculatedRoute(null);
+                setRouteDetails(null);
+                
+                // Clear any destination suggestions
+                setDestinationSuggestions([]);
+                
+                // Clear the destination input field
+                setForm(prev => ({
+                  ...prev,
+                  destination: ''
+                }));
+                
+                console.log('Route preview modal closed - destination and route cleared');
+              }}
+              size="small"
+              sx={{ 
+                color: 'white', 
+                background: 'rgba(255,255,255,0.1)',
+                padding: '4px',
+                '&:hover': { 
+                  background: 'rgba(255,255,255,0.2)',
+                  transform: 'scale(1.05)'
+                },
+                transition: 'all 0.2s ease'
+              }}
+            >
+              <CloseIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Box>
+
+          {/* Ultra Compact Horizontal Layout */}
+          <Box sx={{ 
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2.5
+          }}>
+            {/* Seats Available Placeholder */}
+            <Box sx={{ 
+              flex: 1,
+              minHeight: '48px',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '8px 12px',
+              background: 'rgba(255, 193, 7, 0.08)',
+              borderRadius: '8px',
+              border: '1px dashed rgba(255, 193, 7, 0.3)'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <PersonIcon sx={{ fontSize: 14, color: 'rgba(255, 193, 7, 0.7)' }} />
+                <Typography 
+                  variant="caption" 
+                  color="rgba(255, 193, 7, 0.7)" 
+                  sx={{ 
+                    fontSize: '0.65rem',
+                    lineHeight: 1.3,
+                    fontStyle: 'italic'
+                  }}
+                >
+                  Seats: 4 available
+                </Typography>
+              </Box>
+            </Box>
+
+            {/* Distance Display */}
+            <Box sx={{ 
+              textAlign: 'center',
+              minWidth: '70px',
+              padding: '6px 10px',
+              background: 'rgba(255, 255, 255, 0.95)',
+              borderRadius: '8px',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
+              border: '1px solid rgba(76, 175, 80, 0.08)'
+            }}>
+              <Typography variant="h6" fontWeight={700} color="#2c3e50" sx={{ lineHeight: 1, fontSize: '1.1rem' }}>
+                {routePreviewData.distance}
+              </Typography>
+              <Typography variant="caption" color="#7f8c8d" fontWeight={500} sx={{ fontSize: '0.65rem' }}>
+                miles
+              </Typography>
+            </Box>
+
+            {/* Time Display */}
+            <Box sx={{ 
+              textAlign: 'center',
+              minWidth: '70px',
+              padding: '6px 10px',
+              background: 'rgba(255, 255, 255, 0.95)',
+              borderRadius: '8px',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
+              border: '1px solid rgba(76, 175, 80, 0.08)'
+            }}>
+              <Typography variant="h6" fontWeight={700} color="#2c3e50" sx={{ lineHeight: 1, fontSize: '1.1rem' }}>
+                {routePreviewData.duration}
+              </Typography>
+              <Typography variant="caption" color="#7f8c8d" fontWeight={500} sx={{ fontSize: '0.65rem' }}>
+                min
+              </Typography>
+            </Box>
+
+
+          </Box>
+        </Box>
+      )}
     </Box>
   );
 }
 
 export default RouteOptimizer;
+

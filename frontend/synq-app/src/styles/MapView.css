@@ -29,6 +29,7 @@
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
 }
 
 /* Ensure the map container fills its parent */
@@ -250,4 +251,842 @@
 
 .pickup-popup-content strong {
   color: #333;
+}
+
+/* Suggestion markers styling */
+.suggestion-marker {
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  animation: pulse 2s infinite;
+}
+
+.suggestion-marker:hover {
+  transform: scale(1.1);
+  animation: none; /* Stop pulsing on hover */
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+}
+
+/* Suggestion popup styling */
+.suggestion-popup-container {
+  font-family: 'Roboto', sans-serif;
+}
+
+.suggestion-popup {
+  padding: 0;
+  margin: 0;
+}
+
+.suggestion-popup h4 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #4e342e;
+  line-height: 1.3;
+}
+
+.suggestion-popup p {
+  margin: 4px 0;
+  font-size: 13px;
+  color: #7c5e48;
+  line-height: 1.4;
+}
+
+.suggestion-popup .distance {
+  font-weight: 500;
+  color: #b08968;
+  margin-bottom: 8px;
+}
+
+.suggestion-popup .address {
+  font-style: italic;
+  color: #b08968;
+  margin-bottom: 8px;
+  word-wrap: break-word;
+}
+
+.suggestion-popup .category {
+  font-size: 11px;
+  color: #b08968;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.suggestion-popup .services {
+  font-size: 11px;
+  color: #2196F3;
+  background-color: #e3f2fd;
+  border-radius: 4px;
+  border-left: 3px solid #2196F3;
+  padding: 6px 8px;
+  margin-bottom: 12px;
+  line-height: 1.3;
+}
+
+.select-location-btn {
+  background: linear-gradient(135deg, #b08968 0%, #a47551 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  margin-top: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.select-location-btn:hover {
+  background: linear-gradient(135deg, #a47551 0%, #8b6b47 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(176, 137, 104, 0.3);
+}
+
+.select-location-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(176, 137, 104, 0.3);
+}
+
+.select-location-btn:focus {
+  outline: 2px solid #b08968;
+  outline-offset: 2px;
+}
+
+/* Mapbox popup customization */
+.mapboxgl-popup-content {
+  background: white;
+  border: 1px solid #e0c9b3;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(176, 137, 104, 0.2);
+  padding: 16px;
+  min-width: 250px;
+  max-width: 300px;
+  z-index: 10000;
+}
+
+.mapboxgl-popup-close-button {
+  color: #b08968;
+  font-size: 18px;
+  font-weight: bold;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  z-index: 10001;
+}
+
+.mapboxgl-popup-close-button:hover {
+  background-color: #f9f6ef;
+  color: #8b6b47;
+}
+
+.mapboxgl-popup-close-button:focus {
+  outline: 2px solid #b08968;
+  outline-offset: 2px;
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: #e0c9b3;
+}
+
+/* Ensure popup is above other elements */
+.mapboxgl-popup {
+  z-index: 10000;
+}
+
+.mapboxgl-popup-content {
+  z-index: 10001;
+}
+
+/* Hover effects for suggestion markers */
+.mapboxgl-canvas {
+  cursor: default;
+}
+
+.mapboxgl-canvas.suggestion-hover {
+  cursor: pointer;
+}
+
+/* Map animation classes */
+.map-container.suggestions-visible {
+  box-shadow: 0 4px 20px rgba(156, 39, 176, 0.15);
+}
+
+/* Smooth transitions for map elements */
+.mapboxgl-canvas {
+  transition: all 0.3s ease;
+}
+
+/* Loading overlay for map animations */
+.map-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.map-loading-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.map-loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e0c9b3;
+  border-top: 3px solid #b08968;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Enhanced suggestion popup styles */
+.suggestion-popup-container.enhanced .mapboxgl-popup-content {
+  padding: 0;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e0e0e0;
+  max-width: 350px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.suggestion-popup.enhanced {
+  padding: 16px;
+  background: white;
+  border-radius: 12px;
+}
+
+.suggestion-popup.enhanced .suggestion-name {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+  line-height: 1.3;
+}
+
+.suggestion-popup.enhanced .suggestion-details {
+  margin-bottom: 12px;
+}
+
+.suggestion-popup.enhanced .suggestion-details p {
+  margin: 6px 0;
+  font-size: 13px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.suggestion-popup.enhanced .suggestion-details .icon {
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+}
+
+.suggestion-popup.enhanced .distance {
+  color: #2196F3 !important;
+  font-weight: 500;
+}
+
+.suggestion-popup.enhanced .address {
+  color: #555 !important;
+}
+
+.suggestion-popup.enhanced .category {
+  color: #888 !important;
+}
+
+.suggestion-popup.enhanced .coordinate-source {
+  color: #999 !important;
+  font-size: 11px !important;
+}
+
+.suggestion-popup.enhanced .services-section {
+  margin: 12px 0;
+  padding: 8px 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+.suggestion-popup.enhanced .services-section strong {
+  font-size: 12px;
+  color: #666;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.suggestion-popup.enhanced .services-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #777;
+}
+
+.suggestion-popup.enhanced .services-list li {
+  margin: 2px 0;
+}
+
+.suggestion-popup.enhanced .metadata-section {
+  margin: 8px 0;
+  padding: 6px 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+.suggestion-popup.enhanced .metadata-section small {
+  color: #999;
+  line-height: 1.4;
+}
+
+.suggestion-popup.enhanced .select-location-btn.enhanced {
+  width: 100%;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.suggestion-popup.enhanced .select-location-btn.enhanced:hover {
+  background: linear-gradient(135deg, #45a049, #3d8b40);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+}
+
+.suggestion-popup.enhanced .select-location-btn.enhanced:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(76, 175, 80, 0.3);
+}
+
+.suggestion-popup.enhanced .select-location-btn.enhanced .icon {
+  font-size: 16px;
+}
+
+/* Enhanced map marker styles */
+.mapboxgl-marker.suggestion-marker {
+  cursor: pointer;
+  transition: transform 0.2s ease;
+}
+
+.mapboxgl-marker.suggestion-marker:hover {
+  transform: scale(1.1);
+}
+
+/* Coordinate source indicator styles */
+.coordinate-source-indicator {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.coordinate-source-api {
+  background: #FF1744;
+}
+
+.coordinate-source-fallback_geocoding {
+  background: #FF9800;
+}
+
+.coordinate-source-coordinates {
+  background: #4CAF50;
+}
+
+.coordinate-source-center {
+  background: #2196F3;
+}
+
+.coordinate-source-unknown {
+  background: #9C27B0;
+}
+
+/* Enhanced loading states */
+.suggestion-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: #666;
+  font-size: 14px;
+}
+
+.suggestion-loading::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  border: 2px solid #f3f3f3;
+  border-top: 2px solid #2196F3;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Enhanced error states */
+.suggestion-error {
+  padding: 16px;
+  background: #fff3f3;
+  border: 1px solid #ffcdd2;
+  border-radius: 8px;
+  color: #d32f2f;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.suggestion-error::before {
+  content: '⚠️ ';
+  margin-right: 4px;
+}
+
+/* Responsive design for mobile */
+@media (max-width: 768px) {
+  .suggestion-popup-container.enhanced .mapboxgl-popup-content {
+    max-width: 280px;
+  }
+  
+  .suggestion-popup.enhanced {
+    padding: 12px;
+  }
+  
+  .suggestion-popup.enhanced .suggestion-name {
+    font-size: 14px;
+  }
+  
+  .suggestion-popup.enhanced .suggestion-details p {
+    font-size: 12px;
+  }
+  
+  .suggestion-popup.enhanced .select-location-btn.enhanced {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+}
+
+/* Accessibility improvements */
+.suggestion-popup.enhanced .select-location-btn.enhanced:focus {
+  outline: 2px solid #2196F3;
+  outline-offset: 2px;
+}
+
+.suggestion-popup.enhanced .select-location-btn.enhanced:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .suggestion-popup.enhanced {
+    border: 2px solid #000;
+  }
+  
+  .suggestion-popup.enhanced .suggestion-name {
+    color: #000;
+  }
+  
+  .suggestion-popup.enhanced .suggestion-details p {
+    color: #333;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .suggestion-popup.enhanced .select-location-btn.enhanced {
+    transition: none;
+  }
+  
+  .suggestion-popup.enhanced .select-location-btn.enhanced:hover {
+    transform: none;
+  }
+  
+  .mapboxgl-marker.suggestion-marker {
+    transition: none;
+  }
+  
+  .mapboxgl-marker.suggestion-marker:hover {
+    transform: none;
+  }
+}
+
+/* POI Popup - Google Maps-like Design */
+.poi-popup-container .mapboxgl-popup-content {
+  background: white;
+  border: none;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  padding: 0;
+  min-width: 320px;
+  max-width: 380px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
+}
+
+.poi-popup {
+  padding: 0;
+  margin: 0;
+}
+
+/* Header Section */
+.poi-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.poi-icon {
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8f9fa;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.poi-title-section {
+  flex: 1;
+  min-width: 0;
+}
+
+.poi-name {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+  line-height: 1.3;
+  word-wrap: break-word;
+}
+
+.poi-category {
+  font-size: 13px;
+  color: #666;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+/* Rating and Distance Section */
+.poi-rating-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fafafa;
+}
+
+.poi-rating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stars {
+  color: #ffc107;
+  font-size: 14px;
+  letter-spacing: -1px;
+}
+
+.rating-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+.poi-distance {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.distance-icon {
+  font-size: 12px;
+}
+
+.distance-text {
+  font-size: 13px;
+  color: #666;
+  font-weight: 500;
+}
+
+/* Address Section */
+.poi-address {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.address-icon {
+  font-size: 14px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.address-text {
+  font-size: 13px;
+  color: #333;
+  line-height: 1.4;
+  word-wrap: break-word;
+}
+
+/* Business Hours Section */
+.poi-hours {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.hours-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.hours-text {
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+}
+
+/* Action Buttons Section */
+.poi-actions {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  background: #fafafa;
+}
+
+.poi-action-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-decoration: none;
+  font-family: inherit;
+}
+
+.poi-action-btn.primary {
+  background: linear-gradient(135deg, #b08968 0%, #a47551 100%);
+  color: white;
+}
+
+.poi-action-btn.primary:hover {
+  background: linear-gradient(135deg, #a47551 0%, #8b6b47 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(176, 137, 104, 0.3);
+}
+
+.poi-action-btn.secondary {
+  background: white;
+  color: #666;
+  border: 1px solid #e0e0e0;
+}
+
+.poi-action-btn.secondary:hover {
+  background: #f8f9fa;
+  border-color: #b08968;
+  color: #b08968;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn-icon {
+  font-size: 14px;
+}
+
+.btn-text {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Additional Info Section */
+.poi-additional {
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-top: 1px solid #f0f0f0;
+}
+
+.additional-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.additional-item:last-child {
+  margin-bottom: 0;
+}
+
+.item-label {
+  font-size: 12px;
+  color: #666;
+  font-weight: 500;
+}
+
+.item-value {
+  font-size: 12px;
+  color: #333;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Close Button Styling */
+.poi-popup-container .mapboxgl-popup-close-button {
+  color: #666;
+  font-size: 18px;
+  font-weight: bold;
+  padding: 8px;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.poi-popup-container .mapboxgl-popup-close-button:hover {
+  background: rgba(255, 255, 255, 1);
+  color: #333;
+  transform: scale(1.1);
+}
+
+.poi-popup-container .mapboxgl-popup-tip {
+  border-top-color: white;
+}
+
+/* Responsive Design */
+@media (max-width: 480px) {
+  .poi-popup-container .mapboxgl-popup-content {
+    min-width: 280px;
+    max-width: 320px;
+  }
+  
+  .poi-header {
+    padding: 12px 12px 8px 12px;
+  }
+  
+  .poi-rating-section {
+    padding: 8px 12px;
+  }
+  
+  .poi-address,
+  .poi-hours {
+    padding: 8px 12px;
+  }
+  
+  .poi-actions {
+    padding: 12px;
+    flex-direction: column;
+  }
+  
+  .poi-additional {
+    padding: 8px 12px;
+  }
+}
+
+/* Animation for popup appearance */
+.poi-popup-container .mapboxgl-popup {
+  animation: popupSlideIn 0.3s ease-out;
+}
+
+@keyframes popupSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Hover effects for interactive elements */
+.poi-action-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.poi-action-btn:focus {
+  outline: 2px solid #b08968;
+  outline-offset: 2px;
+}
+
+/* Loading state for buttons */
+.poi-action-btn.loading {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.poi-action-btn.loading .btn-text {
+  opacity: 0.5;
+}
+
+/* Success state for primary button */
+.poi-action-btn.primary.success {
+  background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
+}
+
+/* Error state for buttons */
+.poi-action-btn.error {
+  background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%);
+  color: white;
 } 

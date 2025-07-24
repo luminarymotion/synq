@@ -1,45 +1,296 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { doc, updateDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 import { updateUserLocation } from './firebaseOperations';
 import { getAddressFromCoords } from './locationService';
 
-// Configuration with different presets for different use cases
+// Enhanced logging utility
+class LocationLogger {
+  constructor(serviceName = 'LocationTracking') {
+    this.serviceName = serviceName;
+    this.enabled = true;
+    this.logLevel = 'info'; // 'debug', 'info', 'warn', 'error'
+  }
+
+  setLogLevel(level) {
+    this.logLevel = level;
+  }
+
+  shouldLog(level) {
+    const levels = { debug: 0, info: 1, warn: 2, error: 3 };
+    return levels[level] >= levels[this.logLevel];
+  }
+
+  formatMessage(level, message, data = null) {
+    const timestamp = new Date().toISOString();
+    const prefix = `[${timestamp}] [${this.serviceName}] [${level.toUpperCase()}]`;
+    
+    if (data) {
+      return `${prefix} ${message}`, data;
+    }
+    return `${prefix} ${message}`;
+  }
+
+  debug(message, data = null) {
+    if (this.shouldLog('debug')) {
+      if (data) {
+        console.log(this.formatMessage('debug', message), data);
+      } else {
+        console.log(this.formatMessage('debug', message));
+      }
+    }
+  }
+
+  info(message, data = null) {
+    if (this.shouldLog('info')) {
+      if (data) {
+        console.log(this.formatMessage('info', message), data);
+      } else {
+        console.log(this.formatMessage('info', message));
+      }
+    }
+  }
+
+  warn(message, data = null) {
+    if (this.shouldLog('warn')) {
+      if (data) {
+        console.warn(this.formatMessage('warn', message), data);
+      } else {
+        console.warn(this.formatMessage('warn', message));
+      }
+    }
+  }
+
+  error(message, data = null) {
+    if (this.shouldLog('error')) {
+      if (data) {
+        console.error(this.formatMessage('error', message), data);
+      } else {
+        console.error(this.formatMessage('error', message));
+      }
+    }
+  }
+}
+
+// Parameter validation utility
+class LocationValidator {
+  static validateUserId(userId) {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+    if (typeof userId !== 'string') {
+      throw new Error('User ID must be a string');
+    }
+    if (userId.trim().length === 0) {
+      throw new Error('User ID cannot be empty');
+    }
+    return true;
+  }
+
+  static validateCoordinates(latitude, longitude) {
+    if (typeof latitude !== 'number' || isNaN(latitude)) {
+      throw new Error('Latitude must be a valid number');
+    }
+    if (typeof longitude !== 'number' || isNaN(longitude)) {
+      throw new Error('Longitude must be a valid number');
+    }
+    if (latitude < -90 || latitude > 90) {
+      throw new Error('Latitude must be between -90 and 90 degrees');
+    }
+    if (longitude < -180 || longitude > 180) {
+      throw new Error('Longitude must be between -180 and 180 degrees');
+    }
+    return true;
+  }
+
+  static validatePosition(position) {
+    if (!position) {
+      throw new Error('Position object is required');
+    }
+    if (!position.coords) {
+      throw new Error('Position must have coords property');
+    }
+    
+    const { latitude, longitude, accuracy } = position.coords;
+    
+    this.validateCoordinates(latitude, longitude);
+    
+    if (typeof accuracy !== 'number' || isNaN(accuracy)) {
+      throw new Error('Accuracy must be a valid number');
+    }
+    if (accuracy < 0) {
+      throw new Error('Accuracy cannot be negative');
+    }
+    
+    return true;
+  }
+
+  static validateLocationData(locationData) {
+    if (!locationData) {
+      throw new Error('Location data is required');
+    }
+    
+    const { latitude, longitude, accuracy, timestamp } = locationData;
+    
+    this.validateCoordinates(latitude, longitude);
+    
+    if (typeof accuracy !== 'number' || isNaN(accuracy)) {
+      throw new Error('Accuracy must be a valid number');
+    }
+    if (accuracy < 0) {
+      throw new Error('Accuracy cannot be negative');
+    }
+    
+    if (typeof timestamp !== 'number' || isNaN(timestamp)) {
+      throw new Error('Timestamp must be a valid number');
+    }
+    if (timestamp <= 0) {
+      throw new Error('Timestamp must be a positive number');
+    }
+    
+    return true;
+  }
+
+  static validateConfig(config) {
+    if (!config) {
+      throw new Error('Configuration is required');
+    }
+    
+    const numericFields = [
+      'updateInterval', 'minDistance', 'maxAccuracy', 'maxAge',
+      'retryAttempts', 'retryDelay', 'offlineQueueSize',
+      'timeout', 'addressLookupInterval', 'firebaseBatchSize', 'firebaseBatchInterval'
+    ];
+    
+    for (const field of numericFields) {
+      if (typeof config[field] !== 'number' || isNaN(config[field])) {
+        throw new Error(`Configuration field '${field}' must be a valid number`);
+      }
+      if (config[field] < 0) {
+        throw new Error(`Configuration field '${field}' cannot be negative`);
+      }
+    }
+    
+    if (typeof config.enableHighAccuracy !== 'boolean') {
+      throw new Error('enableHighAccuracy must be a boolean');
+    }
+    
+    return true;
+  }
+
+  static validateOptions(options) {
+    if (options && typeof options !== 'object') {
+      throw new Error('Options must be an object');
+    }
+    
+    if (options?.preset && typeof options.preset !== 'string') {
+      throw new Error('Preset must be a string');
+    }
+    
+    if (options?.updateFirebase !== undefined && typeof options.updateFirebase !== 'boolean') {
+      throw new Error('updateFirebase must be a boolean');
+    }
+    
+    if (options?.onLocationUpdate && typeof options.onLocationUpdate !== 'function') {
+      throw new Error('onLocationUpdate must be a function');
+    }
+    
+    if (options?.onError && typeof options.onError !== 'function') {
+      throw new Error('onError must be a function');
+    }
+    
+    if (options?.onStatusChange && typeof options.onStatusChange !== 'function') {
+      throw new Error('onStatusChange must be a function');
+    }
+    
+    return true;
+  }
+}
+
+// Optimized configuration for faster tracking
 const LOCATION_CONFIG = {
-  // Basic tracking (for simple location display) - more lenient for office networks
-  basic: {
-    updateInterval: 30000, // 30 seconds (increased for office networks)
-    minDistance: 50, // 50 meters (increased for office networks)
-    maxAccuracy: 500, // 500 meters (increased for office networks)
-    maxAge: 60000, // 60 seconds (increased for office networks)
-    retryAttempts: 1, // Reduced retries to avoid endless loops
-    retryDelay: 2000, // Increased delay
-    offlineQueueSize: 10
+  // Desktop-friendly tracking (optimized for desktop browsers)
+  desktop: {
+    updateInterval: 5000, // 5 seconds
+    minDistance: 10, // 10 meters
+    maxAccuracy: 1000, // 1km (more lenient for desktop)
+    maxAge: 30000, // 30 seconds
+    retryAttempts: 2, // More retries for desktop
+    retryDelay: 1000, // 1 second
+    offlineQueueSize: 10,
+    enableHighAccuracy: false, // Use low accuracy for desktop
+    timeout: 8000, // 8 seconds (shorter timeout)
+    addressLookupInterval: 60000, // Only get address every minute
+    firebaseBatchSize: 5, // Batch Firebase updates
+    firebaseBatchInterval: 10000 // Send batches every 10 seconds
   },
-  // Real-time tracking (for ride sharing) - more lenient for office networks
-  realtime: {
-    updateInterval: 15000, // 15 seconds (increased for office networks)
-    minDistance: 25, // 25 meters (increased for office networks)
-    maxAccuracy: 300, // 300 meters (increased for office networks)
-    maxAge: 30000, // 30 seconds (increased for office networks)
-    retryAttempts: 2, // Reduced retries
-    retryDelay: 2000, // Increased delay
-    offlineQueueSize: 50
+  // Ultra-fast tracking (minimal overhead)
+  ultra_fast: {
+    updateInterval: 3000, // 3 seconds
+    minDistance: 5, // 5 meters
+    maxAccuracy: 50, // 50 meters
+    maxAge: 15000, // 15 seconds
+    retryAttempts: 1, // Minimal retries
+    retryDelay: 500, // 0.5 seconds
+    offlineQueueSize: 10,
+    enableHighAccuracy: true,
+    timeout: 15000, // 15 seconds
+    addressLookupInterval: 30000, // Only get address every 30 seconds
+    firebaseBatchSize: 5, // Batch Firebase updates
+    firebaseBatchInterval: 10000 // Send batches every 10 seconds
   },
-  // Office-friendly tracking (for restricted networks)
-  office: {
-    updateInterval: 60000, // 60 seconds
-    minDistance: 100, // 100 meters
-    maxAccuracy: 1000, // 1000 meters
+  // Fast tracking (optimized for speed)
+  fast: {
+    updateInterval: 5000, // 5 seconds
+    minDistance: 10, // 10 meters
+    maxAccuracy: 100, // 100 meters
+    maxAge: 30000, // 30 seconds
+    retryAttempts: 1, // Reduced retries
+    retryDelay: 1000, // 1 second
+    offlineQueueSize: 20,
+    enableHighAccuracy: true,
+    timeout: 20000, // 20 seconds
+    addressLookupInterval: 60000, // Only get address every minute
+    firebaseBatchSize: 3, // Batch Firebase updates
+    firebaseBatchInterval: 15000 // Send batches every 15 seconds
+  },
+  // Balanced tracking (good accuracy and speed)
+  balanced: {
+    updateInterval: 10000, // 10 seconds
+    minDistance: 20, // 20 meters
+    maxAccuracy: 200, // 200 meters
+    maxAge: 60000, // 1 minute
+    retryAttempts: 2, // Moderate retries
+    retryDelay: 1500, // 1.5 seconds
+    offlineQueueSize: 30,
+    enableHighAccuracy: true,
+    timeout: 25000, // 25 seconds
+    addressLookupInterval: 120000, // Only get address every 2 minutes
+    firebaseBatchSize: 5, // Batch Firebase updates
+    firebaseBatchInterval: 20000 // Send batches every 20 seconds
+  },
+  // Conservative tracking (for poor networks)
+  conservative: {
+    updateInterval: 30000, // 30 seconds
+    minDistance: 50, // 50 meters
+    maxAccuracy: 500, // 500 meters
     maxAge: 120000, // 2 minutes
-    retryAttempts: 1,
-    retryDelay: 5000, // 5 seconds
-    offlineQueueSize: 10
+    retryAttempts: 2, // Moderate retries
+    retryDelay: 2000, // 2 seconds
+    offlineQueueSize: 10,
+    enableHighAccuracy: false,
+    timeout: 35000, // 35 seconds
+    addressLookupInterval: 300000, // Only get address every 5 minutes
+    firebaseBatchSize: 3, // Batch Firebase updates
+    firebaseBatchInterval: 30000 // Send batches every 30 seconds
   }
 };
 
 class LocationTrackingService {
   constructor() {
+    this.logger = new LocationLogger('LocationTracking');
+    this.logger.info('Initializing LocationTrackingService');
+    
     this.watchId = null;
     this.lastUpdate = null;
     this.lastLocation = null;
@@ -50,292 +301,438 @@ class LocationTrackingService {
     this.onLocationUpdate = null;
     this.onError = null;
     this.onStatusChange = null;
-    this.config = LOCATION_CONFIG.basic; // Default to basic config
-    this.listeners = new Set(); // For React hook subscribers
+    
+    // Auto-detect desktop vs mobile and use appropriate config
+    const isDesktop = this.isDesktopBrowser();
+    this.config = isDesktop ? LOCATION_CONFIG.desktop : LOCATION_CONFIG.ultra_fast;
+    
+    this.logger.info('Browser detection', { isDesktop, configPreset: isDesktop ? 'desktop' : 'ultra_fast' });
+    
+    this.listeners = new Set();
+    this.addressCache = new Map(); // Cache addresses to avoid repeated lookups
+    this.lastAddressLookup = 0; // Track when we last looked up an address
+    this.firebaseBatch = []; // Batch Firebase updates
+    this.firebaseBatchTimeout = null; // Timeout for batch processing
+    this.pendingPositionRequest = null; // Prevent multiple simultaneous position requests
+    this.addressLookupPromise = null; // Prevent multiple simultaneous address lookups
+    
+    this.logger.info('LocationTrackingService initialized successfully');
+  }
+
+  // Detect if we're on a desktop browser
+  isDesktopBrowser() {
+    try {
+      const userAgent = navigator.userAgent.toLowerCase();
+      const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+      const isTablet = /ipad|android(?=.*\b(?!.*mobile))/i.test(userAgent);
+      
+      // Consider it desktop if not mobile and not tablet
+      const isDesktop = !isMobile && !isTablet;
+      
+      this.logger.debug('Browser detection', { userAgent, isMobile, isTablet, isDesktop });
+      return isDesktop;
+    } catch (error) {
+      this.logger.warn('Browser detection failed, defaulting to mobile', { error: error.message });
+      return false; // Default to mobile
+    }
   }
 
   // Set configuration preset
   setConfig(preset) {
-    if (LOCATION_CONFIG[preset]) {
+    try {
+      this.logger.info('Setting configuration preset', { preset });
+      
+      if (!LOCATION_CONFIG[preset]) {
+        throw new Error(`Invalid preset: ${preset}. Available presets: ${Object.keys(LOCATION_CONFIG).join(', ')}`);
+      }
+      
       this.config = LOCATION_CONFIG[preset];
+      LocationValidator.validateConfig(this.config);
+      
+      this.logger.info('Configuration preset set successfully', { preset, config: this.config });
       return true;
+    } catch (error) {
+      this.logger.error('Failed to set configuration preset', { preset, error: error.message });
+      return false;
     }
-    return false;
   }
 
   // Subscribe to location updates (for React hook)
   subscribe(listener) {
-    this.listeners.add(listener);
-    // If we already have a location, send it immediately
-    if (this.lastLocation) {
-      listener(this.lastLocation);
+    try {
+      if (typeof listener !== 'function') {
+        throw new Error('Listener must be a function');
+      }
+      
+      this.listeners.add(listener);
+      this.logger.debug('Listener subscribed', { totalListeners: this.listeners.size });
+      
+      // If we already have a location, send it immediately
+      if (this.lastLocation) {
+        this.logger.debug('Sending existing location to new listener');
+        listener(this.lastLocation);
+      }
+      
+      return () => {
+        this.listeners.delete(listener);
+        this.logger.debug('Listener unsubscribed', { totalListeners: this.listeners.size });
+      };
+    } catch (error) {
+      this.logger.error('Failed to subscribe listener', { error: error.message });
+      throw error;
     }
-    return () => this.listeners.delete(listener);
   }
 
-  // Start location tracking with optional Firebase integration
-  async startTracking(userId, options = {}) {
-    console.log('Starting location tracking with options:', {
-      userId,
-      options,
-      currentStatus: this.isTracking,
-      config: this.config,
-      geolocationSupported: 'geolocation' in navigator,
-      protocol: location.protocol,
-      hostname: location.hostname
-    });
-
-    if (this.isTracking) {
-      console.warn('Location tracking is already active');
-      return false;
-    }
-
-    // Set configuration based on options
-    if (options.preset && LOCATION_CONFIG[options.preset]) {
-      console.log('Setting config preset:', options.preset);
-      this.setConfig(options.preset);
-    }
-
-    this.userId = userId;
-    this.onLocationUpdate = options.onLocationUpdate;
-    this.onError = options.onError;
-    this.onStatusChange = options.onStatusChange;
-    this.updateFirebase = options.updateFirebase ?? false;
-
+  // Check location permissions (optimized)
+  async checkLocationPermission() {
+    this.logger.info('Checking location permissions');
+    
     try {
-      console.log('Getting initial position...');
-      // Get initial position with more lenient settings for office networks
-      let initialPosition = null;
-      try {
-        console.log('Calling getCurrentPosition...');
-        initialPosition = await this.getCurrentPosition();
-        console.log('Initial position received:', {
-          coords: initialPosition.coords,
-          timestamp: initialPosition.timestamp ? new Date(initialPosition.timestamp).toISOString() : 'No timestamp'
-        });
-        
-        // Only call handleLocationUpdate if we have a valid position
-        if (initialPosition && initialPosition.coords) {
-          console.log('Processing initial position...');
-          try {
-            await this.handleLocationUpdate(initialPosition);
-            console.log('Initial position processed successfully');
-          } catch (error) {
-            console.error('Error processing initial position:', error);
-            // Don't fail the entire tracking start if initial position processing fails
-            // The watchPosition will still work
-          }
-        }
-      } catch (positionError) {
-        console.warn('Failed to get initial position - likely blocked by office network:', {
-          error: positionError.message,
-          code: positionError.code,
-          stack: positionError.stack
-        });
-        
-        // For office networks, we'll start tracking in "manual mode"
-        // The user can manually set their location
-        this.isTracking = true;
-        this.onStatusChange?.('manual');
-        this.onError?.('Location tracking blocked by network. You can manually set your location.');
-        console.log('Started location tracking in manual mode due to network restrictions');
-        return true; // Return true to indicate "success" but in manual mode
+      if (!navigator.geolocation) {
+        this.logger.warn('Geolocation not supported by browser');
+        return { supported: false, permission: 'unsupported' };
       }
 
-      // Only set up watchPosition if we successfully got initial position
-      console.log('Setting up position watch...');
-      // Start watching position with better accuracy settings for office networks
+      // Check if we can get permissions (modern browsers)
+      if (navigator.permissions && navigator.permissions.query) {
+        try {
+          const permission = await navigator.permissions.query({ name: 'geolocation' });
+          this.logger.info('Permission status retrieved', { permission: permission.state });
+          return { 
+            supported: true, 
+            permission: permission.state,
+            canRequest: permission.state !== 'denied'
+          };
+        } catch (error) {
+          this.logger.warn('Could not check permissions via permissions API', { error: error.message });
+        }
+      }
+
+      // Fallback: try to get a quick position to test
+      this.logger.debug('Using fallback permission check');
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          this.logger.warn('Permission check timed out, assuming unknown');
+          resolve({ supported: true, permission: 'unknown', canRequest: true });
+        }, 2000);
+
+        navigator.geolocation.getCurrentPosition(
+          () => {
+            clearTimeout(timeout);
+            this.logger.info('Permission check successful - granted');
+            resolve({ supported: true, permission: 'granted', canRequest: false });
+          },
+          (error) => {
+            clearTimeout(timeout);
+            this.logger.warn('Permission check failed', { errorCode: error.code, errorMessage: error.message });
+            
+            if (error.code === 1) {
+              resolve({ supported: true, permission: 'denied', canRequest: false });
+            } else {
+              resolve({ supported: true, permission: 'unknown', canRequest: true });
+            }
+          },
+          { timeout: 2000, maximumAge: 60000, enableHighAccuracy: false }
+        );
+      });
+    } catch (error) {
+      this.logger.error('Permission check failed with exception', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Get helpful error message and suggestions
+  getLocationErrorHelp(errorCode) {
+    this.logger.debug('Getting error help', { errorCode });
+    
+    const help = {
+      1: {
+        title: 'Location Access Denied',
+        message: 'Your browser has denied location access.',
+        suggestions: [
+          'Click the location icon in your browser address bar and select "Allow"',
+          'Go to your browser settings and enable location access for this site',
+          'Try refreshing the page and allowing location when prompted'
+        ]
+      },
+      2: {
+        title: 'Location Unavailable',
+        message: 'Location information is currently unavailable.',
+        suggestions: [
+          'Check if your device has GPS enabled',
+          'Try moving to an area with better GPS signal',
+          'Wait a moment and try again'
+        ]
+      },
+      3: {
+        title: 'Location Request Timed Out',
+        message: 'The location request took too long to complete.',
+        suggestions: [
+          'Check your internet connection',
+          'Try moving to an area with better GPS signal',
+          'Wait a moment and try again',
+          'Try using a different browser'
+        ]
+      }
+    };
+
+    const result = help[errorCode] || {
+      title: 'Location Error',
+      message: 'An unknown error occurred while getting your location.',
+      suggestions: [
+        'Check your browser location permissions',
+        'Try refreshing the page',
+        'Contact support if the problem persists'
+      ]
+    };
+    
+    this.logger.debug('Error help retrieved', { errorCode, title: result.title });
+    return result;
+  }
+
+  // Optimized location tracking with request deduplication
+  async startTracking(userId, options = {}) {
+    this.logger.info('Starting location tracking', { userId, options, currentStatus: this.isTracking });
+
+    try {
+      // Validate parameters
+      LocationValidator.validateUserId(userId);
+      LocationValidator.validateOptions(options);
+
+      if (this.isTracking) {
+        this.logger.warn('Location tracking is already active');
+        return false;
+      }
+
+      // Check if geolocation is supported
+      if (!navigator.geolocation) {
+        const error = 'Geolocation is not supported by this browser';
+        this.logger.error(error);
+        this.onError?.(error);
+        this.onStatusChange?.('error');
+        return false;
+      }
+
+      // Set configuration based on options
+      if (options.preset && LOCATION_CONFIG[options.preset]) {
+        this.setConfig(options.preset);
+      }
+
+      this.userId = userId;
+      this.onLocationUpdate = options.onLocationUpdate;
+      this.onError = options.onError;
+      this.onStatusChange = options.onStatusChange;
+      this.updateFirebase = options.updateFirebase ?? false;
+
+      this.logger.info('Configuration set', { 
+        userId, 
+        updateFirebase: this.updateFirebase, 
+        config: this.config 
+      });
+
+      // Get initial position with minimal retries
+      this.logger.info('Getting initial position');
+      const initialPosition = await this.getCurrentPositionFast();
+      
+      if (initialPosition && initialPosition.coords) {
+        this.logger.info('Initial position received', {
+          coords: initialPosition.coords,
+          accuracy: initialPosition.coords.accuracy
+        });
+        
+        await this.handleLocationUpdate(initialPosition);
+      }
+
+      // Start watching position with optimized settings
+      this.logger.info('Setting up position watch');
       this.watchId = navigator.geolocation.watchPosition(
         this.handleLocationUpdate.bind(this),
         this.handleLocationError.bind(this),
         {
-          enableHighAccuracy: false, // Use low accuracy for office networks
-          timeout: 30000, // 30 second timeout (increased for office networks)
-          maximumAge: 300000 // Accept cached location up to 5 minutes old
+          enableHighAccuracy: this.config.enableHighAccuracy,
+          timeout: this.config.timeout,
+          maximumAge: this.config.maxAge
         }
       );
-      console.log('Position watch set up with ID:', this.watchId);
 
       this.isTracking = true;
       this.onStatusChange?.('active');
-      console.log('Location tracking started successfully');
+      this.logger.info('Location tracking started successfully');
 
       // Set up online/offline handling
       window.addEventListener('online', this.handleOnline.bind(this));
       window.addEventListener('offline', this.handleOffline.bind(this));
 
-      console.log('About to return true from startTracking');
       return true;
+
     } catch (error) {
-      console.error('Error in startTracking:', {
-        error: error.message,
-        code: error.code,
-        stack: error.stack,
-        networkInfo: {
-          protocol: location.protocol,
-          hostname: location.hostname,
-          userAgent: navigator.userAgent
-        }
-      });
-      
-      // Provide more specific error messages for office networks
-      let userFriendlyError = error?.message || 'Unknown error';
-      const errorMsg = error?.message || 'Unknown error';
-      if (errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('blocked')) {
-        userFriendlyError = 'Location tracking failed. Please enter your location manually';
-      }
-      
-      this.onError?.(userFriendlyError);
+      this.logger.error('Failed to start location tracking', { error: error.message, stack: error.stack });
+      this.onError?.(error.message);
       this.onStatusChange?.('error');
       return false;
     }
+  }
+
+  // Fast position acquisition with minimal retries and request deduplication
+  async getCurrentPositionFast() {
+    this.logger.debug('Getting current position fast');
     
-    // Fallback return - this should never be reached, but ensures we always return a value
-    console.warn('Unexpected fallback return in startTracking');
-    return false;
-  }
-
-  // Stop location tracking
-  stopTracking(skipStatusChange = false) {
-    if (this.watchId) {
-      navigator.geolocation.clearWatch(this.watchId);
-      this.watchId = null;
+    // Prevent multiple simultaneous requests
+    if (this.pendingPositionRequest) {
+      this.logger.debug('Position request already in progress, waiting');
+      return this.pendingPositionRequest;
     }
 
-    if (this.updateTimeout) {
-      clearTimeout(this.updateTimeout);
-      this.updateTimeout = null;
-    }
+    this.pendingPositionRequest = new Promise((resolve, reject) => {
+      let attempts = 0;
+      const maxAttempts = this.config.retryAttempts + 1; // +1 for initial attempt
+      let triedLowAccuracy = false;
 
-    this.isTracking = false;
-    this.lastUpdate = null;
-    this.lastLocation = null;
-    this.offlineQueue = [];
-    this.retryCount = 0;
-
-    window.removeEventListener('online', this.handleOnline.bind(this));
-    window.removeEventListener('offline', this.handleOffline.bind(this));
-
-    // Only call status change if not skipping it (for error cases)
-    if (!skipStatusChange) {
-    this.onStatusChange?.('inactive');
-    }
-  }
-
-  // Get current position with retry and fallback - more lenient for office networks
-  async getCurrentPosition() {
-    console.log('Getting current position...');
-    return new Promise((resolve, reject) => {
-      const tryGetPosition = (attempt = 1, useLowAccuracy = false) => {
-        console.log(`Attempt ${attempt} to get position... (${useLowAccuracy ? 'low accuracy' : 'high accuracy'})`);
+      const tryGetPosition = (isRetry = false, useLowAccuracy = false) => {
+        attempts++;
         
+        // Use consistent timeout (no progressive increase)
+        const timeout = this.config.timeout;
+        
+        // Use low accuracy as fallback if high accuracy fails
+        const enableHighAccuracy = useLowAccuracy ? false : this.config.enableHighAccuracy;
+        
+        // Use consistent maxAge
+        const maxAge = this.config.maxAge;
+
         const options = {
-          enableHighAccuracy: !useLowAccuracy, // Start with high accuracy, fallback to low
-          timeout: useLowAccuracy ? 30000 : 20000, // Longer timeout for low accuracy
-          maximumAge: useLowAccuracy ? 300000 : 120000 // Accept older cached locations for low accuracy (5 min vs 2 min)
+          enableHighAccuracy,
+          timeout,
+          maximumAge: maxAge
         };
-        
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            console.log('Position received:', {
-              coords: position.coords,
+
+        this.logger.debug(`Position attempt ${attempts}/${maxAttempts}`, {
+          enableHighAccuracy: options.enableHighAccuracy,
+          timeout: options.timeout,
+          maxAge: options.maximumAge,
+          useLowAccuracy
+        });
+
+        const successCallback = (position) => {
+          try {
+            // Validate position
+            LocationValidator.validatePosition(position);
+            
+            this.logger.info('Position acquired successfully', {
+              attempt: attempts,
               accuracy: position.coords.accuracy,
               timestamp: new Date(position.timestamp).toISOString(),
-              attempt,
-              accuracyMode: useLowAccuracy ? 'low' : 'high'
-            });
-            resolve(position);
-          },
-          (error) => {
-            console.error(`Position error on attempt ${attempt}:`, {
-              code: error.code,
-              message: error.message,
-              accuracyMode: useLowAccuracy ? 'low' : 'high',
-              networkInfo: {
-                protocol: location.protocol,
-                hostname: location.hostname
+              usedLowAccuracy: useLowAccuracy,
+              coordinates: {
+                latitude: position.coords.latitude,
+                longitude: position.coords.longitude
               }
             });
             
-            // Provide more specific error messages
-            if (error.code === error.TIMEOUT) {
-              console.warn('Position request timed out - possible office network restriction');
-            } else if (error.code === error.POSITION_UNAVAILABLE) {
-              console.warn('Position unavailable - device location services may be disabled');
-            }
+            this.pendingPositionRequest = null;
+            resolve(position);
+          } catch (error) {
+            this.logger.error('Position validation failed', { error: error.message });
+            this.pendingPositionRequest = null;
+            reject(error);
+          }
+        };
+
+        const errorCallback = (error) => {
+          this.logger.warn(`Position error (attempt ${attempts})`, {
+            code: error.code,
+            message: error.message,
+            useLowAccuracy
+          });
+
+          // Handle specific error codes
+          if (error.code === 1) {
+            // PERMISSION_DENIED
+            this.pendingPositionRequest = null;
+            const errorMessage = 'Location access denied. Please enable location permissions in your browser settings.';
+            this.logger.error(errorMessage);
+            reject(new Error(errorMessage));
+            return;
+          }
+
+          // Try low accuracy as fallback if we haven't tried it yet
+          if (!triedLowAccuracy && this.config.enableHighAccuracy) {
+            this.logger.debug('Trying low accuracy fallback');
+            triedLowAccuracy = true;
+            setTimeout(() => {
+              tryGetPosition(true, true);
+            }, 500);
+            return;
+          }
+
+          // Try next attempt if we have more attempts
+          if (attempts < maxAttempts) {
+            const delay = this.config.retryDelay;
+            this.logger.debug(`Retrying in ${delay}ms (attempt ${attempts + 1}/${maxAttempts})`);
             
-            // If high accuracy failed and we haven't tried low accuracy yet, try that
-            if (!useLowAccuracy && attempt === 1) {
-              console.log('High accuracy failed, trying low accuracy...');
-              setTimeout(() => tryGetPosition(1, true), 1000);
-              return;
-            }
+            setTimeout(() => {
+              tryGetPosition(true, triedLowAccuracy);
+            }, delay);
+          } else {
+            // All attempts failed
+            this.logger.error('All position attempts failed', { maxAttempts });
+            this.pendingPositionRequest = null;
             
-            // If we still have retries left, try again
-            if (attempt < this.config.retryAttempts) {
-              console.log(`Retrying in ${this.config.retryDelay}ms...`);
-              setTimeout(() => tryGetPosition(attempt + 1, useLowAccuracy), this.config.retryDelay);
+            // Provide helpful error message based on the last error
+            let errorMessage = 'Location access failed. ';
+            if (error.code === 1) {
+              errorMessage += 'Please check your browser location permissions.';
+            } else if (error.code === 2) {
+              errorMessage += 'Location information is unavailable. Please try again later.';
+            } else if (error.code === 3) {
+              errorMessage += 'Location request timed out. Please check your GPS signal and try again.';
             } else {
-              // Final fallback: try to get any cached location
-              console.log('Attempting to get any cached location as final fallback...');
-              navigator.geolocation.getCurrentPosition(
-                (cachedPosition) => {
-                  console.log('Cached position received as final fallback:', {
-                    coords: cachedPosition.coords,
-                    accuracy: cachedPosition.coords.accuracy,
-                    timestamp: new Date(cachedPosition.timestamp).toISOString()
-                  });
-                  resolve(cachedPosition);
-                },
-                (fallbackError) => {
-                  console.error('All position attempts failed:', fallbackError);
-                  // Provide user-friendly error message
-                  let userFriendlyError = 'Failed to get location';
-                  if (error.code === error.TIMEOUT) {
-                    userFriendlyError = 'Location tracking blocked by network. You can manually set your location.';
-                  } else if (error.code === error.POSITION_UNAVAILABLE) {
-                    userFriendlyError = 'Location unavailable. Please check your device\'s location services.';
-                  } else if (error.code === error.PERMISSION_DENIED) {
-                    userFriendlyError = 'Location permission denied. Please enable location access.';
-                  }
-                  reject(new Error(userFriendlyError));
-                },
-                {
-                  enableHighAccuracy: false, // Use low accuracy for final fallback
-                  timeout: 45000, // Very long timeout for final attempt
-                  maximumAge: 600000 // Accept cached location up to 10 minutes old
-                }
-              );
+              errorMessage += 'Please check your browser permissions and try again.';
             }
-          },
-          options
-        );
+            
+            this.logger.error('Final position error', { errorMessage, lastErrorCode: error.code });
+            reject(new Error(errorMessage));
+          }
+        };
+
+        navigator.geolocation.getCurrentPosition(successCallback, errorCallback, options);
       };
 
+      // Start the first attempt
       tryGetPosition();
     });
+
+    return this.pendingPositionRequest;
   }
 
-  // Handle location updates with throttling and validation
+  // Optimized location update handler with async address lookup and batched Firebase updates
   async handleLocationUpdate(position) {
     try {
+      this.logger.debug('Handling location update', { 
+        hasPosition: !!position,
+        hasCoords: !!(position?.coords)
+      });
+
+      // Validate position
+      LocationValidator.validatePosition(position);
+      
       const { latitude, longitude, accuracy } = position.coords;
       const timestamp = position.timestamp || Date.now();
 
-      // Only log significant changes or errors
-      if (accuracy > this.config.maxAccuracy) {
-        console.warn(`Location accuracy (${accuracy}m) is below threshold (${this.config.maxAccuracy}m)`);
-      }
+      this.logger.debug('Location update coordinates', {
+        latitude,
+        longitude,
+        accuracy,
+        timestamp: new Date(timestamp).toISOString()
+      });
 
-      // If we have valid coordinates, clear any error state
-      if (latitude && longitude) {
-        // Don't automatically clear errors or change status here
-        // Let the parent component handle this based on its error state
-      }
-
-      // Check if enough time has passed since last update
+      // Check if enough time has passed
       const now = Date.now();
       if (this.lastUpdate && now - this.lastUpdate < this.config.updateInterval) {
+        this.logger.debug('Skipping update - too soon', {
+          timeSinceLastUpdate: now - this.lastUpdate,
+          updateInterval: this.config.updateInterval
+        });
         return;
       }
 
@@ -348,22 +745,45 @@ class LocationTrackingService {
           longitude
         );
 
+        this.logger.debug('Distance check', {
+          distance,
+          minDistance: this.config.minDistance,
+          movedEnough: distance >= this.config.minDistance
+        });
+
         if (distance < this.config.minDistance) {
+          this.logger.debug('Skipping update - not moved enough');
           return;
         }
       }
 
-      // Get address for the location (only if accuracy is good)
+      // Get address only if needed (async, don't block)
       let address = null;
-      if (accuracy <= this.config.maxAccuracy) {
-        try {
-          address = await getAddressFromCoords(latitude, longitude);
-        } catch (error) {
-          // Don't log address lookup errors unless they're persistent
-          if (this.retryCount === 0) {
-            console.warn('Address lookup failed:', error?.message || 'Unknown error');
-          }
+      const locationKey = `${latitude.toFixed(4)},${longitude.toFixed(4)}`;
+      const shouldLookupAddress = accuracy <= this.config.maxAccuracy && 
+                                 (now - this.lastAddressLookup) > this.config.addressLookupInterval;
+      
+      this.logger.debug('Address lookup decision', {
+        shouldLookupAddress,
+        accuracy,
+        maxAccuracy: this.config.maxAccuracy,
+        timeSinceLastLookup: now - this.lastAddressLookup,
+        addressLookupInterval: this.config.addressLookupInterval,
+        hasCachedAddress: this.addressCache.has(locationKey)
+      });
+      
+      if (shouldLookupAddress) {
+        if (this.addressCache.has(locationKey)) {
+          address = this.addressCache.get(locationKey);
+          this.logger.debug('Using cached address', { address });
+        } else {
+          // Start async address lookup (don't wait for it)
+          this.logger.debug('Starting async address lookup');
+          this.getAddressAsync(latitude, longitude, locationKey);
         }
+      } else if (this.addressCache.has(locationKey)) {
+        address = this.addressCache.get(locationKey);
+        this.logger.debug('Using cached address (not time for new lookup)', { address });
       }
 
       const locationData = {
@@ -374,410 +794,751 @@ class LocationTrackingService {
         timestamp
       };
 
-      // Update last known location
+      // Validate location data
+      LocationValidator.validateLocationData(locationData);
+
+      // Update state
       this.lastLocation = locationData;
       this.lastUpdate = now;
 
-      // Batch update listeners to reduce render cycles
-      if (this.listeners.size > 0) {
-        requestAnimationFrame(() => {
-          this.listeners.forEach(listener => listener(locationData));
-        });
+      this.logger.info('Location updated successfully', {
+        coordinates: { latitude, longitude },
+        accuracy,
+        address: address ? 'cached' : 'none',
+        totalListeners: this.listeners.size,
+        updateFirebase: this.updateFirebase,
+        isOnline: navigator.onLine
+      });
+
+      // Notify listeners immediately
+      this.logger.info('Notifying listeners', { 
+        totalListeners: this.listeners.size,
+        locationData: { latitude, longitude, accuracy }
+      });
+      
+      this.listeners.forEach((listener, index) => {
+        try {
+          this.logger.debug(`Calling listener ${index + 1}/${this.listeners.size}`);
+          listener(locationData);
+        } catch (error) {
+          this.logger.error('Listener callback failed', { error: error.message });
+        }
+      });
+
+      // Queue for Firebase update (batched)
+      if (this.updateFirebase && navigator.onLine) {
+        this.queueFirebaseUpdate(locationData);
       }
 
-      // If offline, queue the update
+      // Queue for offline if needed
       if (!navigator.onLine) {
         this.queueOfflineUpdate(locationData);
-        return;
+      }
+
+      // Notify callback
+      if (this.onLocationUpdate) {
+        try {
+          this.onLocationUpdate(locationData);
+        } catch (error) {
+          this.logger.error('Location update callback failed', { error: error.message });
+        }
+      }
+
+    } catch (error) {
+      this.logger.error('Location update error', { 
+        error: error.message, 
+        stack: error.stack,
+        position: position ? 'valid' : 'invalid'
+      });
+    }
+  }
+
+  // Async address lookup with deduplication
+  async getAddressAsync(latitude, longitude, locationKey) {
+    this.logger.debug('Starting address lookup', { latitude, longitude, locationKey });
+    
+    // Validate coordinates
+    try {
+      LocationValidator.validateCoordinates(latitude, longitude);
+    } catch (error) {
+      this.logger.error('Invalid coordinates for address lookup', { error: error.message });
+      return null;
+    }
+    
+    // Prevent multiple simultaneous address lookups
+    if (this.addressLookupPromise) {
+      this.logger.debug('Address lookup already in progress, waiting');
+      return this.addressLookupPromise;
+    }
+
+    this.addressLookupPromise = getAddressFromCoords(latitude, longitude)
+      .then(address => {
+        this.addressCache.set(locationKey, address);
+        this.lastAddressLookup = Date.now();
+        
+        // Limit cache size
+        if (this.addressCache.size > 50) {
+          const firstKey = this.addressCache.keys().next().value;
+          this.addressCache.delete(firstKey);
+          this.logger.debug('Removed oldest address from cache', { cacheSize: this.addressCache.size });
+        }
+        
+        this.logger.info('Address lookup successful', { 
+          address, 
+          locationKey,
+          cacheSize: this.addressCache.size 
+        });
+        return address;
+      })
+      .catch(error => {
+        this.logger.warn('Address lookup failed', { 
+          error: error.message, 
+          coordinates: { latitude, longitude } 
+        });
+        return null;
+      })
+      .finally(() => {
+        this.addressLookupPromise = null;
+        this.logger.debug('Address lookup completed');
+      });
+
+    return this.addressLookupPromise;
+  }
+
+  // Queue Firebase update for batching
+  queueFirebaseUpdate(locationData) {
+    this.logger.debug('Queueing Firebase update', { 
+      batchSize: this.firebaseBatch.length,
+      maxBatchSize: this.config.firebaseBatchSize 
+    });
+    
+    // Validate location data
+    try {
+      LocationValidator.validateLocationData(locationData);
+    } catch (error) {
+      this.logger.error('Invalid location data for Firebase update', { error: error.message });
+      return;
+    }
+    
+    this.firebaseBatch.push(locationData);
+    
+    // Clear existing timeout
+    if (this.firebaseBatchTimeout) {
+      clearTimeout(this.firebaseBatchTimeout);
+      this.logger.debug('Cleared existing Firebase batch timeout');
+    }
+    
+    // Send batch if it's full or set timeout for partial batch
+    if (this.firebaseBatch.length >= this.config.firebaseBatchSize) {
+      this.logger.debug('Batch full, sending immediately');
+      this.sendFirebaseBatch();
+    } else {
+      this.logger.debug('Setting Firebase batch timeout', { 
+        interval: this.config.firebaseBatchInterval 
+      });
+      this.firebaseBatchTimeout = setTimeout(() => {
+        this.sendFirebaseBatch();
+      }, this.config.firebaseBatchInterval);
+    }
+  }
+
+  // Send batched Firebase updates
+  async sendFirebaseBatch() {
+    if (this.firebaseBatch.length === 0) {
+      this.logger.debug('No Firebase batch to send');
+      return;
+    }
+    
+    const batch = [...this.firebaseBatch];
+    this.firebaseBatch = [];
+    
+    if (this.firebaseBatchTimeout) {
+      clearTimeout(this.firebaseBatchTimeout);
+      this.firebaseBatchTimeout = null;
+    }
+    
+    this.logger.info('Sending Firebase batch', { 
+      batchSize: batch.length,
+      latestLocation: batch[batch.length - 1] 
+    });
+    
+    try {
+      // Send the most recent location from the batch
+      const latestLocation = batch[batch.length - 1];
+      await this.updateLocationInFirebase(latestLocation);
+      this.logger.info('Firebase batch updated successfully', { batchSize: batch.length });
+    } catch (error) {
+      this.logger.error('Firebase batch update failed', { 
+        error: error.message, 
+        batchSize: batch.length 
+      });
+      // Re-queue failed updates
+      this.firebaseBatch.push(...batch);
+      this.logger.debug('Re-queued failed updates', { reQueuedSize: this.firebaseBatch.length });
+    }
+  }
+
+  // Enhanced error handling with logging
+  handleLocationError(error) {
+    this.logger.warn('Location tracking error', {
+      code: error.code,
+      message: error.message,
+      hasLastLocation: !!(this.lastLocation?.latitude && this.lastLocation?.longitude)
+    });
+
+    // Only report errors if we don't have a valid location
+    if (!this.lastLocation?.latitude || !this.lastLocation?.longitude) {
+      this.logger.error('No valid location available, reporting error to callback');
+      if (this.onError) {
+        try {
+          this.onError(error.message);
+        } catch (callbackError) {
+          this.logger.error('Error callback failed', { error: callbackError.message });
+        }
+      }
+    } else {
+      this.logger.debug('Ignoring error - valid location available');
+    }
+  }
+
+  // Stop location tracking
+  stopTracking(skipStatusChange = false) {
+    this.logger.info('Stopping location tracking', { skipStatusChange });
+    
+    if (this.watchId) {
+      navigator.geolocation.clearWatch(this.watchId);
+      this.watchId = null;
+      this.logger.debug('Cleared position watch');
+    }
+
+    if (this.updateTimeout) {
+      clearTimeout(this.updateTimeout);
+      this.updateTimeout = null;
+      this.logger.debug('Cleared update timeout');
+    }
+
+    // Send any pending Firebase batch
+    if (this.firebaseBatch.length > 0) {
+      this.logger.debug('Sending pending Firebase batch before stopping');
+      this.sendFirebaseBatch();
+    }
+
+    if (this.firebaseBatchTimeout) {
+      clearTimeout(this.firebaseBatchTimeout);
+      this.firebaseBatchTimeout = null;
+      this.logger.debug('Cleared Firebase batch timeout');
+    }
+
+    this.isTracking = false;
+    this.pendingPositionRequest = null;
+    this.addressLookupPromise = null;
+    
+    if (!skipStatusChange) {
+      this.logger.debug('Notifying status change to stopped');
+      if (this.onStatusChange) {
+        try {
+          this.onStatusChange('stopped');
+        } catch (error) {
+          this.logger.error('Status change callback failed', { error: error.message });
+        }
+      }
+    }
+
+    // Clean up event listeners
+    window.removeEventListener('online', this.handleOnline.bind(this));
+    window.removeEventListener('offline', this.handleOffline.bind(this));
+    this.logger.debug('Cleaned up event listeners');
+
+    this.logger.info('Location tracking stopped successfully');
+  }
+
+  // Enhanced Firebase update with validation and logging
+  async updateLocationInFirebase(locationData) {
+    this.logger.debug('Updating location in Firebase', { 
+      userId: this.userId,
+      hasLocationData: !!locationData 
+    });
+    
+    if (!this.userId) {
+      this.logger.warn('No user ID for Firebase update');
+      return;
+    }
+
+    try {
+      // Validate location data
+      LocationValidator.validateLocationData(locationData);
+      
+      const userRef = doc(db, 'users', this.userId);
+      const updateData = {
+        location: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: locationData.accuracy,
+          address: locationData.address,
+          timestamp: locationData.timestamp
+        },
+        lastLocationUpdate: serverTimestamp()
+      };
+
+      this.logger.debug('Firebase update data prepared', { 
+        userId: this.userId,
+        coordinates: { 
+          latitude: locationData.latitude, 
+          longitude: locationData.longitude 
+        },
+        accuracy: locationData.accuracy
+      });
+
+      await updateDoc(userRef, updateData);
+      this.logger.info('Firebase location updated successfully', { userId: this.userId });
+    } catch (error) {
+      this.logger.error('Firebase update error', { 
+        error: error.message, 
+        userId: this.userId,
+        locationData 
+      });
+      throw error;
+    }
+  }
+
+  queueOfflineUpdate(locationData) {
+    this.logger.debug('Queueing offline update', { 
+      queueSize: this.offlineQueue.length,
+      maxQueueSize: this.config.offlineQueueSize 
+    });
+    
+    // Validate location data
+    try {
+      LocationValidator.validateLocationData(locationData);
+    } catch (error) {
+      this.logger.error('Invalid location data for offline queue', { error: error.message });
+      return;
+    }
+    
+    if (this.offlineQueue.length >= this.config.offlineQueueSize) {
+      const removed = this.offlineQueue.shift(); // Remove oldest
+      this.logger.debug('Removed oldest offline update', { removed });
+    }
+    this.offlineQueue.push(locationData);
+    this.logger.debug('Added to offline queue', { newQueueSize: this.offlineQueue.length });
+  }
+
+  async handleOnline() {
+    this.logger.info('Back online, processing queued updates', { 
+      queuedUpdates: this.offlineQueue.length 
+    });
+    
+    if (this.offlineQueue.length > 0) {
+      const updates = [...this.offlineQueue];
+      this.offlineQueue = [];
+      
+      this.logger.info('Processing offline updates', { updateCount: updates.length });
+      
+      for (let i = 0; i < updates.length; i++) {
+        const locationData = updates[i];
+        try {
+          this.logger.debug(`Processing offline update ${i + 1}/${updates.length}`);
+          await this.updateLocationInFirebase(locationData);
+        } catch (error) {
+          this.logger.error('Failed to process queued update', { 
+            error: error.message, 
+            updateIndex: i,
+            locationData 
+          });
+        }
+      }
+      
+      this.logger.info('Offline updates processing completed');
+    } else {
+      this.logger.debug('No offline updates to process');
+    }
+  }
+
+  handleOffline() {
+    this.logger.info('Gone offline, queuing updates', { 
+      currentQueueSize: this.offlineQueue.length 
+    });
+  }
+
+  calculateDistance(lat1, lon1, lat2, lon2) {
+    try {
+      // Validate coordinates
+      LocationValidator.validateCoordinates(lat1, lon1);
+      LocationValidator.validateCoordinates(lat2, lon2);
+      
+      const R = 3959; // Earth's radius in miles
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      const distance = R * c;
+      
+      this.logger.debug('Distance calculated', { 
+        from: { lat: lat1, lon: lon1 }, 
+        to: { lat: lat2, lon: lon2 }, 
+        distance 
+      });
+      
+      return distance;
+    } catch (error) {
+      this.logger.error('Distance calculation failed', { 
+        error: error.message, 
+        coordinates: { lat1, lon1, lat2, lon2 } 
+      });
+      throw error;
+    }
+  }
+
+  getStatus() {
+    const status = {
+      isTracking: this.isTracking,
+      lastLocation: this.lastLocation,
+      lastUpdate: this.lastUpdate,
+      config: this.config,
+      firebaseBatchSize: this.firebaseBatch.length,
+      offlineQueueSize: this.offlineQueue.length,
+      totalListeners: this.listeners.size,
+      addressCacheSize: this.addressCache.size
+    };
+    
+    this.logger.debug('Status requested', status);
+    return status;
+  }
+
+  setManualLocation(latitude, longitude, address = null) {
+    this.logger.info('Setting manual location', { latitude, longitude, address });
+    
+    try {
+      // Validate coordinates
+      LocationValidator.validateCoordinates(latitude, longitude);
+      
+      const locationData = {
+        latitude,
+        longitude,
+        accuracy: 0, // Manual location has perfect accuracy
+        address,
+        timestamp: Date.now()
+      };
+
+      // Validate location data
+      LocationValidator.validateLocationData(locationData);
+
+      this.lastLocation = locationData;
+      this.lastUpdate = Date.now();
+
+      this.logger.info('Manual location set successfully', { 
+        coordinates: { latitude, longitude },
+        address,
+        totalListeners: this.listeners.size
+      });
+
+      // Notify listeners
+      this.listeners.forEach(listener => {
+        try {
+          listener(locationData);
+        } catch (error) {
+          this.logger.error('Manual location listener callback failed', { error: error.message });
+        }
+      });
+      
+      if (this.onLocationUpdate) {
+        try {
+          this.onLocationUpdate(locationData);
+        } catch (error) {
+          this.logger.error('Manual location update callback failed', { error: error.message });
+        }
       }
 
       // Update Firebase if enabled
       if (this.updateFirebase) {
-        console.log('About to update Firebase...');
-        try {
-          await this.updateLocationInFirebase(locationData);
-          console.log('Firebase update completed in handleLocationUpdate');
-        } catch (error) {
-          console.error('Firebase update failed in handleLocationUpdate:', error);
-          // Don't re-throw the error, just log it
-          // The location tracking should continue even if Firebase update fails
-        }
-      }
-
-      // Notify callback if provided
-      this.onLocationUpdate?.(locationData);
-    } catch (error) {
-      // Only log errors if they're not transient
-      if (!this.lastLocation?.latitude || !this.lastLocation?.longitude) {
-        console.error('Location update error:', error?.message || 'Unknown error');
-        this.handleLocationError(error);
-      }
-    }
-  }
-
-  // Handle location errors
-  handleLocationError(error) {
-    console.error('Location tracking error:', error);
-
-    // Don't report errors if we have a valid location
-    if (this.lastLocation?.latitude && this.lastLocation?.longitude) {
-      console.warn('Ignoring error while we have a valid location:', error?.message || 'Unknown error');
-      return;
-    }
-
-    let errorMessage = 'Failed to track location. ';
-    const errorMsg = error?.message || 'Unknown error';
-    
-    switch (error?.code) {
-      case error?.PERMISSION_DENIED:
-        errorMessage += 'Location permission denied. Please enable location access in your browser settings.';
-        break;
-      case error?.POSITION_UNAVAILABLE:
-        errorMessage += 'Location information is unavailable. Please check your device\'s location services.';
-        break;
-      case error?.TIMEOUT:
-        errorMessage += 'Location request timed out. Please check your internet connection.';
-        break;
-      default:
-        errorMessage += `Error: ${errorMsg}`;
-    }
-
-    this.onError?.(errorMessage);
-    this.onStatusChange?.('error');
-  }
-
-  // Update location in Firebase with retry
-  async updateLocationInFirebase(locationData) {
-    try {
-      console.log('Updating location in Firebase:', {
-        userId: this.userId,
-        updateFirebase: this.updateFirebase,
-        locationData: {
-          latitude: locationData.latitude,
-          longitude: locationData.longitude,
-          accuracy: locationData.accuracy
-        }
-      });
-      
-      // For driver location tracking, we need to update the ride document
-      // with currentLocation instead of location to avoid overwriting pickup location
-      if (this.userId && this.updateFirebase) {
-        // Find active rides where this user is the driver
-        const ridesRef = collection(db, 'rides');
-        const driverRidesQuery = query(
-          ridesRef,
-          where('driver.uid', '==', this.userId),
-          where('status', 'in', ['active', 'created', 'forming'])
-        );
-        
-        const driverRidesSnapshot = await getDocs(driverRidesQuery);
-        console.log('Found active rides for driver:', driverRidesSnapshot.size);
-        
-        if (!driverRidesSnapshot.empty) {
-          // Update all active rides where user is driver
-          const updatePromises = driverRidesSnapshot.docs.map(docSnapshot => {
-            const rideRef = doc(db, 'rides', docSnapshot.id);
-            return updateDoc(rideRef, {
-              'driver.currentLocation': {
-                lat: locationData.latitude,
-                lng: locationData.longitude,
-                accuracy: locationData.accuracy,
-                address: locationData.address,
-                lastUpdated: serverTimestamp()
-              }
-            });
-          });
-          
-          await Promise.all(updatePromises);
-          console.log(`Updated currentLocation for ${updatePromises.length} active rides`);
-        }
-      }
-      
-      // Also update user's general location (for backward compatibility)
-      console.log('Updating user location...');
-      const result = await updateUserLocation(this.userId, locationData);
-      console.log('User location update result:', result);
-      
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-      
-      this.retryCount = 0;
-      console.log('Firebase update completed successfully');
-    } catch (error) {
-      console.error('Firebase update error:', {
-        error: error?.message || 'Unknown error',
-        code: error?.code,
-        stack: error?.stack
-      });
-      
-      // Check if it's a permission error
-      if (error?.message && error.message.includes('permission')) {
-        console.warn('Permission denied for location update - stopping tracking:', error.message);
-        this.stopTracking();
-        return; // Don't retry permission errors
-      }
-      
-      if (this.retryCount < this.config.retryAttempts) {
-        this.retryCount++;
-        // Use exponential backoff for retries
-        const delay = this.config.retryDelay * Math.pow(2, this.retryCount - 1);
-        console.log(`Retrying Firebase update in ${delay}ms (attempt ${this.retryCount})`);
-        setTimeout(() => this.updateLocationInFirebase(locationData), delay);
-      } else {
-        // Only log persistent errors
-        console.error('Failed to update location after retries:', error?.message || 'Unknown error');
-        throw error;
-      }
-    }
-  }
-
-  // Queue offline updates
-  queueOfflineUpdate(locationData) {
-    if (this.offlineQueue.length >= this.config.offlineQueueSize) {
-      this.offlineQueue.shift(); // Remove oldest update
-    }
-    this.offlineQueue.push(locationData);
-    this.onStatusChange?.('offline');
-  }
-
-  // Handle coming back online
-  async handleOnline() {
-    this.onStatusChange?.('syncing');
-    
-    // Process queued updates in batches
-    const batchSize = 5;
-    while (this.offlineQueue.length > 0) {
-      const batch = this.offlineQueue.splice(0, batchSize);
-      try {
-        await Promise.all(
-          batch.map(locationData => 
-            this.updateFirebase ? 
-              this.updateLocationInFirebase(locationData) :
-              Promise.resolve()
-          )
-        );
-        // Notify listeners of queued updates in a batch
-        requestAnimationFrame(() => {
-          batch.forEach(locationData => {
-            this.listeners.forEach(listener => listener(locationData));
-          });
+        this.updateLocationInFirebase(locationData).catch(error => {
+          this.logger.error('Manual location Firebase update failed', { error: error.message });
         });
-      } catch (error) {
-        console.error('Error syncing offline updates:', error?.message || 'Unknown error');
-        // Put the failed batch back in the queue
-        this.offlineQueue.unshift(...batch);
-        break;
       }
-    }
 
-    this.onStatusChange?.('active');
-  }
-
-  // Handle going offline
-  handleOffline() {
-    this.onStatusChange?.('offline');
-  }
-
-  // Calculate distance between two points in meters
-  calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371e3; // Earth's radius in meters
-    const φ1 = lat1 * Math.PI / 180;
-    const φ2 = lat2 * Math.PI / 180;
-    const Δφ = (lat2 - lat1) * Math.PI / 180;
-    const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-              Math.cos(φ1) * Math.cos(φ2) *
-              Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-
-    return R * c; // Distance in meters
-  }
-
-  // Get current tracking status
-  getStatus() {
-    return {
-      isTracking: this.isTracking,
-      lastLocation: this.lastLocation,
-      isOnline: navigator.onLine,
-      queueSize: this.offlineQueue.length
-    };
-  }
-
-  // Set location manually (for office networks where geolocation is blocked)
-  setManualLocation(latitude, longitude, address = null) {
-    console.log('Setting manual location:', { latitude, longitude, address });
-    
-    const locationData = {
-      latitude,
-      longitude,
-      accuracy: 100, // Manual location has lower accuracy
-      address,
-      timestamp: Date.now(),
-      isManual: true
-    };
-
-    this.lastLocation = locationData;
-    this.lastUpdate = Date.now();
-
-    // Notify listeners
-    if (this.listeners.size > 0) {
-      requestAnimationFrame(() => {
-        this.listeners.forEach(listener => listener(locationData));
+    } catch (error) {
+      this.logger.error('Failed to set manual location', { 
+        error: error.message, 
+        coordinates: { latitude, longitude } 
       });
+      throw error;
     }
-
-    // Update Firebase if enabled
-    if (this.updateFirebase) {
-      this.updateLocationInFirebase(locationData);
-    }
-
-    // Notify callback if provided
-    this.onLocationUpdate?.(locationData);
-    
-    // Clear any error state
-    this.onError?.(null);
-    this.onStatusChange?.('manual');
   }
 }
 
 // Create singleton instance
 const locationTrackingService = new LocationTrackingService();
 
-// Create a React hook that uses the service
-export const useLocation = ({ preset = 'default', updateFirebase = false, onLocationUpdate, onError, onStatusChange } = {}) => {
+// Debug: Track hook instances
+let hookInstanceCount = 0;
+
+// React hook for location tracking with enhanced logging and validation
+export const useLocation = ({ preset = 'ultra_fast', updateFirebase = false, onLocationUpdate, onError, onStatusChange } = {}) => {
   const [location, setLocation] = useState(null);
-  const [isTracking, setIsTracking] = useState(false);
-  const [status, setStatus] = useState('idle');
+  const [status, setStatus] = useState('stopped');
   const [error, setError] = useState(null);
-  const lastUpdateTime = useRef(0);
-  const lastLocation = useRef(null);
-  const THROTTLE_INTERVAL = 5000; // 5 seconds between updates
-  const MIN_DISTANCE = 10; // Minimum 10 meters between updates
-  const MIN_ACCURACY = 100; // Maximum 100 meters accuracy required
+  const [isTracking, setIsTracking] = useState(false);
+  const [isSubscribed, setIsSubscribed] = useState(false);
 
-  const updateLocation = useCallback((newLocation) => {
-    const now = Date.now();
-    const timeSinceLastUpdate = now - lastUpdateTime.current;
-    
-    // Check if enough time has passed
-    if (timeSinceLastUpdate < THROTTLE_INTERVAL) {
-      return;
-    }
+  // Create a logger for the hook
+  const currentHookInstance = ++hookInstanceCount;
+  const hookLogger = new LocationLogger(`useLocation-${currentHookInstance}`);
 
-    // Check if location has changed significantly
-    if (lastLocation.current) {
-      const distance = calculateDistance(
-        lastLocation.current.latitude,
-        lastLocation.current.longitude,
-        newLocation.latitude,
-        newLocation.longitude
-      );
+  // Initial setup effect (runs only once)
+  useEffect(() => {
+    hookLogger.info('useLocation hook initialized', { preset, updateFirebase });
+  }, []); // Empty dependency array - runs only once
+
+  // Validate hook parameters and set up subscription
+  useEffect(() => {
+    try {
+      hookLogger.debug('useLocation hook effect running', { preset, updateFirebase, isSubscribed });
       
-      if (distance < MIN_DISTANCE) {
-        return;
+      // Validate preset
+      if (preset && !LOCATION_CONFIG[preset]) {
+        hookLogger.warn('Invalid preset provided', { preset, availablePresets: Object.keys(LOCATION_CONFIG) });
       }
+      
+      // Validate callbacks
+      if (onLocationUpdate && typeof onLocationUpdate !== 'function') {
+        hookLogger.warn('onLocationUpdate must be a function');
+      }
+      if (onError && typeof onError !== 'function') {
+        hookLogger.warn('onError must be a function');
+      }
+      if (onStatusChange && typeof onStatusChange !== 'function') {
+        hookLogger.warn('onStatusChange must be a function');
+      }
+      
+      // Subscribe to location updates if service is already tracking and not already subscribed
+      if (locationTrackingService.isTracking && !isSubscribed) {
+        hookLogger.info('Service already tracking, subscribing to updates');
+        setIsSubscribed(true);
+        
+        const unsubscribe = locationTrackingService.subscribe((loc) => {
+          try {
+            hookLogger.debug('Location update received via initial subscription', { 
+              hasLocation: !!loc,
+              coordinates: loc ? { lat: loc.latitude, lng: loc.longitude } : null
+            });
+            
+            setLocation(loc);
+            setError(null);
+            setIsTracking(true);
+            
+            if (onLocationUpdate) {
+              onLocationUpdate(loc);
+            }
+          } catch (error) {
+            hookLogger.error('Initial subscription callback error', { error: error.message });
+          }
+        });
+        
+        // Return cleanup function
+        return () => {
+          hookLogger.info('Cleaning up useLocation subscription');
+          setIsSubscribed(false);
+          unsubscribe();
+        };
+      }
+    } catch (error) {
+      hookLogger.error('useLocation initialization error', { error: error.message });
     }
+  }, [preset, updateFirebase, isSubscribed]); // Removed callback dependencies
 
-    // Check accuracy
-    if (newLocation.accuracy > MIN_ACCURACY) {
-      console.warn('Location accuracy below threshold:', newLocation.accuracy);
-      return;
-    }
+  // Debug effect to track state changes
+  useEffect(() => {
+    console.log('📍 useLocation state changed:', { 
+      hasLocation: !!location, 
+      isTracking, 
+      status, 
+      hasError: !!error 
+    });
+  }, [location, isTracking, status, error]);
 
-    // Update location
-    lastUpdateTime.current = now;
-    lastLocation.current = newLocation;
-    setLocation(newLocation);
-    
-    if (onLocationUpdate) {
-      onLocationUpdate(newLocation);
+  // Cleanup effect
+  useEffect(() => {
+    return () => {
+      if (isSubscribed) {
+        hookLogger.info('useLocation hook unmounting, cleaning up subscription');
+        setIsSubscribed(false);
+      }
+    };
+  }, [isSubscribed]);
+
+  // Create stable callbacks to prevent unnecessary re-renders
+  const handleLocationUpdate = useCallback((loc) => {
+    try {
+      hookLogger.info('Location update received in hook callback', { 
+        hasLocation: !!loc,
+        coordinates: loc ? { lat: loc.latitude, lng: loc.longitude } : null
+      });
+      
+      console.log('📍 Hook callback - setting location:', loc);
+      setLocation(loc);
+      setError(null);
+      setIsTracking(true);
+      
+      // Debug: Check if state actually changed
+      console.log('📍 State after setLocation in hook callback - should trigger re-render');
+      
+      if (onLocationUpdate) {
+        onLocationUpdate(loc);
+      }
+    } catch (error) {
+      hookLogger.error('Location update callback error in hook', { error: error.message });
     }
   }, [onLocationUpdate]);
 
-  // Helper function to calculate distance between two points
-  const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371e3; // Earth's radius in meters
-    const φ1 = lat1 * Math.PI/180;
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2-lat1) * Math.PI/180;
-    const Δλ = (lon2-lon1) * Math.PI/180;
-
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-              Math.cos(φ1) * Math.cos(φ2) *
-              Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-
-    return R * c; // Distance in meters
-  };
-
-  useEffect(() => {
-    // Subscribe to location updates
-    const unsubscribe = locationTrackingService.subscribe(setLocation);
-
-    // Set initial tracking state
-    setIsTracking(locationTrackingService.isTracking);
-
-    return () => {
-      unsubscribe();
-      // Only stop tracking if this was the last subscriber
-      if (preset === 'default' && locationTrackingService.listeners.size === 1) {
-        locationTrackingService.stopTracking();
-      }
-    };
-  }, [preset]);
-
-  const startTracking = useCallback(async (userId) => {
+  const handleError = useCallback((err) => {
     try {
-      setError(null);
-      const success = await locationTrackingService.startTracking(userId, {
-        preset: preset || 'basic',
-        updateFirebase: updateFirebase,
-        onLocationUpdate: (locationData) => {
-          setLocation(locationData);
-          onLocationUpdate?.(locationData);
-        },
-        onError: (errorMessage) => {
-          setError(errorMessage);
-          onError?.(errorMessage);
-        },
-        onStatusChange: (newStatus) => {
-          setStatus(newStatus);
-          setIsTracking(newStatus === 'active');
-          onStatusChange?.(newStatus);
-        }
-      });
+      hookLogger.warn('Location error received in hook', { error: err });
+      
+      setError(err);
+      setIsTracking(false);
+      
+      if (onError) {
+        onError(err);
+      }
+    } catch (error) {
+      hookLogger.error('Error callback error in hook', { error: error.message });
+    }
+  }, [onError]);
 
-      if (!success) {
-        throw new Error('Failed to start location tracking');
+  const handleStatusChange = useCallback((newStatus) => {
+    try {
+      hookLogger.info('Status change received in hook', { newStatus });
+      
+      setStatus(newStatus);
+      setIsTracking(newStatus === 'active');
+      
+      if (onStatusChange) {
+        onStatusChange(newStatus);
+      }
+    } catch (error) {
+      hookLogger.error('Status change callback error in hook', { error: error.message });
+    }
+  }, [onStatusChange]);
+
+  // Manual start/stop functions
+  const startTracking = useCallback(async (userId = 'current-user') => {
+    hookLogger.info('Starting location tracking for user', { userId });
+    
+    try {
+      // Validate userId
+      LocationValidator.validateUserId(userId);
+      
+      // Only subscribe if not already subscribed
+      let unsubscribe = null;
+      if (!isSubscribed) {
+        hookLogger.info('Subscribing to location updates');
+        setIsSubscribed(true);
+        
+        unsubscribe = locationTrackingService.subscribe((loc) => {
+          try {
+            hookLogger.info('Location update received via subscription', { 
+              hasLocation: !!loc,
+              coordinates: loc ? { lat: loc.latitude, lng: loc.longitude } : null
+            });
+            
+            console.log('📍 Subscription callback - setting location:', loc);
+            setLocation(loc);
+            setError(null);
+            setIsTracking(true);
+            
+            // Debug: Check if state actually changed
+            console.log('📍 State after setLocation - should trigger re-render');
+            
+            if (onLocationUpdate) {
+              onLocationUpdate(loc);
+            }
+          } catch (error) {
+            hookLogger.error('Location update subscription callback error', { error: error.message });
+          }
+        });
+      } else {
+        hookLogger.info('Already subscribed to location updates');
       }
       
-      return success; // Return the success value
+      const success = await locationTrackingService.startTracking(userId, {
+        preset,
+        updateFirebase,
+        onLocationUpdate: handleLocationUpdate,
+        onError: handleError,
+        onStatusChange: handleStatusChange
+      });
+
+      if (success) {
+        hookLogger.info('Location tracking started successfully in hook');
+        setIsTracking(true);
+      } else {
+        hookLogger.warn('Location tracking failed to start in hook');
+        if (unsubscribe) {
+          unsubscribe(); // Clean up subscription if failed
+          setIsSubscribed(false);
+        }
+      }
+
+      return success;
     } catch (error) {
+      hookLogger.error('Start tracking error in hook', { error: error.message });
       setError(error.message);
+      setIsTracking(false);
+      return false;
+    }
+  }, [preset, updateFirebase, handleLocationUpdate, handleError, handleStatusChange, isSubscribed]);
+
+  const stopTracking = useCallback(() => {
+    hookLogger.info('Stopping location tracking from hook');
+    
+    try {
+      locationTrackingService.stopTracking();
+      setIsTracking(false);
+      setStatus('stopped');
+      setIsSubscribed(false);
+      hookLogger.info('Location tracking stopped successfully from hook');
+    } catch (error) {
+      hookLogger.error('Stop tracking error in hook', { error: error.message });
+    }
+  }, []);
+
+  const calculateDistance = useCallback((lat1, lon1, lat2, lon2) => {
+    try {
+      hookLogger.debug('Calculating distance in hook', { 
+        from: { lat: lat1, lon: lon1 }, 
+        to: { lat: lat2, lon: lon2 } 
+      });
+      
+      return locationTrackingService.calculateDistance(lat1, lon1, lat2, lon2);
+    } catch (error) {
+      hookLogger.error('Distance calculation error in hook', { error: error.message });
       throw error;
     }
-  }, [preset, updateFirebase, onLocationUpdate, onError, onStatusChange]);
+  }, []);
 
-  const stopTracking = useCallback((skipStatusChange = false) => {
-    locationTrackingService.stopTracking(skipStatusChange);
-    setIsTracking(false);
-    if (!skipStatusChange) {
-    setStatus('inactive');
+  const setManualLocation = useCallback((latitude, longitude, address = null) => {
+    try {
+      hookLogger.info('Setting manual location from hook', { latitude, longitude, address });
+      locationTrackingService.setManualLocation(latitude, longitude, address);
+    } catch (error) {
+      hookLogger.error('Manual location error in hook', { error: error.message });
+      throw error;
     }
   }, []);
 
   return {
     location,
-    isTracking,
-    error,
     status,
+    error,
+    isTracking,
     startTracking,
     stopTracking,
-    setManualLocation: locationTrackingService.setManualLocation.bind(locationTrackingService),
-    getCurrentPosition: locationTrackingService.getCurrentPosition.bind(locationTrackingService)
+    calculateDistance,
+    setManualLocation
   };
 };
 
+export { locationTrackingService };
 export default locationTrackingService; 

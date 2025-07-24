@@ -91,15 +91,24 @@ function RideInvitationModal({
 
   // Handle suggestion selection
   const handleSuggestionSelect = (suggestion) => {
-    const selectedAddress = suggestion.display_name;
+    const selectedAddress = suggestion.name || suggestion.display_name || suggestion.address;
     console.log('RideInvitationModal - Selected suggestion:', suggestion);
+    
+    // Handle both 'lng' and 'lon' coordinate formats
+    const longitude = suggestion.lng || suggestion.lon;
+    const latitude = suggestion.lat;
+    
+    if (!latitude || !longitude) {
+      console.error('RideInvitationModal - Invalid coordinates in suggestion:', suggestion);
+      return;
+    }
     
     const newRideDetails = {
       ...rideDetails,
       pickupLocation: selectedAddress,
       location: {
-        lat: parseFloat(suggestion.lat),
-        lng: parseFloat(suggestion.lon),
+        lat: parseFloat(latitude),
+        lng: parseFloat(longitude),
         address: selectedAddress
       }
     };
@@ -363,22 +372,82 @@ function RideInvitationModal({
                     )}
                     {showSuggestions && suggestions.length > 0 && (
                       <div className="suggestions-dropdown">
-                        {suggestions.map((suggestion, index) => (
-                          <div
-                            key={index}
-                            className="suggestion-item"
-                            onClick={() => handleSuggestionSelect(suggestion)}
-                          >
-                            <i className="fas fa-map-marker-alt suggestion-icon"></i>
-                            <div className="suggestion-content">
-                              <div className="suggestion-address">{suggestion.display_name}</div>
-                              <div className="suggestion-type">{suggestion.type}</div>
+                        {suggestions.map((suggestion, index) => {
+                          // Determine the icon based on the suggestion type
+                          const getIcon = () => {
+                            if (suggestion.type === 'poi' || suggestion.category === 'poi') {
+                              return 'fas fa-building';
+                            } else if (suggestion.type === 'address' || suggestion.category === 'address') {
+                              return 'fas fa-map-marker-alt';
+                            } else if (suggestion.type === 'neighborhood' || suggestion.category === 'neighborhood') {
+                              return 'fas fa-home';
+                            } else {
+                              return 'fas fa-map-marker-alt';
+                            }
+                          };
+
+                          // Get the primary display text
+                          const getPrimaryText = () => {
+                            if (suggestion.name && suggestion.name !== suggestion.address) {
+                              return suggestion.name;
+                            }
+                            return suggestion.address || suggestion.display_name || 'Unknown location';
+                          };
+
+                          // Get the secondary display text
+                          const getSecondaryText = () => {
+                            const parts = [];
+                            
+                            // Add address if different from name
+                            if (suggestion.address && suggestion.address !== suggestion.name) {
+                              parts.push(suggestion.address);
+                            }
+                            
+                            // Add type/category
+                            if (suggestion.type && suggestion.type !== 'poi') {
+                              parts.push(suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1));
+                            }
+                            
+                            // Add distance if available
+                            if (suggestion.distance) {
+                              parts.push(`${suggestion.distance.toFixed(1)} mi`);
+                            }
+                            
+                            return parts.join(' • ');
+                          };
+
+                          return (
+                            <div
+                              key={`${suggestion.name}-${suggestion.lat}-${suggestion.lng}-${index}`}
+                              className="suggestion-item"
+                              onClick={() => handleSuggestionSelect(suggestion)}
+                            >
+                              <i className={`${getIcon()} suggestion-icon`}></i>
+                              <div className="suggestion-content">
+                                <div className="suggestion-address">
+                                  {getPrimaryText()}
+                                </div>
+                                <div className="suggestion-type">
+                                  {getSecondaryText()}
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={rideDetails.locationSharing}
+                      onChange={(e) => handleDetailsChange('locationSharing', e.target.checked)}
+                    />
+                    <span>Share my location during the ride</span>
+                  </label>
                 </div>
 
                 <div className="form-group">
@@ -401,17 +470,6 @@ function RideInvitationModal({
                     value={rideDetails.readyTime}
                     onChange={(e) => handleDetailsChange('readyTime', e.target.value)}
                   />
-                </div>
-
-                <div className="form-group">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={rideDetails.locationSharing}
-                      onChange={(e) => handleDetailsChange('locationSharing', e.target.checked)}
-                    />
-                    <span>Share my location during the ride</span>
-                  </label>
                 </div>
 
                 <div className="form-group">
