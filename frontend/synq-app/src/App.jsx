@@ -12,6 +12,8 @@ import Rides from './pages/Rides';
 import LiveRideView from './pages/LiveRideView';
 import Header from './components/Header';
 import GlobalLoading from './components/GlobalLoading';
+import LocationTrackingTest from './components/LocationTrackingTest';
+import LocationTrackingTestSimple from './components/LocationTrackingTestSimple';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
 import './styles/theme.css';
 
@@ -172,6 +174,14 @@ const AppContent = () => {
           <ProtectedRoute>
             <LiveRideView />
           </ProtectedRoute>
+        } />
+        <Route path="/test-location" element={
+          <ProtectedRoute>
+            <LocationTrackingTest />
+          </ProtectedRoute>
+        } />
+        <Route path="/test-simple" element={
+          <LocationTrackingTestSimple />
         } />
       </Routes>
     </div>

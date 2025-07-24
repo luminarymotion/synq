@@ -2,17 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
 import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
-import { Map, View } from 'ol';
-import { OSM } from 'ol/source';
-import { Tile as TileLayer, Vector as VectorLayer } from 'ol/layer';
-import { Vector as VectorSource } from 'ol/source';
-import { Feature } from 'ol';
-import Point from 'ol/geom/Point';
-import { Style, Fill, Stroke, Circle as CircleStyle, Icon } from 'ol/style';
-import { fromLonLat, toLonLat } from 'ol/proj';
-import { boundingExtent } from 'ol/extent';
-import { LineString } from 'ol/geom';
-import 'ol/ol.css';
+import mapboxgl from 'mapbox-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 import '../styles/Dashboard.css';
 import { Link, useNavigate } from 'react-router-dom';
 import RideHistory from '../components/RideHistory';
@@ -21,6 +12,9 @@ import {
   getUserRideHistory
 } from '../services/firebaseOperations';
 import SimpleLoading from '../components/SimpleLoading';
+
+// Set Mapbox access token
+mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_PUBLIC_TOKEN || import.meta.env.VITE_MAPBOX_API_KEY || 'pk.eyJ1IjoibHVtaW5hcnkwIiwiYSI6ImNtY3c2M2VjYTA2OWsybXEwYm12emU2MnkifQ.nC7J3ggSse2k9HYdJ1sdYg';
 import { Box, Container, Typography, Card, CardContent, Button, Stack, Divider, Avatar, IconButton } from '@mui/material';
 import GroupIcon from '@mui/icons-material/Group';
 import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
@@ -305,102 +299,82 @@ function Dashboard() {
       return;
     }
 
-    console.log(`Initializing map for ride ${ride.id}`, ride);
+    console.log(`Initializing Mapbox map for ride ${ride.id}`, ride);
 
     try {
-      const vectorSource = new VectorSource();
-      const vectorLayer = new VectorLayer({
-        source: vectorSource,
+      const map = new mapboxgl.Map({
+        container: mapElement,
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [-96.7970, 32.7767], // Default to Dallas
+        zoom: 12,
+        interactive: false // Disable interactions for snapshot view
       });
 
-      const map = new Map({
-        target: mapElement,
-        layers: [
-          new TileLayer({
-            source: new OSM({
-              url: 'https://{a-d}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-            })
-          }),
-          vectorLayer
-        ],
-        view: new View({
-          center: fromLonLat([-96.7970, 32.7767]), // Default to Dallas
-          zoom: 12,
-        }),
-        controls: [] // Remove controls for snapshot view
-      });
+      // Wait for map to load before adding markers
+      map.on('load', () => {
+        const bounds = new mapboxgl.LngLatBounds();
+        let hasFeatures = false;
 
-      // Add features to the map
-      const features = [];
+        // Add driver location
+        if (ride.driver?.location) {
+          console.log('Adding driver location:', ride.driver.location);
+          const driverMarker = new mapboxgl.Marker({
+            color: '#4CAF50',
+            scale: 0.8
+          })
+          .setLngLat([ride.driver.location.lng, ride.driver.location.lat])
+          .addTo(map);
+          
+          bounds.extend([ride.driver.location.lng, ride.driver.location.lat]);
+          hasFeatures = true;
+        }
 
-      // Add driver location
-      if (ride.driver?.location) {
-        console.log('Adding driver location:', ride.driver.location);
-        const driverFeature = new Feature({
-          geometry: new Point(fromLonLat([ride.driver.location.lng, ride.driver.location.lat])),
-        });
-        driverFeature.setStyle(new Style({
-          image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/4CAF50/marker.png',
-            scale: 0.6,
-            anchor: [0.5, 1],
-          }),
-        }));
-        features.push(driverFeature);
-      }
-
-      // Add passenger locations
-      if (ride.passengers) {
-      ride.passengers.forEach((passenger, index) => {
-        if (passenger.location) {
-          console.log(`Adding passenger ${index} location:`, passenger.location);
-          const passengerFeature = new Feature({
-            geometry: new Point(fromLonLat([passenger.location.lng, passenger.location.lat])),
+        // Add passenger locations
+        if (ride.passengers) {
+          ride.passengers.forEach((passenger, index) => {
+            if (passenger.location) {
+              console.log(`Adding passenger ${index} location:`, passenger.location);
+              const passengerMarker = new mapboxgl.Marker({
+                color: '#FF9800',
+                scale: 0.6
+              })
+              .setLngLat([passenger.location.lng, passenger.location.lat])
+              .addTo(map);
+              
+              bounds.extend([passenger.location.lng, passenger.location.lat]);
+              hasFeatures = true;
+            }
           });
-          passengerFeature.setStyle(new Style({
-            image: new CircleStyle({
-              radius: 6,
-              fill: new Fill({ color: '#FF9800' }),
-              stroke: new Stroke({ color: '#fff', width: 2 }),
-            }),
-          }));
-          features.push(passengerFeature);
+        }
+
+        // Add destination
+        if (ride.destination?.location) {
+          console.log('Adding destination location:', ride.destination.location);
+          const destMarker = new mapboxgl.Marker({
+            color: '#fa314a',
+            scale: 0.8
+          })
+          .setLngLat([ride.destination.location.lng, ride.destination.location.lat])
+          .addTo(map);
+          
+          bounds.extend([ride.destination.location.lng, ride.destination.location.lat]);
+          hasFeatures = true;
+        }
+
+        // Fit map to all features
+        if (hasFeatures) {
+          map.fitBounds(bounds, {
+            padding: 20,
+            maxZoom: 14,
+            duration: 0
+          });
         }
       });
-      }
-
-      // Add destination
-      if (ride.destination?.location) {
-        console.log('Adding destination location:', ride.destination.location);
-        const destFeature = new Feature({
-          geometry: new Point(fromLonLat([ride.destination.location.lng, ride.destination.location.lat])),
-        });
-        destFeature.setStyle(new Style({
-          image: new Icon({
-            src: 'https://img.icons8.com/ios-filled/50/fa314a/marker.png',
-            scale: 0.6,
-            anchor: [0.5, 1],
-          }),
-        }));
-        features.push(destFeature);
-      }
-
-      vectorSource.addFeatures(features);
-
-      // Fit view to all features
-      if (features.length > 0) {
-        const extent = boundingExtent(features.map(f => f.getGeometry().getCoordinates()));
-        map.getView().fit(extent, {
-          padding: [20, 20, 20, 20],
-          maxZoom: 14,
-          duration: 0
-        });
-      }
 
       mapRefs.current[ride.id] = map;
-      console.log(`Map initialized successfully for ride ${ride.id}`);
+      console.log(`Mapbox map initialized successfully for ride ${ride.id}`);
     } catch (error) {
-      console.error(`Error initializing map for ride ${ride.id}:`, error);
+      console.error(`Error initializing Mapbox map for ride ${ride.id}:`, error);
     }
   };
 

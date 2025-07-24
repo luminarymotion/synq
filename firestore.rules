@@ -1,4 +1,4 @@
-rules_version = '3';
+rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // Helper functions
@@ -51,17 +51,6 @@ service cloud.firestore {
       function isValidFriendRequest() {
         let data = request.resource.data;
         
-        // Log everything for debugging
-        debug('=== Friend Request Validation START ===');
-        debug('Request Method:', request.method);
-        debug('Auth UID (raw):', request.auth.uid);
-        debug('Auth UID (trimmed):', request.auth.uid.trim());
-        debug('Data Sender ID (raw):', data.senderId);
-        debug('Data Sender ID (trimmed):', data.senderId.trim());
-        debug('Auth Email:', request.auth.token.email);
-        debug('Data Receiver ID:', data.receiverId);
-        debug('Data Message:', data.message);
-        
         // Check each condition separately
         let isAuthenticated = request.auth != null;
         let senderMatchesAuth = data.senderId.trim() == request.auth.uid.trim();
@@ -69,32 +58,20 @@ service cloud.firestore {
                            data.receiverId is string && 
                            data.message is string;
         
-        debug('Validation Checks:', {
-          isAuthenticated: isAuthenticated,
-          senderMatchesAuth: senderMatchesAuth,
-          hasValidFields: hasValidFields,
-          senderIdType: typeof data.senderId,
-          receiverIdType: typeof data.receiverId,
-          messageType: typeof data.message,
-          uidComparison: {
-            authUid: request.auth.uid.trim(),
-            senderId: data.senderId.trim(),
-            areEqual: data.senderId.trim() == request.auth.uid.trim()
-          }
-        });
+        // Check for metadata structure (new format)
+        let hasValidMetadata = data.metadata != null &&
+                              data.metadata.status is string &&
+                              data.metadata.createdBy is string;
         
-        let isValid = isAuthenticated && senderMatchesAuth && hasValidFields;
+        // Check for senderProfile structure (new format)
+        let hasValidSenderProfile = data.senderProfile != null &&
+                                   data.senderProfile.displayName is string &&
+                                   data.senderProfile.email is string &&
+                                   data.senderProfile.photoURL is string;
         
-        debug('Final Validation Result:', {
-          isValid: isValid,
-          failedChecks: {
-            isAuthenticated: !isAuthenticated,
-            senderMatchesAuth: !senderMatchesAuth,
-            hasValidFields: !hasValidFields
-          }
-        });
+        let isValid = isAuthenticated && senderMatchesAuth && hasValidFields && 
+                     hasValidMetadata && hasValidSenderProfile;
         
-        debug('=== Friend Request Validation END ===');
         return isValid;
       }
 
@@ -109,7 +86,16 @@ service cloud.firestore {
       
       // Allow update if user is the receiver
       allow update: if isAuthenticated() && 
-        resource.data.receiverId.trim() == request.auth.uid.trim();
+        resource.data.receiverId.trim() == request.auth.uid.trim() &&
+        // Validate that only metadata is being updated
+        request.resource.data.metadata != null &&
+        request.resource.data.metadata.status in ['accepted', 'rejected'] &&
+        request.resource.data.metadata.updatedBy == request.auth.uid &&
+        // Ensure other fields remain unchanged
+        request.resource.data.senderId == resource.data.senderId &&
+        request.resource.data.receiverId == resource.data.receiverId &&
+        request.resource.data.message == resource.data.message &&
+        request.resource.data.senderProfile == resource.data.senderProfile;
       
       // Allow delete if user is either sender or receiver
       allow delete: if isAuthenticated() && (
@@ -144,20 +130,25 @@ service cloud.firestore {
 
     // Rides collection
     match /rides/{rideId} {
-      // Allow reading if user is driver or passenger
+      // Allow reading if user is driver, passenger, or has pending invitation
       allow read: if isAuthenticated() && (
         resource.data.driver.uid == request.auth.uid ||
-        request.auth.uid in resource.data.passengerUids
+        request.auth.uid in resource.data.passengerUids ||
+        (resource.data.invitations != null && 
+         request.auth.uid in resource.data.invitations &&
+         resource.data.invitations[request.auth.uid].status == 'pending')
       );
       
       // Allow creating new rides
       allow create: if isAuthenticated() && 
         request.resource.data.driver.uid == request.auth.uid;
       
-      // Allow updating if user is driver or passenger
+      // Allow updating if user is driver, passenger, or has an invitation
       allow update: if isAuthenticated() && (
         resource.data.driver.uid == request.auth.uid ||
-        request.auth.uid in resource.data.passengerUids
+        request.auth.uid in resource.data.passengerUids ||
+        (resource.data.invitations != null && 
+         request.auth.uid in resource.data.invitations)
       );
       
       // Allow deleting if user is driver
@@ -185,18 +176,24 @@ service cloud.firestore {
         // Allow creating notifications for yourself
         request.resource.data.userId == request.auth.uid ||
         // Allow creating friend request notifications
-        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added'] &&
+        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added', 'ride-invitation', 'ride-invitation-response'] &&
          (
            // For friend requests, sender can create notification for receiver
            (request.resource.data.type == 'friend_request' && 
             request.resource.data.data.senderId == request.auth.uid) ||
            // For friend request responses, receiver can create notification for sender
            (request.resource.data.type in ['friend_request_accepted', 'friend_request_rejected'] && 
-            request.resource.data.data.receiverId == request.auth.uid) ||
+            request.auth.uid != request.resource.data.userId) ||
            // For friend added, either user can create notification
            (request.resource.data.type == 'friend_added' && 
             (request.resource.data.data.senderId == request.auth.uid || 
-             request.resource.data.data.receiverId == request.auth.uid))
+             request.resource.data.data.receiverId == request.auth.uid)) ||
+           // For ride invitations, inviter can create notification for invitee
+           (request.resource.data.type == 'ride-invitation' && 
+            request.resource.data.metadata.inviterId == request.auth.uid) ||
+           // For ride invitation responses, invitee can create notification for inviter
+           (request.resource.data.type == 'ride-invitation-response' && 
+            request.auth.uid != request.resource.data.userId)
          ))
       );
       allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;

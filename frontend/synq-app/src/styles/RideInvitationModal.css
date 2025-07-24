@@ -315,22 +315,25 @@
   right: 0;
   background: white;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-  max-height: 200px;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15), 0 4px 6px rgba(0, 0, 0, 0.05);
+  max-height: 250px;
   overflow-y: auto;
   z-index: 1000;
   margin-top: 4px;
+  backdrop-filter: blur(10px);
+  border-top: 3px solid #6366f1;
 }
 
 .suggestion-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-  padding: 0.75rem 1rem;
+  padding: 0.875rem 1rem;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition: all 0.2s ease;
   border-bottom: 1px solid #f1f5f9;
+  position: relative;
 }
 
 .suggestion-item:last-child {
@@ -339,33 +342,44 @@
 
 .suggestion-item:hover {
   background: #f8fafc;
+  transform: translateX(2px);
+}
+
+.suggestion-item:active {
+  background: #e2e8f0;
 }
 
 .suggestion-icon {
   color: #6366f1;
-  font-size: 1rem;
+  font-size: 1.1rem;
   flex-shrink: 0;
+  margin-top: 0.125rem;
+  width: 16px;
+  text-align: center;
 }
 
 .suggestion-content {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .suggestion-address {
-  font-weight: 500;
+  font-weight: 600;
   color: #1f2937;
   font-size: 0.875rem;
-  margin-bottom: 0.25rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.3;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .suggestion-type {
   color: #6b7280;
   font-size: 0.75rem;
-  text-transform: capitalize;
+  line-height: 1.2;
+  font-weight: 400;
 }
 
 .details-form {

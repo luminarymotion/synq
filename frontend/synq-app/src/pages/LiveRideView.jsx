@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { doc, onSnapshot, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
@@ -6,7 +6,7 @@ import { db } from '../services/firebase';
 import MapView from '../components/MapView';
 import { useLocation } from '../services/locationTrackingService';
 import rideStatusService, { RIDE_STATUS } from '../services/rideStatusService';
-import { calculateOptimizedRoute } from '../services/routeOptimizerService';
+// Route optimization temporarily disabled - Mapbox integration pending
 import RideInvitationModal from '../components/RideInvitationModal';
 import RouteInformationPanel from '../components/RouteInformationPanel';
 import '../styles/LiveRideView.css';
@@ -86,12 +86,14 @@ function LiveRideView() {
   const [calculatedRoute, setCalculatedRoute] = useState(null);
   const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
   const [routeError, setRouteError] = useState(null);
+  const [lastRouteCalculation, setLastRouteCalculation] = useState(null);
   
   // Route information and passenger management for full screen mode
   const [currentRouteStep, setCurrentRouteStep] = useState(0);
   const [passengerStatus, setPassengerStatus] = useState({});
   const [showFullRoute, setShowFullRoute] = useState(false);
   const [currentLocation, setCurrentLocation] = useState(null);
+  const [locationTrackingInitialized, setLocationTrackingInitialized] = useState(false);
 
   const {
     location,
@@ -99,7 +101,7 @@ function LiveRideView() {
     startTracking,
     stopTracking
   } = useLocation({
-    preset: 'realtime',
+    preset: 'ultra_fast',
     updateFirebase: true,
     onLocationUpdate: async (locationData) => {
       if (!ride || ride.driver?.uid !== user.uid) return;
@@ -130,7 +132,11 @@ function LiveRideView() {
       }
     },
     onStatusChange: (status) => {
+          // Only log status changes, not every status update
+    if (status !== 'active') {
       console.log('Location tracking status:', status);
+    }
+    
       switch (status) {
         case 'offline':
           setLocationError('Location tracking paused - offline');
@@ -155,56 +161,67 @@ function LiveRideView() {
   const calculateRoute = async () => {
     if (!ride) return;
 
+    // Prevent multiple simultaneous calculations
+    if (isCalculatingRoute) {
+      console.log('🚫 Route calculation already in progress, skipping...');
+      return;
+    }
+
+    // Check if we've calculated recently (within last 30 seconds)
+    const now = Date.now();
+    if (lastRouteCalculation && (now - lastRouteCalculation) < 30000) {
+      console.log('🚫 Route calculated recently, skipping...');
+      return;
+    }
+
+    console.log('🚗 Starting route calculation...');
     setIsCalculatingRoute(true);
     setRouteError(null);
+    setLastRouteCalculation(now);
 
     try {
       // Create waypoints array
       const waypoints = [];
       
-      // Add driver as starting point (from participants or invitations)
-      let driver = null;
-      
-      // First check if there's a driver in participants
-      if (ride.driver) {
-        driver = {
-          ...ride.driver,
-          role: 'driver',
-          currentLocation: ride.driver.currentLocation,
-          location: ride.driver.location || ride.driver.currentLocation,
-          displayName: displayNames[ride.driver.uid] || ride.driver.displayName || 'Driver'
-        };
-      }
-      
-      if (driver) {
-        const driverLocation = driver.currentLocation || driver.location;
-        if (driverLocation && driverLocation.lat && driverLocation.lng) {
-          waypoints.push({
-            ...driver,
-            lat: driverLocation.lat,
-            lng: driverLocation.lng,
-            location: driverLocation,
-            type: 'driver',
-            displayName: driver.displayName
-          });
-        }
-      }
-
       // Use participants array which now includes all users with locations
       const allUsersWithLocations = participants.filter(p => 
         p.location && p.location.lat && p.location.lng && p.role !== 'driver'
       );
       
-      console.log('Users with locations for route calculation:', allUsersWithLocations.map(u => ({
-        uid: u.uid,
-        displayName: u.displayName,
-        role: u.role,
-        status: u.invitationStatus,
-        location: u.location
-      })));
+      // Reduced logging to prevent console spam
+      if (allUsersWithLocations.length > 0) {
+        console.log('Users with locations for route calculation:', allUsersWithLocations.length);
+      }
       
-      // Add all users with locations to waypoints
+      // Add driver's starting location as the first waypoint (origin)
+      const driver = participants.find(p => p.role === 'driver' || p.uid === ride.driver?.uid);
+      if (driver && driver.location) {
+          waypoints.push({
+            ...driver,
+          lat: driver.location.lat,
+          lng: driver.location.lng,
+          location: driver.location,
+          type: 'origin',
+          displayName: driver.displayName || 'Driver'
+        });
+        console.log('🚗 Added driver origin waypoint:', driver.displayName);
+      } else if (location) {
+        // Use current user's location as driver origin if driver location not available
+        waypoints.push({
+          uid: user?.uid,
+          lat: location.latitude,
+          lng: location.longitude,
+          location: { lat: location.latitude, lng: location.longitude },
+          type: 'origin',
+          displayName: 'Driver (Current Location)',
+          role: 'driver'
+        });
+        console.log('🚗 Added current location as driver origin waypoint');
+      }
+
+      // Add all passengers with locations to waypoints
       allUsersWithLocations.forEach(user => {
+        if (user.role !== 'driver') { // Don't add driver twice
         waypoints.push({
           ...user,
           lat: user.location.lat,
@@ -213,57 +230,43 @@ function LiveRideView() {
           type: 'pickup',
           displayName: user.displayName
         });
+        }
       });
 
       // Add destination
       if (ride.destination && ride.destination.location) {
+        // Use the destination name/address if available, otherwise use coordinates
+        const destinationName = ride.destination.name || 
+                               ride.destination.address || 
+                               ride.destination.displayName || 
+                               'Destination';
+        
         waypoints.push({
           ...ride.destination,
           lat: ride.destination.location.lat,
           lng: ride.destination.location.lng,
-          location: ride.destination.location,
+          location: {
+            ...ride.destination.location,
+            // Ensure we have the address in the location object
+            address: ride.destination.address || 
+                    ride.destination.name || 
+                    ride.destination.displayName || 
+                    `${ride.destination.location.lat.toFixed(4)}, ${ride.destination.location.lng.toFixed(4)}`
+          },
           type: 'destination',
-          displayName: 'Destination'
+          displayName: destinationName
         });
       }
 
-      console.log('Calculating route with waypoints:', waypoints.map(wp => ({
-        type: wp.type,
-        displayName: wp.displayName,
-        location: wp.location,
-        role: wp.role,
-        uid: wp.uid
-      })));
-      
-      console.log('Participants with locations:', participants.filter(p => p.location).map(p => ({
-        uid: p.uid,
-        displayName: p.displayName,
-        role: p.role,
-        status: p.invitationStatus,
-        location: p.location
-      })));
+      console.log('Calculating route with waypoints:', waypoints.length);
       
       // Debug: Check what the route optimizer will receive
       console.log('Route optimizer input analysis:', {
         totalWaypoints: waypoints.length,
         drivers: waypoints.filter(w => w.type === 'driver' || w.role === 'driver').length,
         pickupPoints: waypoints.filter(w => (w.type === 'pickup' || w.type === 'waypoint' || w.type === 'passenger') && w.role !== 'driver').length,
-        destinations: waypoints.filter(w => w.type === 'destination' || w.type === 'end').length,
-        waypointTypes: waypoints.map(w => ({ type: w.type, role: w.role, displayName: w.displayName }))
+        destinations: waypoints.filter(w => w.type === 'destination' || w.type === 'end').length
       });
-      
-      // More detailed waypoint analysis
-      console.log('Detailed waypoint breakdown:', waypoints.map(wp => ({
-        displayName: wp.displayName,
-        type: wp.type,
-        role: wp.role,
-        uid: wp.uid,
-        hasLocation: !!(wp.location && wp.location.lat && wp.location.lng),
-        location: wp.location,
-        isDriver: wp.type === 'driver' || wp.role === 'driver',
-        isPickup: (wp.type === 'pickup' || wp.type === 'waypoint' || wp.type === 'passenger') && wp.role !== 'driver',
-        isDestination: wp.type === 'destination' || wp.type === 'end'
-      })));
 
       if (waypoints.length >= 2) {
         // Check if we have the expected waypoints for a proper route
@@ -282,14 +285,123 @@ function LiveRideView() {
           return;
         }
         
-        const routeData = await calculateOptimizedRoute(waypoints, {
-          maxPassengers: 8,
-          maxRouteDistance: 100,
-          maxRouteDuration: 120
-        });
+        // Advanced route optimization for multi-stop pickup
+        console.log('🚗 Starting advanced route optimization...');
+        
+        try {
+          // Build waypoints array for Mapbox Directions API
+          const waypointsForAPI = waypoints.map(waypoint => {
+            if (waypoint.type === 'origin' || waypoint.type === 'driver') {
+              return `${waypoint.location.lng},${waypoint.location.lat}`;
+            } else if (waypoint.type === 'pickup') {
+              return `${waypoint.location.lng},${waypoint.location.lat}`;
+            } else if (waypoint.type === 'destination') {
+              return `${waypoint.location.lng},${waypoint.location.lat}`;
+            }
+            return null;
+          }).filter(Boolean);
 
-        console.log('Route calculation completed:', routeData);
-        setCalculatedRoute(routeData);
+          console.log('🗺️ Waypoints for API:', waypointsForAPI);
+
+          if (waypointsForAPI.length < 2) {
+            console.log('❌ Not enough waypoints for route calculation');
+            return;
+          }
+
+          // Use Mapbox Directions API for optimized route
+          const directionsUrl = new URL('https://api.mapbox.com/directions/v5/mapbox/driving-traffic/' + waypointsForAPI.join(';'));
+          directionsUrl.searchParams.append('access_token', 'pk.eyJ1IjoibHVtaW5hcnkwIiwiYSI6ImNtY3c2M2VjYTA2OWsybXEwYm12emU2MnkifQ.nC7J3ggSse2k9HYdJ1sdYg');
+          directionsUrl.searchParams.append('geometries', 'geojson');
+          directionsUrl.searchParams.append('overview', 'full');
+          directionsUrl.searchParams.append('steps', 'true');
+          directionsUrl.searchParams.append('annotations', 'duration,distance');
+          directionsUrl.searchParams.append('continue_straight', 'false');
+
+          console.log('🗺️ Requesting optimized route from Mapbox...');
+          const response = await fetch(directionsUrl.toString());
+          
+          if (!response.ok) {
+            throw new Error(`Mapbox API error: ${response.status} ${response.statusText}`);
+          }
+
+          const routeData = await response.json();
+          console.log('🗺️ Route optimization result:', routeData);
+
+          if (routeData.routes && routeData.routes.length > 0) {
+            const optimizedRoute = routeData.routes[0];
+            
+            // Calculate total metrics
+            const totalDistance = optimizedRoute.distance / 1609.34; // Convert meters to miles
+            const totalDuration = optimizedRoute.duration / 60; // Convert seconds to minutes
+            
+            // Extract waypoint information
+            const waypointInfo = optimizedRoute.legs.map((leg, index) => ({
+              from: waypoints[index]?.displayName || `Waypoint ${index + 1}`,
+              to: waypoints[index + 1]?.displayName || `Waypoint ${index + 2}`,
+              distance: leg.distance / 1609.34,
+              duration: leg.duration / 60,
+              steps: leg.steps
+            }));
+
+            const enhancedRouteData = {
+              type: 'FeatureCollection',
+              features: [{
+                type: 'Feature',
+                properties: {
+                  routeType: 'optimized',
+                  totalDistance,
+                  totalDuration,
+                  waypointCount: waypoints.length,
+                  waypointInfo,
+                  optimizationType: 'multi-stop-pickup'
+                },
+                geometry: optimizedRoute.geometry
+              }],
+              totalDistance,
+              totalDuration,
+              waypointInfo,
+              optimizationType: 'multi-stop-pickup'
+            };
+
+            console.log('🚗 Advanced route optimization completed:', {
+              totalDistance: `${totalDistance.toFixed(1)} mi`,
+              totalDuration: `${totalDuration.toFixed(1)} min`,
+              waypoints: waypoints.length,
+              optimizationType: 'multi-stop-pickup'
+            });
+
+            setCalculatedRoute(enhancedRouteData);
+          } else {
+            throw new Error('No routes returned from Mapbox API');
+          }
+        } catch (error) {
+          console.error('❌ Route optimization failed:', error);
+          // Fallback to basic route calculation
+          console.log('🔄 Falling back to basic route calculation...');
+          
+          // Create a simple straight-line route as fallback
+          const fallbackRoute = {
+            type: 'FeatureCollection',
+            features: [{
+              type: 'Feature',
+              properties: {
+                routeType: 'fallback',
+                totalDistance: 0,
+                totalDuration: 0,
+                waypointCount: waypoints.length
+              },
+              geometry: {
+                type: 'LineString',
+                coordinates: waypoints.map(wp => [wp.location.lng, wp.location.lat])
+              }
+            }],
+            totalDistance: 0,
+            totalDuration: 0,
+            optimizationType: 'fallback'
+          };
+          
+          setCalculatedRoute(fallbackRoute);
+        }
       } else {
         console.log('Not enough waypoints for route calculation:', waypoints.length);
       }
@@ -395,14 +507,18 @@ function LiveRideView() {
           rideData.passengers.forEach((passenger, index) => {
             const isAlreadyParticipant = allParticipants.some(p => p.uid === passenger.uid);
             if (!isAlreadyParticipant) {
-            allParticipants.push({
-              ...passenger,
-              role: 'passenger',
-                invitationStatus: 'accepted',
-              isCreator: rideData.creatorId === passenger.uid,
+              // Check if this passenger has an invitation and use their actual status
+              const invitation = rideData.invitations?.[passenger.uid];
+              const invitationStatus = invitation ? invitation.status : 'accepted';
+              
+              allParticipants.push({
+                ...passenger,
+                role: 'passenger',
+                invitationStatus: invitationStatus,
+                isCreator: rideData.creatorId === passenger.uid,
                 color: ['#FF5722', '#4CAF50', '#9C27B0', '#FF9800'][index % 4],
                 displayName: passenger.displayName || passenger.name || `User ${passenger.uid?.slice(-4)}` || 'Passenger'
-            });
+              });
             }
           });
         }
@@ -478,8 +594,8 @@ function LiveRideView() {
           }
         });
 
-        // Calculate route when participants change
-        if (uniqueParticipants.length > 0) {
+        // Calculate route when participants change (only if we don't already have a route)
+        if (uniqueParticipants.length > 0 && !calculatedRoute) {
           setTimeout(() => calculateRoute(), 1000); // Small delay to ensure display names are loaded
         }
         
@@ -646,14 +762,22 @@ function LiveRideView() {
   // Recalculate route when user location changes (for real-time updates)
   useEffect(() => {
     if (location && calculatedRoute && participants.length > 0) {
+      // Only recalculate if we're actively tracking and the location has changed significantly
+      const shouldRecalculate = isTracking && location.accuracy < 50; // Only if accurate location
+      
+      if (shouldRecalculate) {
       // Debounce route recalculation to avoid too frequent updates
       const timeoutId = setTimeout(() => {
+          // Only recalculate if we're still tracking and have a valid route
+          if (isTracking && calculatedRoute) {
         calculateRoute();
-      }, 5000); // Recalculate every 5 seconds when location changes
+          }
+        }, 10000); // Recalculate every 10 seconds when location changes (increased from 5s)
 
       return () => clearTimeout(timeoutId);
     }
-  }, [location]);
+    }
+  }, [location?.latitude, location?.longitude, isTracking]); // More specific dependencies
 
   // Location tracking effect
   useEffect(() => {
@@ -662,29 +786,54 @@ function LiveRideView() {
         console.log('Stopping location tracking - no ride or user');
       stopTracking();
       }
+      setLocationTrackingInitialized(false);
       return;
     }
 
     const isDriver = ride.driver?.uid === user.uid;
 
+    // Only initialize once per ride/user combination
+    if (!locationTrackingInitialized) {
     if (isDriver && !isTracking) {
       console.log('Starting location tracking for driver:', user.uid);
       startTracking(user.uid).catch(error => {
         console.error('Error starting location tracking:', error);
         setLocationError('Failed to start location tracking');
       });
+        setLocationTrackingInitialized(true);
     } else if (!isDriver && isTracking) {
       console.log('Stopping location tracking - user is no longer driver');
       stopTracking();
+        setLocationTrackingInitialized(true);
+      }
     }
 
+    // Cleanup function
     return () => {
       if (isTracking) {
         console.log('Cleaning up location tracking');
         stopTracking();
       }
     };
-  }, [ride?.driver?.uid, user?.uid, isTracking, startTracking, stopTracking]);
+  }, [ride?.driver?.uid, user?.uid, locationTrackingInitialized]); // Removed isTracking, startTracking, stopTracking from dependencies
+
+  // Handle location tracking status changes
+  useEffect(() => {
+    if (locationTrackingInitialized) {
+      const isDriver = ride?.driver?.uid === user?.uid;
+      
+      // If user is no longer driver but still tracking, stop it
+      if (!isDriver && isTracking) {
+        console.log('User is no longer driver, stopping location tracking');
+        stopTracking();
+      }
+    }
+  }, [ride?.driver?.uid, user?.uid, isTracking, locationTrackingInitialized]);
+
+  // Reset location tracking initialization when ride changes
+  useEffect(() => {
+    setLocationTrackingInitialized(false);
+  }, [rideId]);
 
   // Get current user's RSVP status
   const getCurrentUserRSVPStatus = () => {
@@ -947,10 +1096,124 @@ function LiveRideView() {
 
   // Process route information for turn-by-turn directions
   const getRouteInformation = () => {
-    if (!calculatedRoute || !calculatedRoute.routes || calculatedRoute.routes.length === 0) {
+    if (!calculatedRoute) {
       return null;
     }
 
+    // Handle new optimized route format
+    if (calculatedRoute.type === 'FeatureCollection' && calculatedRoute.features) {
+      const routeFeature = calculatedRoute.features[0];
+      const properties = routeFeature.properties;
+      
+      // Convert waypointInfo to waypoints format expected by RouteInformationPanel
+      const waypoints = [];
+      if (calculatedRoute.waypointInfo && calculatedRoute.waypointInfo.length > 0) {
+        // First, build a mapping of display names to actual participant data
+        const participantMap = new Map();
+        
+        // Add driver
+        const driver = participants.find(p => p.role === 'driver' || p.uid === ride.driver?.uid);
+        if (driver) {
+          participantMap.set(driver.displayName || 'Driver', driver);
+          participantMap.set('Driver', driver);
+        }
+        
+        // Add passengers
+        participants.forEach(p => {
+          if (p.role !== 'driver' && p.displayName) {
+            participantMap.set(p.displayName, p);
+          }
+        });
+        
+        // Add destination
+        if (ride.destination) {
+          const destinationName = ride.destination.name || 
+                                 ride.destination.address || 
+                                 ride.destination.displayName || 
+                                 'Destination';
+          participantMap.set('Destination', ride.destination);
+          participantMap.set(destinationName, ride.destination);
+        }
+        
+        calculatedRoute.waypointInfo.forEach((leg, index) => {
+          // Add the "from" waypoint
+          if (index === 0) {
+            const fromParticipant = participantMap.get(leg.from) || participantMap.get('Driver');
+            waypoints.push({
+              type: 'origin',
+              displayName: leg.from || 'Driver',
+              location: fromParticipant?.location || { lat: 0, lng: 0 },
+              isCurrent: index === currentRouteStep,
+              uid: fromParticipant?.uid,
+              role: fromParticipant?.role
+            });
+          }
+          
+          // Add the "to" waypoint
+          const toParticipant = participantMap.get(leg.to);
+          const isDestination = index === calculatedRoute.waypointInfo.length - 1;
+          waypoints.push({
+            type: isDestination ? 'destination' : 'pickup',
+            displayName: leg.to || `Waypoint ${index + 2}`,
+            location: toParticipant?.location || { lat: 0, lng: 0 },
+            isCurrent: index + 1 === currentRouteStep,
+            distance: leg.distance,
+            duration: leg.duration,
+            uid: toParticipant?.uid,
+            role: toParticipant?.role
+          });
+        });
+      } else {
+        // Fallback: create basic waypoints from participants
+        const driver = participants.find(p => p.role === 'driver');
+        if (driver && driver.location) {
+          waypoints.push({
+            type: 'origin',
+            displayName: driver.displayName || 'Driver',
+            location: driver.location,
+            isCurrent: currentRouteStep === 0
+          });
+        }
+        
+        const passengers = participants.filter(p => p.role !== 'driver' && p.location);
+        passengers.forEach((passenger, index) => {
+          waypoints.push({
+            type: 'pickup',
+            displayName: passenger.displayName || `Passenger ${index + 1}`,
+            location: passenger.location,
+            isCurrent: currentRouteStep === index + 1
+          });
+        });
+        
+        if (ride.destination && ride.destination.location) {
+          waypoints.push({
+            type: 'destination',
+            displayName: 'Destination',
+            location: ride.destination.location,
+            isCurrent: currentRouteStep === waypoints.length
+          });
+        }
+      }
+
+      return {
+        isOptimized: properties?.routeType === 'optimized',
+        optimizationType: calculatedRoute.optimizationType || 'basic',
+        totalDistance: calculatedRoute.totalDistance || 0,
+        totalDuration: calculatedRoute.totalDuration || 0,
+        waypointCount: waypoints.length,
+        waypointInfo: calculatedRoute.waypointInfo || [],
+        progress: ((currentRouteStep + 1) / waypoints.length) * 100,
+        currentStep: currentRouteStep,
+        totalSteps: waypoints.length,
+        currentWaypoint: waypoints[currentRouteStep] || waypoints[0],
+        nextWaypoint: waypoints[currentRouteStep + 1],
+        waypoints: waypoints,
+        routeGeometry: routeFeature.geometry
+      };
+    }
+
+    // Handle legacy route format
+    if (calculatedRoute.routes && calculatedRoute.routes.length > 0) {
     const route = calculatedRoute.routes[0];
     const waypoints = route.waypoints || [];
     
@@ -987,8 +1250,13 @@ function LiveRideView() {
       waypoints,
       totalDistance: calculatedRoute.totalDistance,
       totalDuration: calculatedRoute.totalDuration,
-      progress: ((currentStep + 1) / totalSteps) * 100
+        progress: ((currentStep + 1) / totalSteps) * 100,
+        isOptimized: false,
+        optimizationType: 'legacy'
     };
+    }
+
+    return null;
   };
 
   // Handle passenger status updates
@@ -1577,14 +1845,14 @@ function LiveRideView() {
           top: '50%', 
           left: '50%', 
           transform: 'translate(-50%, -50%)', 
-          width: isMapFullScreen ? '100vw' : { xs: '95vw', sm: 700 },
-          height: isMapFullScreen ? '100vh' : 'auto',
-          maxWidth: isMapFullScreen ? '100vw' : 700,
-          maxHeight: isMapFullScreen ? '100vh' : '90vh',
+          width: { xs: '95vw', sm: 700 },
+          height: 'auto',
+          maxWidth: 700,
+          maxHeight: '90vh',
           bgcolor: '#fff', 
-          borderRadius: isMapFullScreen ? 0 : 4, 
+          borderRadius: 4, 
           boxShadow: 24, 
-          p: isMapFullScreen ? 0 : 3, 
+          p: 3, 
           outline: 'none',
           display: 'flex',
           flexDirection: 'column'
@@ -1594,28 +1862,15 @@ function LiveRideView() {
             display: 'flex', 
             justifyContent: 'space-between', 
             alignItems: 'center', 
-            p: isMapFullScreen ? 2 : 0,
-            pb: isMapFullScreen ? 1 : 2,
-            borderBottom: isMapFullScreen ? '1px solid #e0e0e0' : 'none',
-            background: isMapFullScreen ? 'rgba(255,255,255,0.98)' : 'transparent',
-            backdropFilter: isMapFullScreen ? 'blur(10px)' : 'none'
+            p: 0,
+            pb: 2,
+            borderBottom: 'none',
+            background: 'transparent'
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="h6" color={vibe.accent}>
                 Live Ride Route
               </Typography>
-              {isMapFullScreen && (
-                <Chip 
-                  label="Full Screen" 
-                  size="small" 
-                  sx={{ 
-                    background: vibe.accent, 
-                    color: '#fff', 
-                    fontSize: '0.7rem',
-                    height: 20
-                  }} 
-                />
-              )}
             </Box>
             <Box sx={{ display: 'flex', gap: 1 }}>
               <IconButton 
@@ -1655,10 +1910,10 @@ function LiveRideView() {
           {/* Map Container */}
           <Box sx={{ 
             width: '100%', 
-            height: isMapFullScreen ? 'calc(100vh - 80px)' : { xs: 300, sm: 400 }, 
-            borderRadius: isMapFullScreen ? 0 : 3, 
+            height: { xs: 300, sm: 400 }, 
+            borderRadius: 3, 
             overflow: 'hidden', 
-            boxShadow: isMapFullScreen ? 'none' : 2,
+            boxShadow: 2,
             flex: 1,
             position: 'relative'
           }}>
@@ -1703,8 +1958,116 @@ function LiveRideView() {
               </Box>
             )}
             
-            {/* Route Information Panel - Full Screen Mode */}
+
+          </Box>
+          
+          {/* Footer - only show in non-fullscreen mode */}
+          {!isMapFullScreen && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+              <Button 
+                onClick={handleMapModalClose} 
+                sx={{ color: vibe.accent, fontWeight: 600 }}
+              >
+                Close
+              </Button>
+            </Box>
+          )}
+        </Box>
+      </Modal>
+
+      {/* Fullscreen Map Container */}
             {isMapFullScreen && (
+        <Box sx={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 9999,
+          background: '#fff',
+          display: 'flex',
+          flexDirection: 'column'
+        }}>
+          {/* Fullscreen Header */}
+          <Box sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            p: 2,
+            borderBottom: '1px solid #e0e0e0',
+            background: 'rgba(255,255,255,0.98)',
+            backdropFilter: 'blur(10px)',
+            zIndex: 1000
+          }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6" color={vibe.accent}>
+                Live Ride Route
+              </Typography>
+              <Chip 
+                label="Full Screen" 
+                size="small" 
+                sx={{ 
+                  background: vibe.accent, 
+                  color: '#fff', 
+                  fontSize: '0.7rem',
+                  height: 20
+                }} 
+              />
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <IconButton 
+                onClick={handleMapFullScreenToggle}
+                sx={{ 
+                  color: vibe.accent,
+                  background: 'rgba(0,0,0,0.05)',
+                  '&:hover': {
+                    background: 'rgba(0,0,0,0.1)',
+                    transform: 'scale(1.1)'
+                  },
+                  transition: 'all 0.2s ease'
+                }}
+                size="small"
+                title="Exit Full Screen"
+              >
+                <FullscreenExitIcon />
+              </IconButton>
+              <IconButton 
+                onClick={handleMapModalClose}
+                sx={{ 
+                  color: vibe.accent,
+                  '&:hover': {
+                    background: 'rgba(0,0,0,0.1)',
+                    transform: 'scale(1.1)'
+                  },
+                  transition: 'all 0.2s ease'
+                }}
+                size="small"
+                title="Close Map"
+              >
+                <CloseIcon />
+              </IconButton>
+            </Box>
+          </Box>
+          
+          {/* Fullscreen Map */}
+          <Box sx={{
+            flex: 1,
+            position: 'relative',
+            overflow: 'hidden'
+          }}>
+            <MapView
+              users={participants}
+              destination={ride.destination?.location ? {
+                lat: ride.destination.location.lat,
+                lng: ride.destination.location.lng,
+                address: ride.destination.address
+              } : ride.destination}
+              calculatedRoute={calculatedRoute}
+              userLocation={location}
+              isLiveRide={true}
+            />
+            
+            {/* Enhanced Route Information Panel - Full Screen Mode */}
               <Box sx={{
                 position: 'absolute',
                 bottom: 0,
@@ -1727,22 +2090,9 @@ function LiveRideView() {
                   currentLocation={currentLocation}
                 />
               </Box>
-            )}
           </Box>
-          
-          {/* Footer - only show in non-fullscreen mode */}
-          {!isMapFullScreen && (
-            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-              <Button 
-                onClick={handleMapModalClose} 
-                sx={{ color: vibe.accent, fontWeight: 600 }}
-              >
-                Close
-              </Button>
             </Box>
           )}
-        </Box>
-      </Modal>
     </Box>
   );
 }
