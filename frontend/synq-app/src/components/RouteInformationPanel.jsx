@@ -525,17 +525,15 @@ const RouteInformationPanel = ({
                           </Typography>
                         }
                         secondary={
-                          <Box>
-                            <Typography component="span" variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
-                              {formatAddress(waypoint.location)}
-                            </Typography>
+                          <Typography component="div" variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                            {formatAddress(waypoint.location)}
                             {summary.distance && summary.duration && (
                               <Typography component="span" variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
                                 {summary.duration} ({summary.distance})
                                 {summary.via && ` via ${summary.via}`}
                               </Typography>
                             )}
-                          </Box>
+                          </Typography>
                         }
                       />
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 1 }}>
@@ -581,7 +579,7 @@ const RouteInformationPanel = ({
                                     </Typography>
                                   }
                                   secondary={
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
+                                    <Typography component="div" variant="body2" color="text.secondary" sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
                                       {step.distance && (
                                         <Chip 
                                           label={step.distance} 
@@ -603,7 +601,7 @@ const RouteInformationPanel = ({
                                           {step.streetName}
                                         </Typography>
                                       )}
-                                    </Box>
+                                    </Typography>
                                   }
                                 />
                               </ListItem>

@@ -1016,30 +1016,137 @@
 /* Responsive Design */
 @media (max-width: 480px) {
   .poi-popup-container .mapboxgl-popup-content {
-    min-width: 280px;
-    max-width: 320px;
+    min-width: 240px;
+    max-width: 280px;
+    font-size: 12px;
   }
   
   .poi-header {
-    padding: 12px 12px 8px 12px;
+    padding: 8px 10px 6px 10px;
+    gap: 8px;
+  }
+  
+  .poi-icon {
+    font-size: 18px;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+  }
+  
+  .poi-name {
+    font-size: 14px;
+    margin: 0 0 2px 0;
+  }
+  
+  .poi-category {
+    font-size: 11px;
   }
   
   .poi-rating-section {
-    padding: 8px 12px;
+    padding: 6px 10px;
+  }
+  
+  .stars {
+    font-size: 12px;
+  }
+  
+  .rating-text {
+    font-size: 11px;
+  }
+  
+  .distance-text {
+    font-size: 11px;
   }
   
   .poi-address,
   .poi-hours {
-    padding: 8px 12px;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+  
+  .address-text,
+  .hours-text {
+    font-size: 11px;
   }
   
   .poi-actions {
-    padding: 12px;
+    padding: 8px 10px;
     flex-direction: column;
+    gap: 6px;
+  }
+  
+  .poi-action-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+  }
+  
+  .btn-text {
+    font-size: 12px;
   }
   
   .poi-additional {
-    padding: 8px 12px;
+    padding: 6px 10px;
+  }
+  
+  .additional-item {
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  
+  .item-label,
+  .item-value {
+    font-size: 11px;
+  }
+}
+
+/* Extra small screens (iPhone SE, etc.) */
+@media (max-width: 375px) {
+  .poi-popup-container .mapboxgl-popup-content {
+    min-width: 200px;
+    max-width: 240px;
+    font-size: 11px;
+  }
+  
+  .poi-header {
+    padding: 6px 8px 4px 8px;
+    gap: 6px;
+  }
+  
+  .poi-icon {
+    font-size: 16px;
+    width: 28px;
+    height: 28px;
+  }
+  
+  .poi-name {
+    font-size: 13px;
+  }
+  
+  .poi-category {
+    font-size: 10px;
+  }
+  
+  .poi-rating-section {
+    padding: 4px 8px;
+  }
+  
+  .poi-address,
+  .poi-hours {
+    padding: 4px 8px;
+  }
+  
+  .poi-actions {
+    padding: 6px 8px;
+  }
+  
+  .poi-action-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+  
+  .poi-additional {
+    padding: 4px 8px;
   }
 }
 

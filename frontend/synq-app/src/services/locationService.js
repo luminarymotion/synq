@@ -6,8 +6,7 @@ const CONFIG = {
   // API Configuration
   mapbox: {
     apiKey: import.meta.env.VITE_MAPBOX_API_KEY,
-    searchUrl: 'https://api.mapbox.com/search/searchbox/v1/suggest',
-    placesUrl: 'https://api.mapbox.com/geocoding/v5/mapbox.places',
+    searchBoxUrl: 'https://api.mapbox.com/search/searchbox/v1',
     geocodingUrl: 'https://api.mapbox.com/geocoding/v5/mapbox.places',
     directionsUrl: 'https://api.mapbox.com/directions/v5/mapbox/driving',
     timeout: 5000,
@@ -39,62 +38,41 @@ const CONFIG = {
 class RateLimiter {
   constructor() {
     this.lastRequest = 0;
-    this.requestCount = 0;
-    this.resetTime = Date.now() + CONFIG.rateLimit.interval;
   }
 
   async wait() {
     const now = Date.now();
-    
-    // Reset counter if interval has passed
-    if (now > this.resetTime) {
-      this.requestCount = 0;
-      this.resetTime = now + CONFIG.rateLimit.interval;
-    }
-    
-    // Check if we're at the limit
-    if (this.requestCount >= CONFIG.rateLimit.maxRequests) {
-      const waitTime = this.resetTime - now;
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      this.requestCount = 0;
-      this.resetTime = Date.now() + CONFIG.rateLimit.interval;
-    }
-    
-    // Ensure minimum interval between requests
     const timeSinceLastRequest = now - this.lastRequest;
+    
     if (timeSinceLastRequest < CONFIG.rateLimit.interval) {
-      await new Promise(resolve => 
-        setTimeout(resolve, CONFIG.rateLimit.interval - timeSinceLastRequest)
-      );
+      const waitTime = CONFIG.rateLimit.interval - timeSinceLastRequest;
+      console.log(`⏱️ Rate limiting: waiting ${waitTime}ms`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
     
     this.lastRequest = Date.now();
-    this.requestCount++;
   }
 }
 
-// Simple cache implementation
+// Search cache for performance
 class SearchCache {
   constructor() {
     this.cache = new Map();
   }
 
   get(key) {
-    const item = this.cache.get(key);
-    if (!item) return null;
-    
-    if (Date.now() > item.expiry) {
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.timestamp < CONFIG.search.cacheExpiry) {
+      return cached.data;
+    }
       this.cache.delete(key);
       return null;
-    }
-    
-    return item.data;
   }
 
   set(key, data) {
     this.cache.set(key, {
       data,
-      expiry: Date.now() + CONFIG.search.cacheExpiry
+      timestamp: Date.now()
     });
   }
 
@@ -103,8 +81,20 @@ class SearchCache {
   }
 
   createKey(query, userLocation, limit) {
-    const locationKey = userLocation ? 
-      `${userLocation.lat.toFixed(3)}_${userLocation.lng.toFixed(3)}` : 'no-location';
+    let locationKey = 'no-location';
+    
+    if (userLocation) {
+      // Handle both lat/lng and latitude/longitude formats
+      const lat = userLocation.lat || userLocation.latitude;
+      const lng = userLocation.lng || userLocation.longitude;
+      
+      if (typeof lat === 'number' && typeof lng === 'number' && 
+          !isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
+        // Round to 4 decimal places to avoid precision issues
+        locationKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+      }
+    }
+    
     return `${query.toLowerCase()}_${locationKey}_${limit}`;
   }
 }
@@ -115,8 +105,66 @@ const searchCache = new SearchCache();
 
 // Utility functions
 const isApiKeyConfigured = () => {
-  const apiKey = CONFIG.mapbox.apiKey;
-  return apiKey && apiKey.length > 0 && apiKey !== 'undefined' && apiKey.startsWith('pk.');
+  console.log('🔍 API Key Debug:');
+  console.log('  - API Key exists:', !!CONFIG.mapbox.apiKey);
+  console.log('  - API Key value:', CONFIG.mapbox.apiKey);
+  console.log('  - API Key starts with:', CONFIG.mapbox.apiKey?.substring(0, 10) + '...');
+  console.log('  - API Key type:', CONFIG.mapbox.apiKey?.startsWith('pk.') ? 'public' : CONFIG.mapbox.apiKey?.startsWith('sk.') ? 'secret' : 'unknown');
+  
+  return CONFIG.mapbox.apiKey && CONFIG.mapbox.apiKey.startsWith('pk.');
+};
+
+const isApiKeyValid = async () => {
+  if (!isApiKeyConfigured()) {
+    return false;
+  }
+  
+  try {
+    // Test the API key with a simple request
+    const testUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/test.json?access_token=${CONFIG.mapbox.apiKey}&limit=1`;
+    const response = await fetch(testUrl);
+    return response.status !== 403 && response.status !== 401;
+  } catch (error) {
+    console.warn('API key validation failed:', error.message);
+    return false;
+  }
+};
+
+const generateSessionToken = () => {
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
+
+// Helper function to geocode addresses to coordinates
+const geocodeAddress = async (address) => {
+  if (!address) return null;
+  
+  try {
+    const url = new URL(`${CONFIG.mapbox.geocodingUrl}/${encodeURIComponent(address)}.json`);
+    url.searchParams.append('access_token', CONFIG.mapbox.apiKey);
+    url.searchParams.append('types', 'poi,address');
+    url.searchParams.append('limit', '1');
+    url.searchParams.append('country', 'us');
+    
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      console.warn(`🔍 Geocoding failed for address: ${address}`);
+      return null;
+    }
+    
+    const data = await response.json();
+    if (data.features && data.features.length > 0) {
+      const feature = data.features[0];
+      return {
+        lat: feature.center[1],
+        lng: feature.center[0]
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.warn(`🔍 Geocoding error for address: ${address}`, error);
+    return null;
+  }
 };
 
 const calculateDistanceInternal = (point1, point2) => {
@@ -130,54 +178,27 @@ const calculateDistanceInternal = (point1, point2) => {
   return R * c;
 };
 
-const generateSessionToken = () => {
-  return Math.random().toString(36).substring(2, 15) + 
-         Math.random().toString(36).substring(2, 15);
-};
-
-// Smart relevance scoring (industry standard approach)
 const calculateRelevanceScore = (result, query, userLocation) => {
   let score = 0;
-  const queryLower = query.toLowerCase();
-  const nameLower = result.name?.toLowerCase() || '';
-  const addressLower = result.address?.toLowerCase() || '';
   
-  // Name match (highest weight)
-  if (nameLower.includes(queryLower)) {
-    score += 100;
-  }
-  
-  // Exact name match
-  if (nameLower === queryLower) {
-    score += 50;
-  }
-  
-  // Address match
-  if (addressLower.includes(queryLower)) {
-    score += 30;
-  }
+  // Base relevance from API
+  score += (result.relevance || 0) * 10;
   
   // Distance bonus (closer is better)
-  if (result.distance !== undefined) {
-    if (result.distance < 1) score += 80;
-    else if (result.distance < 3) score += 60;
-    else if (result.distance < 5) score += 40;
-    else if (result.distance < 10) score += 20;
-    else if (result.distance < 15) score += 10;
+  if (result.distance !== null && result.distance < 10) {
+    score += (10 - result.distance) * 2;
   }
   
-  // Type relevance
-  if (result.type === 'poi') score += 10;
-  
-  // API relevance score (if available)
-  if (result.relevance) {
-    score += result.relevance * 20;
+  // Name match bonus
+  const queryLower = query.toLowerCase();
+  const nameLower = (result.name || '').toLowerCase();
+  if (nameLower.includes(queryLower)) {
+    score += 5;
   }
   
   return score;
 };
 
-// Fetch with timeout and retry
 const fetchWithTimeout = async (url, options = {}, timeout = 5000) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -187,11 +208,11 @@ const fetchWithTimeout = async (url, options = {}, timeout = 5000) => {
       ...options,
       signal: controller.signal
     });
-    
     clearTimeout(timeoutId);
     
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
     }
     
     return await response.json();
@@ -201,773 +222,416 @@ const fetchWithTimeout = async (url, options = {}, timeout = 5000) => {
   }
 };
 
-// Primary search function using Mapbox Places API (Search Box API disabled due to 400 errors)
-const searchWithMapbox = async (query, userLocation, limit = CONFIG.search.defaultLimit) => {
-  if (!isApiKeyConfigured()) {
-    throw new Error('Mapbox API key not configured');
-  }
-  
-  console.log('📍 Mapbox API key configured:', CONFIG.mapbox.apiKey ? 'Yes' : 'No');
-  console.log('📍 API key starts with:', CONFIG.mapbox.apiKey?.substring(0, 10) + '...');
-  
-  await rateLimiter.wait();
-  
-  // Determine category for enhanced search
-  let detectedCategory = null;
-  
-  // Check for specific brand names to determine category
-  const brandToCategory = {
-    'mobil': 'gas station',
-    'exxon': 'gas station',
-    'shell': 'gas station',
-    'chevron': 'gas station',
-    'bp': 'gas station',
-    'taco bell': 'restaurant',
-    'mcdonalds': 'restaurant',
-    'burger king': 'restaurant',
-    'wendys': 'restaurant',
-    'subway': 'restaurant',
-    'dominos': 'restaurant',
-    'pizza hut': 'restaurant',
-    'kfc': 'restaurant',
-    'chipotle': 'restaurant',
-    'starbucks': 'coffee',
-    'dunkin': 'coffee',
-    'chick-fil-a': 'restaurant',
-    'popeyes': 'restaurant',
-    'arbys': 'restaurant',
-    'sonic': 'restaurant',
-    'whataburger': 'restaurant',
-    'in-n-out': 'restaurant',
-    'five guys': 'restaurant',
-    'shake shack': 'restaurant'
-  };
-  
-  for (const [brand, category] of Object.entries(brandToCategory)) {
-    if (query.toLowerCase().includes(brand) || brand.includes(query.toLowerCase())) {
-      detectedCategory = category;
-      console.log(`📍 Detected brand: ${brand}, category: ${category}`);
-      break;
-    }
-  }
-  
-  // Check for general categories
-  if (!detectedCategory) {
-    const categoryMap = {
-      'gas station': 'gas station',
-      'gas': 'gas station',
-      'fuel': 'gas station',
-      'restaurant': 'restaurant',
-      'food': 'restaurant',
-      'coffee': 'coffee',
-      'coffee shop': 'coffee',
-      'pharmacy': 'pharmacy',
-      'drugstore': 'pharmacy',
-      'grocery': 'grocery',
-      'grocery store': 'grocery',
-      'supermarket': 'grocery'
-    };
-    
-    for (const [term, category] of Object.entries(categoryMap)) {
-      if (query.toLowerCase().includes(term) || term.includes(query.toLowerCase())) {
-        detectedCategory = category;
-        console.log(`📍 Detected category: ${category}`);
-        break;
-      }
-    }
-  }
-  
-  // Use Mapbox Places API as primary method (Search Box API disabled)
-  console.log('📍 Using Mapbox Places API for:', query, 'Category:', detectedCategory);
-  return await searchWithMapboxPlaces(query, userLocation, limit, detectedCategory);
+// Light mapping from common user queries to Mapbox category IDs
+const queryToCategory = {
+  'coffee': 'coffee',
+  'coffee shop': 'coffee',
+  'coffee shops': 'coffee',
+  'gas': 'gas_station',
+  'gas station': 'gas_station',
+  'gas stations': 'gas_station',
+  'food': 'restaurant',
+  'restaurant': 'restaurant',
+  'restaurants': 'restaurant',
+  'lunch': 'restaurant',
+  'grocery': 'supermarket',
+  'grocery store': 'supermarket',
+  'walmart': 'supermarket',
+  'target': 'supermarket',
+  'pharmacy': 'pharmacy',
+  'cvs': 'pharmacy',
+  'walgreens': 'pharmacy',
+  'bank': 'bank',
+  'atm': 'bank',
+  'hospital': 'hospital',
+  'doctor': 'hospital',
+  'clinic': 'hospital',
+  'hotel': 'hotel',
+  'motel': 'hotel',
+  'airport': 'airport',
+  'parking': 'parking',
+  'park': 'park',
+  'gym': 'gym',
+  'fitness': 'gym',
+  'school': 'school',
+  'university': 'school',
+  'college': 'school',
+  'library': 'library',
+  'post office': 'post_office',
+  'police': 'police',
+  'fire station': 'fire_station',
+  // Add more as needed
 };
 
-// Search for branded POIs using /suggest → /retrieve workflow
-const searchBrandedPOI = async (query, userLocation, limit = CONFIG.search.defaultLimit) => {
-  console.log(`📍 Searching for branded POI: "${query}"`);
-  
-  // Step 1: Get suggestions from Searchbox API
+// Helper to normalize queries to possible category matches
+function resolveCategory(query) {
+  if (!query) return null;
+  // Remove 'near me' and similar phrases, lowercase and trim
+  let cleaned = query.toLowerCase()
+    .replace(/near me|open now|now open/g, '')
+    .replace(/[^\w\s]/g, '')
+    .trim();
+
+  // Try direct match first
+  if (queryToCategory[cleaned]) return queryToCategory[cleaned];
+
+  // Try to match the start of the query
+  for (const key in queryToCategory) {
+    if (cleaned.startsWith(key)) return queryToCategory[key];
+  }
+  return null;
+}
+
+const fetchSuggestions = async (query, userLocation) => {
+  console.log(`🔍 Mapbox hybrid search for: "${query}"`);
+
   const sessionToken = generateSessionToken();
-  const suggestionsUrl = new URL(CONFIG.mapbox.searchUrl);
-  
-  suggestionsUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-  suggestionsUrl.searchParams.append('q', query);
-  suggestionsUrl.searchParams.append('limit', (limit * 2).toString()); // Request more results to filter
-  suggestionsUrl.searchParams.append('language', 'en');
-  suggestionsUrl.searchParams.append('country', 'us');
-  suggestionsUrl.searchParams.append('session_token', sessionToken);
-  suggestionsUrl.searchParams.append('types', 'poi,place,neighborhood,address'); // Required parameter
-  suggestionsUrl.searchParams.append('routing', 'true'); // Enable routing for better results
-  
-  if (userLocation) {
-    const proximityParam = `${userLocation.lng},${userLocation.lat}`;
-    suggestionsUrl.searchParams.append('proximity', proximityParam);
-    
-    console.log('📍 Branded search request:', {
-      query,
-      userLocation,
-      proximityParam,
-      sessionToken: sessionToken.substring(0, 10) + '...'
-    });
-  }
-  
-  let suggestionsData;
-  try {
-    console.log('📍 Making Search Box API request to:', suggestionsUrl.toString().replace(CONFIG.mapbox.apiKey, '***'));
-    suggestionsData = await fetchWithTimeout(suggestionsUrl.toString(), {}, CONFIG.mapbox.timeout);
-    
-    console.log('📍 Raw branded search response:', suggestionsData);
-  
-    if (!suggestionsData.suggestions) {
-      console.warn('No suggestions in branded search response:', suggestionsData);
-      return [];
-    }
-  } catch (error) {
-    console.error('📍 Branded search API error:', error);
-    console.error('📍 Full URL (with API key):', suggestionsUrl.toString());
-    
-    // If Search Box API fails, try Mapbox Places as fallback (NOT Geocoding API)
-    console.log('📍 Falling back to Mapbox Places search for:', query);
-    return await searchWithMapboxPlaces(query, userLocation, limit, null);
-  }
-  
-  console.log(`📍 Branded search returned ${suggestionsData.suggestions.length} suggestions for "${query}"`);
-  
-  // Step 2: Process suggestions with improved fallback
-  const results = [];
-  
-  for (const suggestion of suggestionsData.suggestions) {
-    try {
-      // Skip category and brand suggestions that don't have mapbox_id
-      if (suggestion.feature_type === 'category' || suggestion.feature_type === 'brand') {
-        console.log(`📍 Skipping ${suggestion.feature_type} suggestion: ${suggestion.name}`);
-        continue;
-      }
-      
-      let coordinates = null;
-      let address = null;
-      
-      // Try to get coordinates from suggestion directly first
-      if (suggestion.coordinates) {
-        coordinates = { lat: suggestion.coordinates.lat, lng: suggestion.coordinates.lng };
-        address = suggestion.full_address || suggestion.place_formatted || suggestion.address;
-        console.log(`📍 Using direct coordinates for: ${suggestion.name}`);
-      }
-      // Try to get coordinates from center if available
-      else if (suggestion.center) {
-        const [lng, lat] = suggestion.center;
-        coordinates = { lat, lng };
-        address = suggestion.full_address || suggestion.place_formatted || suggestion.address;
-        console.log(`📍 Using center coordinates for: ${suggestion.name}`);
-      }
-      // Try retrieve endpoint as fallback
-      else if (suggestion.mapbox_id) {
-        try {
-      const retrieveUrl = new URL('https://api.mapbox.com/search/searchbox/v1/retrieve');
-      retrieveUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-      retrieveUrl.searchParams.append('session_token', sessionToken);
-      retrieveUrl.searchParams.append('id', suggestion.mapbox_id);
-      
-          const retrieveData = await fetchWithTimeout(retrieveUrl.toString(), {}, CONFIG.mapbox.timeout);
-        
-        if (retrieveData.features && retrieveData.features.length > 0) {
-          const feature = retrieveData.features[0];
-          
-          if (feature.geometry?.coordinates) {
-            const [lng, lat] = feature.geometry.coordinates;
-        coordinates = { lat, lng };
-          } else if (feature.center) {
-            const [lng, lat] = feature.center;
-        coordinates = { lat, lng };
-          }
-          
-            address = feature.properties?.full_address || suggestion.place_formatted || suggestion.full_address;
-            console.log(`📍 Retrieved coordinates for: ${suggestion.name}`);
-          }
-        } catch (retrieveError) {
-          console.log(`📍 Retrieve failed for ${suggestion.name}, trying geocoding:`, retrieveError.message);
-        }
-      }
-      
-      // Note: We don't use Geocoding API for POI search - it's only for address conversion
-      // If we don't have coordinates by now, skip this suggestion
-      if (!coordinates) {
-        console.log(`📍 Skipping ${suggestion.name} - no coordinates available from Search Box API`);
-      }
-      
-      // If we have coordinates, create the result
-      if (coordinates) {
-              const result = {
-                name: suggestion.name,
-          address: address || suggestion.place_formatted || suggestion.full_address || suggestion.address,
-                lat: coordinates.lat,
-                lng: coordinates.lng,
-                type: suggestion.feature_type || 'poi',
-                category: suggestion.feature_type || 'poi',
-                relevance: suggestion.relevance || 0,
-          coordinateSource: 'mapbox_enhanced',
-                // Additional POI information for enhanced display
-                phone: null,
-                website: null,
-                hours: null,
-                rating: null,
-                price: null
-              };
-              
-              // Calculate distance if user location is available
-              if (userLocation) {
-                result.distance = calculateDistanceInternal(userLocation, coordinates);
-              }
-              
-              results.push(result);
-        console.log(`📍 Successfully processed: ${result.name} (${coordinates.lat}, ${coordinates.lng})`);
-                      } else {
-        console.log(`📍 Could not get coordinates for: ${suggestion.name}`);
-      }
-    } catch (error) {
-      console.warn(`Failed to process suggestion ${suggestion.name}:`, error.message);
-    }
-  }
-  
-  return results;
-};
+  const category = resolveCategory(query);
 
-// Search for category POIs using /category endpoint
-const searchCategoryPOI = async (query, userLocation, limit = CONFIG.search.defaultLimit) => {
-  console.log(`📍 Searching for category POI: "${query}"`);
+  let url, usingCategory = false;
   
-  // Map common search terms to Mapbox category IDs
-  const categoryMap = {
-    'gas station': 'gas_station',
-    'gas': 'gas_station',
-    'fuel': 'gas_station',
-    'restaurant': 'restaurant',
-    'food': 'restaurant',
-    'coffee': 'coffee_shop',
-    'coffee shop': 'coffee_shop',
-    'pharmacy': 'pharmacy',
-    'drugstore': 'pharmacy',
-    'grocery': 'grocery_store',
-    'grocery store': 'grocery_store',
-    'supermarket': 'grocery_store',
-    'bank': 'bank',
-    'atm': 'atm',
-    'hotel': 'hotel',
-    'lodging': 'hotel',
-    'hospital': 'hospital',
-    'clinic': 'hospital',
-    'doctor': 'hospital',
-    'medical': 'hospital',
-    'parking': 'parking',
-    'parking lot': 'parking',
-    'shopping': 'shopping_center',
-    'mall': 'shopping_center',
-    'store': 'shopping_center',
-    'airport': 'airport',
-    'airports': 'airport',
-    'taco bell': 'restaurant',
-    'mcdonalds': 'restaurant',
-    'burger king': 'restaurant',
-    'wendys': 'restaurant',
-    'subway': 'restaurant',
-    'dominos': 'restaurant',
-    'pizza hut': 'restaurant',
-    'kfc': 'restaurant',
-    'chipotle': 'restaurant',
-    'starbucks': 'coffee_shop',
-    'dunkin': 'coffee_shop',
-    'chick-fil-a': 'restaurant',
-    'popeyes': 'restaurant',
-    'arbys': 'restaurant',
-    'sonic': 'restaurant',
-    'whataburger': 'restaurant',
-    'in-n-out': 'restaurant',
-    'five guys': 'restaurant',
-    'shake shack': 'restaurant'
-  };
-  
-  // Find the appropriate category ID
-  const categoryId = categoryMap[query.toLowerCase()];
-  
-  if (!categoryId) {
-    console.log(`📍 No category mapping found for: "${query}", falling back to branded search`);
-    return await searchBrandedPOI(query, userLocation, limit);
-  }
-  
-  // Use the category endpoint
-  const categoryUrl = new URL(`https://api.mapbox.com/search/searchbox/v1/category/${categoryId}`);
-  
-  categoryUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-  categoryUrl.searchParams.append('limit', limit.toString());
-  categoryUrl.searchParams.append('language', 'en');
-  categoryUrl.searchParams.append('country', 'us');
-  categoryUrl.searchParams.append('routing', 'true'); // Enable routing for better results
-  
+  // Add proximity if available - ensure correct order: longitude,latitude
+  let proximityParam = null;
   if (userLocation) {
-    const proximityParam = `${userLocation.lng},${userLocation.lat}`;
-    categoryUrl.searchParams.append('proximity', proximityParam);
-    
-    console.log('📍 Category search request:', {
-      query,
-      categoryId,
-      userLocation,
-      proximityParam
-    });
-  }
-  
-  let categoryData;
-  try {
-    categoryData = await fetchWithTimeout(categoryUrl.toString(), {}, CONFIG.mapbox.timeout);
-    
-    console.log('📍 Raw category search response:', categoryData);
-  
-    if (!categoryData.features) {
-      console.warn('No features in category search response:', categoryData);
-      return [];
+    const lat = userLocation.lat || userLocation.latitude;
+    const lng = userLocation.lng || userLocation.longitude;
+    if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+      // Ensure correct order: longitude,latitude (as required by Mapbox)
+      proximityParam = `${lng},${lat}`;
+      console.log(`🔍 Added proximity: ${lng},${lat} (longitude,latitude)`);
+      console.log(`🔍 UserLocation:`, userLocation);
+    } else {
+      console.log(`🔍 Invalid coordinates in userLocation:`, userLocation);
     }
-  } catch (error) {
-    console.error('📍 Category search API error:', error);
-    
-    // If category search fails, try branded search as fallback (NOT Geocoding API)
-    console.log('📍 Falling back to branded search for:', query);
-    return await searchBrandedPOI(query, userLocation, limit);
+  } else {
+    console.log(`🔍 No userLocation provided`);
   }
-  
-  console.log(`📍 Category search returned ${categoryData.features.length} features for "${query}" (${categoryId})`);
-  
-  // Process category results (these include coordinates directly)
-  const results = [];
-  
-  for (const feature of categoryData.features) {
-    try {
-      // Extract coordinates from the feature
-      let coordinates = null;
-      if (feature.geometry?.coordinates) {
-        const [lng, lat] = feature.geometry.coordinates;
-        coordinates = { lat, lng };
-      } else if (feature.center) {
-        const [lng, lat] = feature.center;
-        coordinates = { lat, lng };
+
+  if (category) {
+    // Use the category endpoint for common POI terms
+    usingCategory = true;
+    url = new URL(`${CONFIG.mapbox.searchBoxUrl}/category/${category}`);
+    
+    // Category endpoint parameters (NO session_token, NO q parameter)
+    const categoryParams = {
+      access_token: CONFIG.mapbox.apiKey,
+      limit: '10',
+      country: 'us',
+      language: 'en'
+    };
+    
+    // Add proximity if available
+    if (proximityParam) {
+      categoryParams.proximity = proximityParam;
+    }
+    
+    // Add category params to URL
+    for (const [k, v] of Object.entries(categoryParams)) {
+      url.searchParams.append(k, v);
+    }
+    
+    console.log(`🔍 Using category endpoint for: ${category}`);
+  } else {
+    // Use the /suggest endpoint for everything else
+    url = new URL(`${CONFIG.mapbox.searchBoxUrl}/suggest`);
+    
+    // Suggest endpoint parameters (REQUIRES session_token and q parameter)
+    const suggestParams = {
+      q: query,
+      types: 'poi,place,address',
+      access_token: CONFIG.mapbox.apiKey,
+      limit: '10',
+      country: 'us',
+      language: 'en',
+      session_token: sessionToken
+    };
+    
+    // Add proximity if available
+    if (proximityParam) {
+      suggestParams.proximity = proximityParam;
+    }
+    
+    // Add suggest params to URL
+    for (const [k, v] of Object.entries(suggestParams)) {
+      url.searchParams.append(k, v);
+    }
+    
+    console.log(`🔍 Using suggest endpoint for: "${query}"`);
+  }
+
+  console.log(`🔍 API URL: ${url.toString().replace(CONFIG.mapbox.apiKey, '***')}`);
+
+  // Add detailed debugging for the request
+  console.log('🔍 DEBUG - Full request details:', {
+    url: url.toString().replace(CONFIG.mapbox.apiKey, '***'),
+    method: 'GET',
+    params: Object.fromEntries(url.searchParams.entries()),
+    usingCategory,
+    category,
+    query: query || 'undefined'
+  });
+
+  try {
+    console.log('🔍 DEBUG - Making fetch request...');
+    const response = await fetch(url.toString());
+    console.log('🔍 DEBUG - Response received:', {
+      status: response.status,
+      statusText: response.statusText,
+      ok: response.ok,
+      headers: Object.fromEntries(response.headers.entries())
+    });
+    
+    if (!response.ok) {
+      // Try to get error details from response
+      let errorDetails = '';
+      try {
+        const errorData = await response.text();
+        errorDetails = `Response body: ${errorData}`;
+      } catch (e) {
+        errorDetails = 'Could not read error response body';
       }
       
-      if (coordinates) {
-        const result = {
-          name: feature.properties?.name || feature.text || 'Unknown',
-          address: feature.properties?.full_address || feature.place_name || 'Address not available',
-          lat: coordinates.lat,
-          lng: coordinates.lng,
-          type: feature.properties?.category || categoryId,
-          category: feature.properties?.category || categoryId,
-          relevance: feature.relevance || 0.5,
-          coordinateSource: 'mapbox_category',
-          // Additional POI information for enhanced display
-          phone: feature.properties?.phone || null,
-          website: feature.properties?.website || null,
-          hours: feature.properties?.hours || null,
-          rating: feature.properties?.rating || null,
-          price: feature.properties?.price || null
+      console.error('🔍 DEBUG - API Error Details:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: url.toString().replace(CONFIG.mapbox.apiKey, '***'),
+        errorDetails
+      });
+      
+      // If category endpoint fails with 400, try suggest endpoint as fallback
+      if (usingCategory && response.status === 400) {
+        console.log('🔍 Category endpoint failed with 400, trying suggest endpoint as fallback...');
+        return await fetchSuggestionsFallback(query, userLocation, sessionToken);
+      }
+      
+      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorDetails}`);
+    }
+    const data = await response.json();
+    console.log(`🔍 API response:`, data);
+
+    // For category search, results are in .features; for suggest, in .suggestions
+    let results = usingCategory ? data.features || [] : data.suggestions || [];
+
+    // Normalize fields for downstream (make sure you always return {name, lat, lon, address, ...})
+    let normalized = results.map(item => {
+      // Different field sets between /features and /suggestions
+      if (usingCategory) {
+        const feat = item;
+        return {
+          name: feat.properties?.name || feat.text || '',
+          lat: feat.geometry?.coordinates?.[1],
+          lon: feat.geometry?.coordinates?.[0],
+          address: feat.properties?.full_address || feat.place_name || '',
+          feature_type: feat.properties?.feature_type,
+          category: category,
+          mapbox_id: feat.properties?.mapbox_id,
         };
-        
-        // Calculate distance if user location is available
-        if (userLocation) {
-          result.distance = calculateDistanceInternal(userLocation, coordinates);
-        }
-        
-        results.push(result);
-        console.log(`📍 Successfully extracted coordinates for: ${result.name} (${coordinates.lat}, ${coordinates.lng})`);
       } else {
-        console.log(`📍 No coordinates available for: ${feature.properties?.name || feature.text || 'Unknown'}`);
+        const sug = item;
+        return {
+          name: sug.name || '',
+          lat: sug.lat || sug.coordinate?.latitude,
+          lon: sug.lon || sug.coordinate?.longitude,
+          address: sug.full_address || sug.address || '',
+          feature_type: sug.feature_type,
+          category: sug.poi_category?.[0] || undefined,
+          mapbox_id: sug.mapbox_id,
+        };
       }
-    } catch (error) {
-      console.warn('Failed to process category feature:', feature.properties?.name || feature.text || 'Unknown', error);
-    }
+    });
+
+    // Geocode results that don't have coordinates
+    console.log(`🔍 Geocoding ${normalized.length} results...`);
+    let resultsWithCoordinates = await Promise.all(
+      normalized.map(async (result) => {
+        if (result.lat && result.lon && !isNaN(result.lat) && !isNaN(result.lon)) {
+          // Already has valid coordinates - use as is
+          console.log(`🔍 Result "${result.name}" already has coordinates: ${result.lat}, ${result.lon}`);
+          return result;
+        } else if (result.address) {
+          // Need to geocode the address
+          console.log(`🔍 Geocoding address for "${result.name}": ${result.address}`);
+          const coords = await geocodeAddress(result.address);
+          if (coords) {
+            console.log(`🔍 Geocoded "${result.name}" to: ${coords.lat}, ${coords.lng}`);
+            return {
+              ...result,
+              lat: coords.lat,
+              lon: coords.lng
+            };
+          } else {
+            console.warn(`🔍 Failed to geocode "${result.name}"`);
+            return result;
+          }
+        } else {
+          console.warn(`🔍 Result "${result.name}" has no address to geocode`);
+          return result;
+        }
+      })
+    );
+
+    // Filter out results without valid coordinates
+    resultsWithCoordinates = resultsWithCoordinates.filter(loc => 
+      loc.name && loc.lat && loc.lon && !isNaN(loc.lat) && !isNaN(loc.lon)
+    );
+
+    // Limit to 10 for consistency
+    const finalResults = resultsWithCoordinates.slice(0, 10);
+
+    console.log(`🔍 Returning ${finalResults.length} final suggestions`);
+    return finalResults;
+
+  } catch (error) {
+    console.error('🔍 Mapbox Search Box API error:', error);
+    throw error;
   }
-  
-  return results;
 };
 
-// Fallback search using Mapbox Places API (much better than OSM)
-const searchWithMapboxPlaces = async (query, userLocation, limit = CONFIG.search.defaultLimit, category = null) => {
-  await rateLimiter.wait();
+// Fallback function for suggest endpoint
+const fetchSuggestionsFallback = async (query, userLocation, sessionToken) => {
+  console.log(`🔍 Fallback to suggest endpoint for: "${query}"`);
   
-  // Add category-specific terms to improve search accuracy
-  let searchQuery = query;
-  if (category) {
-    const categoryTerms = {
-      'restaurant': ['restaurant', 'food', 'dining'],
-      'gas station': ['gas station', 'fuel', 'gas'],
-      'coffee': ['coffee', 'cafe'],
-      'pharmacy': ['pharmacy', 'drugstore'],
-      'grocery': ['grocery', 'supermarket', 'store']
-    };
-    
-    if (categoryTerms[category]) {
-      searchQuery = `${query} ${categoryTerms[category][0]}`;
-      console.log(`📍 Enhanced Mapbox Places search query for ${category}: ${searchQuery}`);
+  const apiUrl = new URL(`${CONFIG.mapbox.searchBoxUrl}/suggest`);
+  apiUrl.searchParams.append('q', query);
+  apiUrl.searchParams.append('types', 'poi,place,address');
+  apiUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
+  apiUrl.searchParams.append('limit', '15');
+  apiUrl.searchParams.append('language', 'en');
+  apiUrl.searchParams.append('country', 'us');
+  apiUrl.searchParams.append('session_token', sessionToken);
+  
+  // Add proximity if available
+  if (userLocation) {
+    const lat = userLocation.lat || userLocation.latitude;
+    const lng = userLocation.lng || userLocation.longitude;
+    if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+      apiUrl.searchParams.append('proximity', `${lng},${lat}`);
     }
   }
   
-  const url = new URL(`${CONFIG.mapbox.placesUrl}/${encodeURIComponent(searchQuery)}.json`);
-  url.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-  url.searchParams.append('limit', (limit * 2).toString()); // Request more to filter
-  url.searchParams.append('types', 'poi,place'); // Focus on POIs and places
-  url.searchParams.append('country', 'us');
-  url.searchParams.append('language', 'en');
+  const response = await fetch(apiUrl.toString());
   
-  if (userLocation) {
-    url.searchParams.append('proximity', `${userLocation.lng},${userLocation.lat}`);
+  if (!response.ok) {
+    throw new Error(`Suggest endpoint also failed: ${response.status} ${response.statusText}`);
   }
   
-  console.log('📍 Making Mapbox Places API request to:', url.toString().replace(CONFIG.mapbox.apiKey, '***'));
+  const data = await response.json();
   
-  const data = await fetchWithTimeout(url.toString(), {}, CONFIG.mapbox.timeout);
-  
-  if (!data.features || data.features.length === 0) {
-    console.log('📍 No results from Mapbox Places API');
-    return [];
-  }
-  
-  // Filter results by category if specified
-  let filteredFeatures = data.features;
-  if (category) {
-    const categoryKeywords = {
-      'restaurant': ['restaurant', 'food', 'dining', 'cafe', 'pizza', 'burger', 'taco', 'subway', 'mcdonalds', 'burger king', 'wendys', 'dominos', 'pizza hut', 'kfc', 'chipotle', 'starbucks', 'dunkin', 'chick-fil-a', 'popeyes', 'arbys', 'sonic', 'whataburger', 'in-n-out', 'five guys', 'shake shack'],
-      'gas station': ['gas', 'fuel', 'exxon', 'shell', 'chevron', 'mobil', 'bp', '7-eleven', 'racetrac', 'quiktrip', 'wawa', 'speedway', 'circle k', 'valero', 'marathon', 'sunoco', 'conoco', 'phillips', 'texaco', 'arco', 'costco'],
-      'coffee': ['coffee', 'cafe', 'starbucks', 'dunkin', 'peets', 'caribou', 'tim hortons'],
-      'pharmacy': ['pharmacy', 'drugstore', 'cvs', 'walgreens', 'rite aid'],
-      'grocery': ['grocery', 'supermarket', 'store', 'walmart', 'target', 'kroger', 'safeway', 'albertsons', 'publix', 'whole foods', 'trader joes', 'aldi', 'food lion', 'shoprite', 'wegmans', 'meijer', 'heb']
-    };
+  if (data.suggestions && data.suggestions.length > 0) {
+    const results = data.suggestions.map(suggestion => ({
+      name: suggestion.name || 'Unknown',
+      lat: suggestion.coordinates?.[1] || suggestion.lat,
+      lon: suggestion.coordinates?.[0] || suggestion.lon,
+      address: suggestion.full_address || suggestion.address || '',
+      category: suggestion.poi_category?.[0] || undefined,
+      mapbox_id: suggestion.mapbox_id,
+      feature_type: suggestion.feature_type || 'poi'
+    }));
     
-    const keywords = categoryKeywords[category] || [];
-    filteredFeatures = data.features.filter(feature => {
-      const text = feature.text?.toLowerCase() || '';
-      const placeName = feature.place_name?.toLowerCase() || '';
-      const fullText = `${text} ${placeName}`;
-      return keywords.some(keyword => fullText.includes(keyword));
+    // Filter and return results
+    const validResults = results.filter(result => {
+      const hasName = result.name && result.name !== 'Unknown' && result.name.trim() !== '';
+      const hasCoordinates = result.lat && result.lon && !isNaN(result.lat) && !isNaN(result.lon);
+      return hasName && hasCoordinates;
     });
     
-    console.log(`📍 Filtered Mapbox Places results for ${category}: ${filteredFeatures.length}/${data.features.length} results`);
+    return validResults.slice(0, 10);
   }
   
-  const results = filteredFeatures.slice(0, limit).map(feature => {
-    const [lng, lat] = feature.center;
-    const distance = userLocation ? calculateDistanceInternal(userLocation, { lat, lng }) : undefined;
-    
-    console.log('📍 Mapbox Places result:', {
-      name: feature.text,
-      coordinates: { lat, lng },
-      distance: distance ? `${distance.toFixed(1)} miles` : 'unknown',
-      fullAddress: feature.place_name,
+  return [];
+};
+
+async function fetchDetailsForSuggestions(suggestions, userLocation) {
+  console.log(`🔍 Processing ${suggestions.length} suggestions from hybrid search`);
+  const results = [];
+  
+  // Since we're using hybrid search, the suggestions already have the data we need
+  // We just need to calculate distances and format the results
+  for (const suggestion of suggestions) {
+    try {
+      console.log(`🔍 Processing suggestion: ${suggestion.name}`);
+      
+      const name = suggestion.name;
+      const address = suggestion.address;
+      const lat = suggestion.lat;
+      const lon = suggestion.lon;
+      const category = suggestion.category;
+      
+      // Calculate distance from user location if available
+      let distanceInMiles = 0;
+      if (userLocation && lat && lon) {
+        const userLat = userLocation.lat || userLocation.latitude;
+        const userLon = userLocation.lng || userLocation.longitude;
+        
+        if (userLat && userLon && !isNaN(userLat) && !isNaN(userLon)) {
+          distanceInMiles = calculateDistanceInternal(
+            { lat: userLat, lng: userLon },
+            { lat, lng: lon }
+          );
+        }
+      }
+      
+      const result = {
+        name: name,
+        address: address,
+        lat: lat,
+        lon: lon,
       category: category,
-      relevance: feature.relevance
-    });
-    
-    return {
-      name: feature.text,
-      address: feature.place_name,
-      lat,
-      lng,
-      type: category || feature.place_type?.[0] || 'poi',
-      relevance: feature.relevance || 0.5,
-      coordinateSource: 'mapbox_places',
-      distance
-    };
-  });
-  
-  return results;
-};
-
-// Legacy OSM fallback (only as last resort)
-const searchWithOSM = async (query, userLocation, limit = CONFIG.search.defaultLimit, category = null) => {
-  console.log('📍 Using OSM as last resort fallback for:', query);
-  await rateLimiter.wait();
-  
-  const url = new URL(CONFIG.osm.searchUrl);
-  url.searchParams.append('q', query);
-  url.searchParams.append('format', 'json');
-  url.searchParams.append('limit', limit.toString());
-  url.searchParams.append('addressdetails', '1');
-  url.searchParams.append('countrycodes', 'us');
-  
-  if (userLocation) {
-    url.searchParams.append('lat', userLocation.lat.toString());
-    url.searchParams.append('lon', userLocation.lng.toString());
-    url.searchParams.append('radius', '50000'); // 50km radius
+        distance: distanceInMiles,
+        mapbox_id: suggestion.mapbox_id,
+        feature_type: suggestion.feature_type
+      };
+      
+      // Only add results with valid names and coordinates
+      if (name && name !== 'Unknown' && lat && lon) {
+        results.push(result);
+        console.log(`🔍 Added result: ${result.name} at ${result.lat}, ${result.lon} (${result.distance.toFixed(2)} miles)`);
+      } else {
+        console.log(`🔍 Skipped result: Invalid data for ${suggestion.mapbox_id}`);
+      }
+      
+    } catch (error) {
+      console.error(`🔍 Error processing suggestion ${suggestion.name}:`, error);
+      // Continue with other suggestions even if one fails
+    }
   }
   
-  const data = await fetchWithTimeout(url.toString(), {}, CONFIG.osm.timeout);
-  
-  const results = data.slice(0, limit).map(item => {
-    const lat = parseFloat(item.lat);
-    const lng = parseFloat(item.lon);
-    const distance = userLocation ? calculateDistanceInternal(userLocation, { lat, lng }) : undefined;
-    
-    return {
-      name: item.display_name.split(',')[0],
-      address: item.display_name,
-      lat,
-      lng,
-      type: category || item.type || 'poi',
-      relevance: 0.3, // Lower relevance for OSM results
-      coordinateSource: 'osm',
-      distance
-    };
-  });
-  
+  console.log(`🔍 Processed ${results.length} valid results`);
   return results;
-};
+}
 
-// Smart search terms for common POI types
-// Updated to work with the new Mapbox Search Box API approach
-const POI_SEARCH_TERMS = {
-  'gas station': [
-    'gas station', // Will use /category/gas_station
-    'exxon',       // Will use /suggest → /retrieve
-    'shell',       // Will use /suggest → /retrieve
-    'chevron',     // Will use /suggest → /retrieve
-    'mobil',       // Will use /suggest → /retrieve
-    'bp',          // Will use /suggest → /retrieve
-    '7-eleven',    // Will use /suggest → /retrieve
-    'racetrac',    // Will use /suggest → /retrieve
-    'quiktrip',    // Will use /suggest → /retrieve
-    'wawa',        // Will use /suggest → /retrieve
-    'speedway',    // Will use /suggest → /retrieve
-    'circle k',    // Will use /suggest → /retrieve
-    'valero',      // Will use /suggest → /retrieve
-    'marathon',    // Will use /suggest → /retrieve
-    'sunoco',      // Will use /suggest → /retrieve
-    'conoco',      // Will use /suggest → /retrieve
-    'phillips 66', // Will use /suggest → /retrieve
-    'texaco',      // Will use /suggest → /retrieve
-    'arco',        // Will use /suggest → /retrieve
-    'costco gas'   // Will use /suggest → /retrieve
-  ],
-  'restaurant': [
-    'restaurant',  // Will use /category/restaurant
-    'mcdonalds',   // Will use /suggest → /retrieve
-    'burger king', // Will use /suggest → /retrieve
-    'wendys',      // Will use /suggest → /retrieve
-    'subway',      // Will use /suggest → /retrieve
-    'dominos',     // Will use /suggest → /retrieve
-    'pizza hut',   // Will use /suggest → /retrieve
-    'kfc',         // Will use /suggest → /retrieve
-    'taco bell',   // Will use /suggest → /retrieve
-    'chipotle',    // Will use /suggest → /retrieve
-    'starbucks',   // Will use /suggest → /retrieve
-    'dunkin',      // Will use /suggest → /retrieve
-    'chick-fil-a', // Will use /suggest → /retrieve
-    'popeyes',     // Will use /suggest → /retrieve
-    'arbys',       // Will use /suggest → /retrieve
-    'sonic',       // Will use /suggest → /retrieve
-    'whataburger', // Will use /suggest → /retrieve
-    'in-n-out',    // Will use /suggest → /retrieve
-    'five guys',   // Will use /suggest → /retrieve
-    'shake shack'  // Will use /suggest → /retrieve
-  ],
-  'coffee': [
-    'coffee',      // Will use /category/coffee_shop
-    'coffee shop', // Will use /category/coffee_shop
-    'starbucks',   // Will use /suggest → /retrieve
-    'dunkin',      // Will use /suggest → /retrieve
-    'dunkin donuts', // Will use /suggest → /retrieve
-    'peets coffee', // Will use /suggest → /retrieve
-    'caribou coffee', // Will use /suggest → /retrieve
-    'tim hortons', // Will use /suggest → /retrieve
-    'cafe'         // Will use /category/coffee_shop
-  ],
-  'pharmacy': [
-    'pharmacy',    // Will use /category/pharmacy
-    'drugstore',   // Will use /category/pharmacy
-    'cvs',         // Will use /suggest → /retrieve
-    'walgreens',   // Will use /suggest → /retrieve
-    'rite aid'     // Will use /suggest → /retrieve
-  ],
-  'grocery': [
-    'grocery',     // Will use /category/grocery_store
-    'grocery store', // Will use /category/grocery_store
-    'supermarket', // Will use /category/grocery_store
-    'walmart',     // Will use /suggest → /retrieve
-    'target',      // Will use /suggest → /retrieve
-    'kroger',      // Will use /suggest → /retrieve
-    'safeway',     // Will use /suggest → /retrieve
-    'albertsons',  // Will use /suggest → /retrieve
-    'publix',      // Will use /suggest → /retrieve
-    'whole foods', // Will use /suggest → /retrieve
-    'trader joes', // Will use /suggest → /retrieve
-    'aldi',        // Will use /suggest → /retrieve
-    'food lion',   // Will use /suggest → /retrieve
-    'shoprite',    // Will use /suggest → /retrieve
-    'wegmans',     // Will use /suggest → /retrieve
-    'meijer',      // Will use /suggest → /retrieve
-    'heb'          // Will use /suggest → /retrieve
-  ]
-};
+async function searchWithMapbox(query, userLocation) {
+  const suggestions = await fetchSuggestions(query, userLocation);
+  const results = await fetchDetailsForSuggestions(suggestions, userLocation);
+  return results;
+}
 
-// Main search function with fallback
+// Export the new search function
+export const searchWithMapboxAPI = searchWithMapbox;
+// Simplified main search function - just make the API call
 export const searchDestinations = async (query, options = {}) => {
   const {
     limit = CONFIG.search.defaultLimit,
-    userLocation = null,
-    enableFallback = true
+    userLocation
   } = options;
   
   if (!query || query.trim().length < 2) {
     return [];
   }
   
-  const cleanQuery = query.trim().toLowerCase();
-  
-  // Check cache first
-  const cacheKey = searchCache.createKey(cleanQuery, userLocation, limit);
-  const cachedResults = searchCache.get(cacheKey);
-  if (cachedResults) {
-    return cachedResults;
-  }
-  
-  let results = [];
-  
-  // Determine search terms based on query
-  let searchTerms = [cleanQuery];
-  let detectedCategory = null;
-  
-  // Check if this is a known POI type and add relevant brand searches
-  for (const [poiType, terms] of Object.entries(POI_SEARCH_TERMS)) {
-    if (cleanQuery.includes(poiType) || poiType.includes(cleanQuery)) {
-      console.log(`📍 Detected POI type: ${poiType}, adding brand searches`);
-      searchTerms = terms.slice(0, 5); // Limit to top 5 brands to avoid too many requests
-      detectedCategory = poiType;
-      break;
-    }
-  }
-  
-  // Also check for specific brand names to determine category
-  if (!detectedCategory) {
-    const brandToCategory = {
-      'mobil': 'gas station',
-      'exxon': 'gas station',
-      'shell': 'gas station',
-      'chevron': 'gas station',
-      'bp': 'gas station',
-      'taco bell': 'restaurant',
-      'mcdonalds': 'restaurant',
-      'burger king': 'restaurant',
-      'wendys': 'restaurant',
-      'subway': 'restaurant',
-      'dominos': 'restaurant',
-      'pizza hut': 'restaurant',
-      'kfc': 'restaurant',
-      'chipotle': 'restaurant',
-      'starbucks': 'coffee',
-      'dunkin': 'coffee',
-      'chick-fil-a': 'restaurant',
-      'popeyes': 'restaurant',
-      'arbys': 'restaurant',
-      'sonic': 'restaurant',
-      'whataburger': 'restaurant',
-      'in-n-out': 'restaurant',
-      'five guys': 'restaurant',
-      'shake shack': 'restaurant'
-    };
-    
-    for (const [brand, category] of Object.entries(brandToCategory)) {
-      if (cleanQuery.includes(brand) || brand.includes(cleanQuery)) {
-        detectedCategory = category;
-        console.log(`📍 Detected brand: ${brand}, category: ${category}`);
-        break;
-      }
-    }
-  }
-  
-  console.log(`📍 Searching with terms:`, searchTerms);
+  const cleanQuery = query.trim();
+  console.log(`🔍 Searching for: "${cleanQuery}"`);
   
   try {
-    // Search with multiple terms
-    const allResults = [];
+    // Use the new searchWithMapbox function
+    const results = await searchWithMapbox(cleanQuery, userLocation);
+    console.log(`🔍 Found ${results.length} results`);
+    return results;
     
-    for (const searchTerm of searchTerms) {
-      try {
-        const termResults = await searchWithMapbox(searchTerm, userLocation, Math.ceil(limit / searchTerms.length));
-        allResults.push(...termResults);
-        // console.log(`📍 Found ${termResults.length} results for "${searchTerm}"`);
       } catch (error) {
-        console.warn(`Search failed for "${searchTerm}":`, error);
-      }
-    }
-    
-    results = allResults;
-  } catch (error) {
-    console.warn('All Mapbox searches failed:', error);
-    
-    if (enableFallback) {
-      try {
-        console.log('Trying fallback search with Mapbox Places...');
-        results = await searchWithMapboxPlaces(cleanQuery, userLocation, limit, detectedCategory);
-      } catch (fallbackError) {
-        console.error('Mapbox Places fallback failed, trying OSM as last resort...');
-        try {
-          results = await searchWithOSM(cleanQuery, userLocation, limit, detectedCategory);
-        } catch (osmError) {
-          console.error('All fallback searches failed:', osmError);
-        return [];
-        }
-      }
-    } else {
-      return [];
-    }
+    console.error(`🔍 Search failed for: "${cleanQuery}"`, error);
+    return []; // Return empty array on error
   }
-  
-        // console.log(`📍 Processing ${results.length} results before filtering`);
-  
-  // Deduplicate results by coordinates (within 100 meters)
-  const deduplicatedResults = [];
-  const seenCoordinates = new Set();
-  
-  for (const result of results) {
-    if (!result.lat || !result.lng) {
-      console.log(`📍 Filtered out "${result.name}" - no coordinates`);
-      continue;
-    }
-    
-    // Create a coordinate key rounded to ~100m precision
-    const coordKey = `${Math.round(result.lat * 1000) / 1000},${Math.round(result.lng * 1000) / 1000}`;
-    
-    if (seenCoordinates.has(coordKey)) {
-      console.log(`📍 Deduplicated "${result.name}" - same location as previous result`);
-      continue;
-    }
-    
-    seenCoordinates.add(coordKey);
-    deduplicatedResults.push(result);
-  }
-  
-        // console.log(`📍 After deduplication: ${deduplicatedResults.length} unique results`);
-  
-  // Filter and rank results
-  const filteredResults = deduplicatedResults
-    .filter(result => {
-      // Filter by distance if user location is available
-      if (userLocation && result.distance !== undefined) {
-        if (result.distance > CONFIG.search.maxDistance) {
-          console.log(`📍 Filtered out "${result.name}" - too far (${result.distance.toFixed(1)} miles > ${CONFIG.search.maxDistance} miles)`);
-          return false;
-        }
-      }
-      
-      return true;
-    })
-    .map(result => ({
-      ...result,
-      relevanceScore: calculateRelevanceScore(result, cleanQuery, userLocation)
-    }))
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, limit);
-    
-        // console.log(`📍 After filtering: ${filteredResults.length} results within ${CONFIG.search.maxDistance} miles`);
-  
-  // Cache results
-  searchCache.set(cacheKey, filteredResults);
-  
-  return filteredResults;
 };
 
 // Geocoding functions
@@ -987,7 +651,11 @@ export const getCoordsFromAddress = async (address, options = {}) => {
   url.searchParams.append('country', 'us');
   
   if (options.userLocation) {
-    url.searchParams.append('proximity', `${options.userLocation.lng},${options.userLocation.lat}`);
+    const userLat = options.userLocation?.lat || options.userLocation?.latitude;
+    const userLng = options.userLocation?.lng || options.userLocation?.longitude;
+    if (userLat && userLng) {
+      url.searchParams.append('proximity', `${userLng},${userLat}`);
+    }
   }
   
   const data = await fetchWithTimeout(url.toString(), {}, CONFIG.mapbox.timeout);
@@ -1041,6 +709,8 @@ export const getDirections = async (startLocation, endLocation) => {
     const url = `${CONFIG.mapbox.directionsUrl}/${coordinates}.json?access_token=${CONFIG.mapbox.apiKey}&overview=full&geometries=geojson`;
     
     console.log('📍 Getting directions:', { start: startLocation, end: endLocation });
+    console.log('📍 Directions URL coordinates:', coordinates);
+    console.log('📍 Full directions URL:', url);
     
     const data = await fetchWithTimeout(url, {}, CONFIG.mapbox.timeout);
     
@@ -1097,11 +767,129 @@ export const getCurrentLocation = () => {
 
 // Utility exports
 export const calculateDistance = calculateDistanceInternal;
-export const clearSearchCache = () => searchCache.clear();
+export const clearSearchCache = () => {
+  searchCache.clear();
+  console.log('📍 Search cache cleared');
+};
+
+// Force clear cache and retry search for debugging
+export const forceRefreshSearch = async (query, options = {}) => {
+  console.log('📍 Force refreshing search for:', query);
+  searchCache.clear();
+  return await searchDestinations(query, options);
+};
+
+// Debug function to clear cache and test fresh results
+export const clearCacheAndSearch = async (query, options = {}) => {
+  console.log('🧹 Clearing cache and performing fresh search for:', query);
+  searchCache.clear();
+  console.log('🧹 Cache cleared, performing fresh search...');
+  return await searchDestinations(query, options);
+};
+
+// Debug function to test Search Box API directly
+export const debugFetchSuggestions = async (query, userLocation) => {
+  console.log('🧪 Debugging Search Box API for:', query);
+  
+  try {
+    // Clear cache first
+    searchCache.clear();
+    
+    // Test the Search Box API directly
+    const results = await fetchSuggestions(query, userLocation);
+    
+    console.log('🧪 Search Box API Results:', results);
+    
+    // Compare with expected structure
+    results.forEach((result, index) => {
+      console.log(`🧪 Result ${index + 1}:`, {
+        name: result.name,
+        feature_type: result.feature_type,
+        poi_category: result.poi_category,
+        poi_category_ids: result.poi_category_ids,
+        brand: result.brand,
+        distance: result.distance,
+        hasRichMetadata: !!(result.poi_category_ids || result.brand || result.feature_type)
+      });
+    });
+    
+    return results;
+    } catch (error) {
+    console.error('🧪 Debug Search Box API failed:', error);
+    throw error;
+  }
+};
+
+// Debug function for testing the new search implementation
+export const debugSearchWithMapbox = async (query, userLocation) => {
+  console.log('🔍 Testing new searchWithMapbox for:', query);
+  try {
+    const results = await searchWithMapbox(query, userLocation);
+    console.log('🔍 New search results:', results);
+      return results;
+    } catch (error) {
+    console.error('🔍 New search error:', error);
+      return [];
+    }
+  };
+
+// Debug function to test API key and endpoints
+export const debugApiKey = () => {
+  console.log('🔍 API Key Debug Information:');
+  console.log('  - API Key exists:', !!CONFIG.mapbox.apiKey);
+  console.log('  - API Key value:', CONFIG.mapbox.apiKey);
+  console.log('  - API Key starts with:', CONFIG.mapbox.apiKey?.substring(0, 10) + '...');
+  console.log('  - API Key type:', CONFIG.mapbox.apiKey?.startsWith('pk.') ? 'public' : CONFIG.mapbox.apiKey?.startsWith('sk.') ? 'secret' : 'unknown');
+  
+  // Test basic geocoding API
+  if (CONFIG.mapbox.apiKey) {
+    console.log('🔍 Testing basic geocoding API...');
+    fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/test.json?access_token=${CONFIG.mapbox.apiKey}&limit=1`)
+      .then(response => {
+        console.log('  - Geocoding API status:', response.status);
+        return response.json();
+      })
+      .then(data => {
+        console.log('  - Geocoding API response:', data);
+      })
+      .catch(error => {
+        console.error('  - Geocoding API error:', error);
+      });
+  }
+  
+  return {
+    exists: !!CONFIG.mapbox.apiKey,
+    value: CONFIG.mapbox.apiKey,
+    type: CONFIG.mapbox.apiKey?.startsWith('pk.') ? 'public' : CONFIG.mapbox.apiKey?.startsWith('sk.') ? 'secret' : 'unknown'
+  };
+};
 
 // Export configuration for debugging
 export const MAPBOX_CONFIG = CONFIG.mapbox;
 export const SEARCH_CONFIG = CONFIG.search;
+
+// Debug function that can be called from browser console
+export const debugMapboxSearch = async (query = 'food', userLocation = null) => {
+  console.log('🔍 DEBUG - Starting Mapbox search test...');
+  console.log('🔍 DEBUG - Query:', query);
+  console.log('🔍 DEBUG - User location:', userLocation);
+  console.log('🔍 DEBUG - API Key configured:', isApiKeyConfigured());
+  console.log('🔍 DEBUG - API Key valid:', await isApiKeyValid());
+  
+  try {
+    const results = await searchDestinations(query, {
+      limit: 5,
+      userLocation: userLocation,
+      enableFallback: false
+    });
+    
+    console.log('🔍 DEBUG - Search successful, results:', results);
+    return results;
+  } catch (error) {
+    console.error('🔍 DEBUG - Search failed:', error);
+    throw error;
+  }
+};
 
 // Export service object for backward compatibility
 export const MAPBOX_SERVICE = {
@@ -1121,155 +909,73 @@ if (typeof window !== 'undefined') {
   window.searchDestinations = searchDestinations;
   window.getCurrentLocation = getCurrentLocation;
   window.clearSearchCache = clearSearchCache;
+}
+
+// Expose debug function globally
+if (typeof window !== 'undefined') {
+  window.debugFetchSuggestions = debugFetchSuggestions;
+  window.debugApiKey = debugApiKey;
+  window.debugSearchWithMapbox = debugSearchWithMapbox;
+}
+
+// Make debug functions available globally for console access
+if (typeof window !== 'undefined') {
+  window.debugMapboxSearch = debugMapboxSearch;
+  window.debugApiKey = debugApiKey;
+  window.MAPBOX_CONFIG = MAPBOX_CONFIG;
   
-  // Add test function for the new simplified system
-  window.testSimplifiedSearch = async () => {
-    console.log('🧪 ===== TESTING SIMPLIFIED SEARCH SYSTEM =====');
+  // Add a simple test function for direct API testing
+  window.testMapboxAPI = async () => {
+    console.log('🧪 Testing Mapbox API directly...');
     
-    try {
-      const userLocation = await getCurrentLocation();
-      console.log('🧪 User location:', userLocation);
-      
-      // Test 1: Gas station search
-      console.log('\n🧪 Test 1: Gas station search');
-      const gasResults = await searchDestinations('gas station', {
-        limit: 5,
-        userLocation,
-        enableFallback: true
-      });
-      console.log('🧪 Gas station results:', gasResults.length);
-      gasResults.forEach((result, index) => {
-        console.log(`  ${index + 1}. ${result.name} (${result.distance?.toFixed(1)} mi) - ${result.address}`);
-      });
-      
-      // Test 2: Walmart search
-      console.log('\n🧪 Test 2: Walmart search');
-      const walmartResults = await searchDestinations('walmart', {
-        limit: 5,
-        userLocation,
-        enableFallback: true
-      });
-      console.log('🧪 Walmart results:', walmartResults.length);
-      walmartResults.forEach((result, index) => {
-        console.log(`  ${index + 1}. ${result.name} (${result.distance?.toFixed(1)} mi) - ${result.address}`);
-      });
-      
-      // Test 3: Restaurant search
-      console.log('\n🧪 Test 3: Restaurant search');
-      const restaurantResults = await searchDestinations('restaurant', {
-        limit: 5,
-        userLocation,
-        enableFallback: true
-      });
-      console.log('🧪 Restaurant results:', restaurantResults.length);
-      restaurantResults.forEach((result, index) => {
-        console.log(`  ${index + 1}. ${result.name} (${result.distance?.toFixed(1)} mi) - ${result.address}`);
-      });
-      
-      // Summary
-      console.log('\n🧪 Summary:');
-      console.log(`  Gas stations: ${gasResults.length} results`);
-      console.log(`  Walmart: ${walmartResults.length} results`);
-      console.log(`  Restaurants: ${restaurantResults.length} results`);
-      
-      // Check for nearby results (within 5 miles)
-      const nearbyGas = gasResults.filter(r => r.distance && r.distance <= 5);
-      const nearbyWalmart = walmartResults.filter(r => r.distance && r.distance <= 5);
-      const nearbyRestaurant = restaurantResults.filter(r => r.distance && r.distance <= 5);
-      
-      console.log(`  Nearby results (≤5mi): Gas: ${nearbyGas.length}, Walmart: ${nearbyWalmart.length}, Restaurant: ${nearbyRestaurant.length}`);
-      
-    } catch (error) {
-      console.error('🧪 Test failed:', error);
+    if (!CONFIG.mapbox.apiKey) {
+      console.error('❌ No API key configured');
+      return;
     }
-  };
-
-  // Test function to debug coordinate extraction
-  window.testCoordinateExtraction = async (query = 'gas station') => {
-    console.log('🔧 Testing coordinate extraction for:', query);
     
+    // Test 1: Basic suggest endpoint
     try {
-      const userLocation = { lat: 33.0198, lng: -96.6989 }; // Plano, TX
-      console.log('📍 Test location:', userLocation);
+      const suggestUrl = new URL(`${CONFIG.mapbox.searchBoxUrl}/suggest`);
+      suggestUrl.searchParams.append('q', 'coffee');
+      suggestUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
+      suggestUrl.searchParams.append('limit', '5');
+      suggestUrl.searchParams.append('country', 'us');
       
-      // Test the raw Mapbox API response
-      const results = await searchDestinations(query, { 
-        userLocation, 
-        limit: 5 
-      });
+      console.log('🧪 Testing suggest endpoint...');
+      const suggestResponse = await fetch(suggestUrl.toString());
+      console.log('🧪 Suggest response status:', suggestResponse.status);
       
-      console.log('🔍 Raw results with coordinate analysis:');
-      results.forEach((result, index) => {
-        console.log(`${index + 1}. ${result.name}`);
-        console.log(`   Address: ${result.address}`);
-        console.log(`   Coordinates: lat=${result.lat}, lng=${result.lng}`);
-        console.log(`   Source: ${result.coordinateSource}`);
-        console.log(`   Distance: ${result.distance} mi`);
-        console.log('   ---');
-      });
-      
-      // Check for missing coordinates
-      const withCoords = results.filter(r => r.lat && r.lng);
-      const withoutCoords = results.filter(r => !r.lat || !r.lng);
-      
-      console.log('📊 Coordinate analysis:');
-      console.log(`  Total results: ${results.length}`);
-      console.log(`  With coordinates: ${withCoords.length}`);
-      console.log(`  Without coordinates: ${withoutCoords.length}`);
-      
-      if (withoutCoords.length > 0) {
-        console.log('❌ Results missing coordinates:', withoutCoords);
+      if (suggestResponse.ok) {
+        const suggestData = await suggestResponse.json();
+        console.log('🧪 Suggest data:', suggestData);
+      } else {
+        const errorText = await suggestResponse.text();
+        console.error('🧪 Suggest error:', errorText);
       }
-      
-      return results;
     } catch (error) {
-      console.error('❌ Coordinate extraction test failed:', error);
-      return [];
+      console.error('🧪 Suggest test failed:', error);
     }
-  };
-
-  // Test function to verify map display of suggestions
-  window.testMapDisplay = async (query = 'gas station') => {
-    console.log('🗺️ Testing map display for:', query);
     
+    // Test 2: Category endpoint
     try {
-      const userLocation = { lat: 33.0198, lng: -96.6989 }; // Plano, TX
+      const categoryUrl = new URL(`${CONFIG.mapbox.searchBoxUrl}/category/restaurant`);
+      categoryUrl.searchParams.append('access_token', CONFIG.mapbox.apiKey);
+      categoryUrl.searchParams.append('limit', '5');
+      categoryUrl.searchParams.append('country', 'us');
       
-      // Get search results
-      const results = await searchDestinations(query, { 
-        userLocation, 
-        limit: 5 
-      });
+      console.log('🧪 Testing category endpoint...');
+      const categoryResponse = await fetch(categoryUrl.toString());
+      console.log('🧪 Category response status:', categoryResponse.status);
       
-      console.log('🗺️ Search results for map display:', results);
-      
-      // Simulate what the MapView component receives
-      console.log('🗺️ Suggestions that should appear on map:');
-      results.forEach((result, index) => {
-        console.log(`  Marker ${index + 1}: ${result.name} at (${result.lat}, ${result.lng})`);
-      });
-      
-      // Check if results have the expected format for MapView
-      const validForMap = results.filter(r => 
-        r.lat && r.lng && 
-        typeof r.lat === 'number' && 
-        typeof r.lng === 'number' &&
-        r.name && r.address
-      );
-      
-      console.log('🗺️ Results valid for map display:', validForMap.length);
-      
-      if (validForMap.length !== results.length) {
-        console.warn('🗺️ Some results may not display on map due to missing data');
+      if (categoryResponse.ok) {
+        const categoryData = await categoryResponse.json();
+        console.log('🧪 Category data:', categoryData);
+      } else {
+        const errorText = await categoryResponse.text();
+        console.error('🧪 Category error:', errorText);
       }
-      
-      return results;
     } catch (error) {
-      console.error('❌ Map display test failed:', error);
-      return [];
+      console.error('🧪 Category test failed:', error);
     }
   };
 }
-
-
-
