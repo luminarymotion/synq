@@ -4,6 +4,30 @@ import { db } from './firebase';
 import { updateUserLocation } from './firebaseOperations';
 import { getAddressFromCoords } from './locationService';
 
+// Location permission and consent management
+export const LOCATION_PERMISSIONS = {
+  NEVER: 'never',           // Never share location
+  WHILE_USING: 'while_using', // Share only while actively using the app
+  ALWAYS: 'always',         // Always share location (background)
+  RIDE_ONLY: 'ride_only',   // Share only during active rides
+  DRIVER_ONLY: 'driver_only' // Share only when user is the driver
+};
+
+export const CONSENT_LEVELS = {
+  REQUIRED: 'required',     // Required for app functionality
+  OPTIONAL: 'optional',     // Optional for enhanced features
+  DISABLED: 'disabled'      // Feature disabled
+};
+
+// Location sharing context for determining when to share
+export const LOCATION_CONTEXTS = {
+  APP_ACTIVE: 'app_active',     // App is in foreground
+  RIDE_ACTIVE: 'ride_active',   // User is in an active ride
+  DRIVER_MODE: 'driver_mode',   // User is the driver
+  BACKGROUND: 'background',     // App is in background
+  MANUAL_REQUEST: 'manual_request' // User manually requested location
+};
+
 // Enhanced logging utility
 class LocationLogger {
   constructor(serviceName = 'LocationTracking') {
@@ -71,6 +95,250 @@ class LocationLogger {
     }
   }
 }
+
+// Enhanced permission manager
+class LocationPermissionManager {
+  constructor() {
+    this.logger = new LocationLogger('PermissionManager');
+    this.userPreferences = new Map(); // userId -> preferences
+    this.contextState = new Map(); // userId -> current context
+  }
+
+  // Get user's location sharing preferences
+  async getUserPreferences(userId) {
+    try {
+      // Check localStorage first
+      const stored = localStorage.getItem(`location_prefs_${userId}`);
+      if (stored) {
+        const prefs = JSON.parse(stored);
+        this.userPreferences.set(userId, prefs);
+        this.logger.info('Loaded user preferences from localStorage', { userId, prefs });
+        return prefs;
+      }
+
+      // Default preferences
+      const defaultPrefs = {
+        permissionLevel: LOCATION_PERMISSIONS.WHILE_USING,
+        consentLevel: CONSENT_LEVELS.OPTIONAL,
+        lastUpdated: Date.now(),
+        features: {
+          rideTracking: true,
+          backgroundTracking: false,
+          driverMode: true,
+          analytics: false
+        }
+      };
+
+      this.userPreferences.set(userId, defaultPrefs);
+      this.logger.info('Using default preferences', { userId, prefs: defaultPrefs });
+      return defaultPrefs;
+    } catch (error) {
+      this.logger.error('Error getting user preferences', { userId, error: error.message });
+      throw error;
+    }
+  }
+
+  // Save user's location sharing preferences
+  async saveUserPreferences(userId, preferences) {
+    try {
+      const updatedPrefs = {
+        ...preferences,
+        lastUpdated: Date.now()
+      };
+
+      // Save to localStorage
+      localStorage.setItem(`location_prefs_${userId}`, JSON.stringify(updatedPrefs));
+      
+      // Update in-memory cache
+      this.userPreferences.set(userId, updatedPrefs);
+      
+      this.logger.info('Saved user preferences', { userId, prefs: updatedPrefs });
+      return updatedPrefs;
+    } catch (error) {
+      this.logger.error('Error saving user preferences', { userId, error: error.message });
+      throw error;
+    }
+  }
+
+  // Update user's context (e.g., app active, ride active, driver mode)
+  updateUserContext(userId, context) {
+    try {
+      this.contextState.set(userId, {
+        ...this.contextState.get(userId),
+        ...context,
+        lastUpdated: Date.now()
+      });
+      
+      this.logger.debug('Updated user context', { userId, context });
+    } catch (error) {
+      this.logger.error('Error updating user context', { userId, error: error.message });
+    }
+  }
+
+  // Check if location sharing is allowed for current context
+  async canShareLocation(userId, context = LOCATION_CONTEXTS.APP_ACTIVE) {
+    try {
+      const prefs = await this.getUserPreferences(userId);
+      const userContext = this.contextState.get(userId) || {};
+
+      this.logger.debug('Checking location sharing permission', { 
+        userId, 
+        context, 
+        permissionLevel: prefs.permissionLevel,
+        userContext 
+      });
+
+      // Check permission level
+      switch (prefs.permissionLevel) {
+        case LOCATION_PERMISSIONS.NEVER:
+          return { allowed: false, reason: 'User has disabled location sharing' };
+
+        case LOCATION_PERMISSIONS.WHILE_USING:
+          return { 
+            allowed: context === LOCATION_CONTEXTS.APP_ACTIVE || context === LOCATION_CONTEXTS.MANUAL_REQUEST,
+            reason: context === LOCATION_CONTEXTS.APP_ACTIVE ? 'App is active' : 'Manual request'
+          };
+
+        case LOCATION_PERMISSIONS.RIDE_ONLY:
+          return { 
+            allowed: context === LOCATION_CONTEXTS.RIDE_ACTIVE || context === LOCATION_CONTEXTS.DRIVER_MODE,
+            reason: context === LOCATION_CONTEXTS.RIDE_ACTIVE ? 'Ride is active' : 'Driver mode'
+          };
+
+        case LOCATION_PERMISSIONS.DRIVER_ONLY:
+          return { 
+            allowed: context === LOCATION_CONTEXTS.DRIVER_MODE,
+            reason: context === LOCATION_CONTEXTS.DRIVER_MODE ? 'User is driver' : 'Driver mode required'
+          };
+
+        case LOCATION_PERMISSIONS.ALWAYS:
+          return { allowed: true, reason: 'Always allowed' };
+
+        default:
+          return { allowed: false, reason: 'Invalid permission level' };
+      }
+    } catch (error) {
+      this.logger.error('Error checking location sharing permission', { userId, error: error.message });
+      return { allowed: false, reason: 'Error checking permissions' };
+    }
+  }
+
+  // Get permission status for UI display
+  async getPermissionStatus(userId) {
+    try {
+      const prefs = await this.getUserPreferences(userId);
+      const browserPermission = await this.checkBrowserPermission();
+      
+      return {
+        userPreference: prefs.permissionLevel,
+        browserPermission: browserPermission.permission,
+        canRequest: browserPermission.canRequest,
+        features: prefs.features,
+        lastUpdated: prefs.lastUpdated
+      };
+    } catch (error) {
+      this.logger.error('Error getting permission status', { userId, error: error.message });
+      throw error;
+    }
+  }
+
+  // Check browser-level location permission
+  async checkBrowserPermission() {
+    try {
+      if (!navigator.geolocation) {
+        return { supported: false, permission: 'unsupported', canRequest: false };
+      }
+
+      // Modern browsers with permissions API
+      if (navigator.permissions && navigator.permissions.query) {
+        try {
+          const permission = await navigator.permissions.query({ name: 'geolocation' });
+          return { 
+            supported: true, 
+            permission: permission.state,
+            canRequest: permission.state !== 'denied'
+          };
+        } catch (error) {
+          this.logger.warn('Could not check permissions via permissions API', { error: error.message });
+        }
+      }
+
+      // Fallback: test with getCurrentPosition
+      return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve({ supported: true, permission: 'unknown', canRequest: true });
+        }, 2000);
+
+        navigator.geolocation.getCurrentPosition(
+          () => {
+            clearTimeout(timeout);
+            resolve({ supported: true, permission: 'granted', canRequest: false });
+          },
+          (error) => {
+            clearTimeout(timeout);
+            if (error.code === 1) {
+              resolve({ supported: true, permission: 'denied', canRequest: false });
+            } else {
+              resolve({ supported: true, permission: 'unknown', canRequest: true });
+            }
+          },
+          { timeout: 2000, maximumAge: 60000, enableHighAccuracy: false }
+        );
+      });
+    } catch (error) {
+      this.logger.error('Error checking browser permission', { error: error.message });
+      throw error;
+    }
+  }
+
+  // Request location permission from user
+  async requestLocationPermission(userId, context = LOCATION_CONTEXTS.APP_ACTIVE) {
+    try {
+      const canShare = await this.canShareLocation(userId, context);
+      
+      if (!canShare.allowed) {
+        this.logger.warn('Location sharing not allowed for context', { 
+          userId, 
+          context, 
+          reason: canShare.reason 
+        });
+        return { granted: false, reason: canShare.reason };
+      }
+
+      // Check browser permission
+      const browserPermission = await this.checkBrowserPermission();
+      
+      if (browserPermission.permission === 'granted') {
+        return { granted: true, reason: 'Already granted' };
+      }
+
+      if (!browserPermission.canRequest) {
+        return { granted: false, reason: 'Browser permission denied' };
+      }
+
+      // Request browser permission
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          () => {
+            this.logger.info('Location permission granted', { userId, context });
+            resolve({ granted: true, reason: 'Permission granted' });
+          },
+          (error) => {
+            this.logger.warn('Location permission denied', { userId, context, error: error.message });
+            resolve({ granted: false, reason: `Permission denied: ${error.message}` });
+          },
+          { timeout: 10000, maximumAge: 60000, enableHighAccuracy: false }
+        );
+      });
+    } catch (error) {
+      this.logger.error('Error requesting location permission', { userId, error: error.message });
+      return { granted: false, reason: 'Error requesting permission' };
+    }
+  }
+}
+
+// Create global permission manager instance
+export const locationPermissionManager = new LocationPermissionManager();
 
 // Parameter validation utility
 class LocationValidator {
@@ -498,6 +766,22 @@ class LocationTrackingService {
       // Validate parameters
       LocationValidator.validateUserId(userId);
       LocationValidator.validateOptions(options);
+
+      // Check location sharing permissions
+      const context = options.context || LOCATION_CONTEXTS.APP_ACTIVE;
+      const canShare = await locationPermissionManager.canShareLocation(userId, context);
+      
+      if (!canShare.allowed) {
+        this.logger.warn('Location tracking not allowed', { userId, context, reason: canShare.reason });
+        throw new Error(`Location tracking not allowed: ${canShare.reason}`);
+      }
+
+      // Request browser permission if needed
+      const permissionResult = await locationPermissionManager.requestLocationPermission(userId, context);
+      if (!permissionResult.granted) {
+        this.logger.warn('Browser permission not granted', { userId, reason: permissionResult.reason });
+        throw new Error(`Browser permission not granted: ${permissionResult.reason}`);
+      }
 
       if (this.isTracking) {
         this.logger.warn('Location tracking is already active');

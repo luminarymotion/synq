@@ -4,7 +4,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import { Toaster } from 'react-hot-toast';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
-import RouteOptimizer from './pages/RouteOptimizer';
+import ResponsiveRideCreator from './pages/ResponsiveRideCreator';
 import Settings from './pages/Settings';
 import Dashboard from './pages/Dashboard';
 import Friends from './components/Friends';
@@ -152,12 +152,12 @@ const AppContent = () => {
         } />
         <Route path="/create-group" element={
           <ProtectedRoute>
-            <RouteOptimizer mode="create" />
+            <ResponsiveRideCreator mode="create" />
           </ProtectedRoute>
         } />
         <Route path="/join-group" element={
           <ProtectedRoute>
-            <RouteOptimizer mode="join" />
+            <ResponsiveRideCreator mode="join" />
           </ProtectedRoute>
         } />
         <Route path="/friends" element={

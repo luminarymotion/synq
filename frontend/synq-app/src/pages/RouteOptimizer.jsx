@@ -18,9 +18,8 @@ import {
   sendRideInvitation,
   deleteRideInvitation
 } from '../services/firebaseOperations';
-// Location service imports (keeping getDirections for route calculation)
-// import { calculateDistance as calculateDistanceInternal } from '../services/locationService';
-import { getDirections } from '../services/locationService';
+// Location service imports
+import { searchDestinations, getDirections } from '../services/locationService';
 import '../styles/RouteOptimizer.css';
 import locationTrackingService, { useLocation as useLocationTracking } from '../services/locationTrackingService';
 import { toast } from 'react-hot-toast';
@@ -436,311 +435,9 @@ const detectCategory = (query) => {
   return null;
 };
 
-// Function to call Mapbox Search Box suggest endpoint for brand searches
-const callSuggestEndpoint = async (query, userLocation) => {
-  try {
-    console.log(`🔍 Calling suggest endpoint for: ${query}`);
-    
-    // Rate limiting - wait before making API call
-    await rateLimiter.wait();
-    
-    // Use user location or fallback to Dallas area
-    const proximityLng = userLocation?.lng || -96.9353651;
-    const proximityLat = userLocation?.lat || 32.8626712;
-    
-    // Generate session token for deduplication
-    const sessionToken = crypto.randomUUID();
-    
-    const params = new URLSearchParams({
-      q: query,
-      proximity: `${proximityLng},${proximityLat}`,
-      country: 'US',
-      language: 'en',
-      types: 'poi',
-      limit: '3', // Reduced from 5 to 3 to minimize API calls
-      session_token: sessionToken,
-      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
-    });
-    
-    const url = `https://api.mapbox.com/search/searchbox/v1/suggest?${params}`;
-    console.log(`🔍 Suggest URL: ${url}`);
-    
-    const response = await fetch(url);
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error(`Rate limited (429) - please wait a moment and try again`);
-      }
-      throw new Error(`Suggest endpoint failed: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log(`🔍 Suggest results for ${query}:`, data.suggestions?.length || 0);
-    
-    return data.suggestions || [];
-  } catch (error) {
-    console.error(`🔍 Suggest endpoint error for ${query}:`, error);
-    return [];
-  }
-};
+// Search functions now use the centralized locationService
 
-// Function to call Mapbox Search Box retrieve endpoint for detailed results
-const callRetrieveEndpoint = async (mapboxId) => {
-  try {
-    console.log(`🔍 Calling retrieve endpoint for mapbox_id: ${mapboxId}`);
-    
-    // Rate limiting - wait before making API call
-    await rateLimiter.wait();
-    
-    // Generate session token for deduplication
-    const sessionToken = crypto.randomUUID();
-    
-    const params = new URLSearchParams({
-      mapbox_id: mapboxId,
-      session_token: sessionToken,
-      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
-    });
-    
-    const url = `https://api.mapbox.com/search/searchbox/v1/retrieve?${params}`;
-    console.log(`🔍 Retrieve URL: ${url}`);
-    
-    const response = await fetch(url);
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error(`Rate limited (429) - please wait a moment and try again`);
-      } else if (response.status === 404) {
-        console.log(`🔍 Mapbox ID not found (404): ${mapboxId}`);
-        return null; // Don't throw error for 404, just return null
-      }
-      throw new Error(`Retrieve endpoint failed: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log(`🔍 Retrieve result:`, data?.features?.[0] || null);
-    
-    return data?.features?.[0] || null;
-  } catch (error) {
-    console.error(`🔍 Retrieve endpoint error for ${mapboxId}:`, error);
-    return null;
-  }
-};
-
-// Function to search for general POIs using Mapbox Places API (fallback for unrecognized terms)
-const searchGeneralPOI = async (query, userLocation, limit = 15) => {
-  try {
-    console.log(`🔍 General search for: ${query}`);
-    console.log(`📍 User location:`, userLocation);
-    
-    // Use user location or fallback to Dallas area
-    const proximityLng = userLocation?.lng || -96.9353651;
-    const proximityLat = userLocation?.lat || 32.8626712;
-    
-    // Build parameters for general POI search using Mapbox Places API
-    const params = new URLSearchParams({
-      proximity: `${proximityLng},${proximityLat}`,
-      limit: limit.toString(),
-      country: 'US',
-      language: 'en',
-      types: 'poi', // Only POIs (Points of Interest)
-      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
-    });
-    
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?${params}`;
-    console.log(`🔍 General search URL: ${url}`);
-    
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`General search failed: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log(`🔍 General search results for ${query}:`, data.features?.length || 0);
-    
-    if (!data.features || data.features.length === 0) {
-      console.log(`🔍 No general results found for: ${query}`);
-      return [];
-    }
-    
-    // Transform results
-    const results = data.features
-      .map(feature => {
-        // Calculate distance using Haversine formula
-        const distance = calculateDistance(
-          proximityLat, 
-          proximityLng, 
-          feature.center[1], 
-          feature.center[0]
-        );
-        
-        return {
-          name: feature.text || feature.place_name,
-          display_name: feature.text || feature.place_name,
-          address: feature.place_name,
-          lat: feature.center[1],
-          lng: feature.center[0],
-          lon: feature.center[0],
-          distance: distance,
-          fullAddress: feature.place_name,
-          type: 'general_search',
-          feature_type: feature.properties?.category,
-          poi_category: feature.properties?.category,
-          brand: feature.text,
-          relevance: feature.relevance || 0
-        };
-      })
-      .filter(result => {
-        // Filter by distance (15 miles max)
-        const maxDistance = 15;
-        return result.distance === null || result.distance <= maxDistance;
-      })
-      .sort((a, b) => {
-        // Sort by distance first, then by relevance
-        if (a.distance !== null && b.distance !== null) {
-          return a.distance - b.distance;
-        }
-        return (b.relevance || 0) - (a.relevance || 0);
-      });
-    
-    console.log(`🔍 Filtered general results: ${results.length} results within 15 miles`);
-    console.log(`🔍 First few results:`, results.slice(0, 3));
-    
-    return results;
-  } catch (error) {
-    console.error(`🔍 General search error for ${query}:`, error);
-    return [];
-  }
-};
-
-// Function to call Mapbox category endpoint
-// Enhanced function to call Mapbox category endpoint with better relevance
-const searchCategoryPOI = async (category, userLocation, limit = 15) => {
-  try {
-    console.log(`📍 Searching category: ${category}`);
-    console.log(`📍 User location:`, userLocation);
-    
-    // Use user location or fallback to Dallas area
-    const proximityLng = userLocation?.lng || -96.9353651;
-    const proximityLat = userLocation?.lat || 32.8626712;
-    
-    // Build parameters with enhanced proximity
-    const params = new URLSearchParams({
-      proximity: `${proximityLng},${proximityLat}`,
-      limit: limit.toString(),
-      country: 'US',
-      language: 'en',
-      access_token: import.meta.env.VITE_MAPBOX_API_KEY,
-    });
-    
-    // Add bounding box if map is available and zoomed in (optional enhancement)
-    // This helps constrain results to the visible map area
-    if (typeof window !== 'undefined' && window.mapRef?.current) {
-      try {
-        const map = window.mapRef.current;
-        if (map && map.getBounds) {
-          const bounds = map.getBounds();
-          const bbox = [
-            bounds.getWest(),
-            bounds.getSouth(),
-            bounds.getEast(),
-            bounds.getNorth(),
-          ].join(',');
-          params.append('bbox', bbox);
-          console.log(`📍 Added bounding box: ${bbox}`);
-        }
-      } catch (bboxError) {
-        console.log('📍 Bounding box not available, using proximity only');
-      }
-    }
-    
-    const url = `https://api.mapbox.com/search/searchbox/v1/category/${category}?${params}`;
-    console.log(`📍 Category search URL:`, url.replace(import.meta.env.VITE_MAPBOX_API_KEY, '***'));
-    
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    console.log(`📍 Category search results for ${category}:`, data.features?.length || 0);
-    
-    // Transform features to match our expected format
-    let results = data.features?.map(feature => {
-      const lat = feature.geometry?.coordinates?.[1];
-      const lng = feature.geometry?.coordinates?.[0];
-      
-      // Calculate distance if we have user location
-      let distance = null;
-      if (userLocation && lat && lng) {
-        const R = 3959; // Earth's radius in miles
-        const dLat = (lat - userLocation.lat) * Math.PI / 180;
-        const dLng = (lng - userLocation.lng) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                  Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
-                  Math.sin(dLng/2) * Math.sin(dLng/2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        distance = R * c;
-      }
-      
-      return {
-        name: feature.properties?.name || feature.place_name,
-        display_name: feature.properties?.name || feature.place_name,
-        address: feature.properties?.address || feature.place_name,
-        lat: lat,
-        lng: lng,
-        lon: lng,
-        category: category,
-        distance: distance,
-        fullAddress: feature.place_name,
-        type: 'category_search',
-        feature_type: feature.feature_type,
-        poi_category: feature.poi_category,
-        brand: feature.brand,
-        relevance: feature.properties?.relevance || 0
-      };
-    }) || [];
-    
-    // Enhanced filtering: tighter distance limits for better relevance
-    if (userLocation) {
-      // Use tighter distance limits: 15 miles for urban areas, 25 miles for rural
-      const maxDistance = 25; // Temporarily increased to debug gas station issue
-      
-      results = results
-        .filter(result => {
-          // Keep results with no distance (fallback) or within max distance
-          if (result.distance === null) return true;
-          return result.distance <= maxDistance;
-        })
-        .sort((a, b) => {
-          // Sort by distance first, then by relevance
-          if (a.distance === null && b.distance === null) {
-            return (b.relevance || 0) - (a.relevance || 0);
-          }
-          if (a.distance === null) return 1;
-          if (b.distance === null) return -1;
-          
-          // If distances are very close (within 0.5 miles), sort by relevance
-          if (Math.abs(a.distance - b.distance) < 0.5) {
-            return (b.relevance || 0) - (a.relevance || 0);
-          }
-          return a.distance - b.distance;
-        });
-    }
-    
-    console.log(`📍 Filtered category results:`, results.length, `results within ${userLocation ? '15' : 'unlimited'} miles`);
-    console.log(`📍 First few results:`, results.slice(0, 3).map(r => ({
-      name: r.name,
-      distance: r.distance?.toFixed(1) + ' mi',
-      address: r.address,
-      relevance: r.relevance
-    })));
-    
-    return results;
-    
-  } catch (error) {
-    console.error(`📍 Category search error for ${category}:`, error);
-    return [];
-  }
-};
+// Category search now uses the centralized locationService
 
 function RouteOptimizer({ mode = 'create' }) {
   // console.log('RouteOptimizer component initializing...', { mode }); // Commented out to reduce excessive logging
@@ -1255,7 +952,14 @@ function RouteOptimizer({ mode = 'create' }) {
           console.log('Mapbox API key configured successfully');
         }
         
-
+        // Auto-start location tracking for laptop view
+        try {
+          console.log('📍 Auto-starting location tracking for RouteOptimizer...');
+          await startTracking();
+        } catch (error) {
+          console.warn('📍 Could not auto-start location tracking:', error.message);
+          // Don't show error notification - let user continue without location
+        }
         
         setIsLoading(false);
       } catch (err) {
@@ -1439,7 +1143,11 @@ function RouteOptimizer({ mode = 'create' }) {
         console.log(`🧪 Detected category: ${category}`);
         
         if (category) {
-          const results = await searchCategoryPOI(category, userLocation, 15);
+          const results = await searchDestinations(category, {
+            limit: 15,
+            userLocation: userLocation,
+            enableFallback: true
+          });
           console.log(`🧪 Category search results:`, results);
           
           // Test hybrid results creation
@@ -1490,7 +1198,11 @@ function RouteOptimizer({ mode = 'create' }) {
           if (category) {
             // Test 2: Raw API call
             try {
-              const results = await searchCategoryPOI(category, userLocation, 20);
+              const results = await searchDestinations(category, {
+                limit: 20,
+                userLocation: userLocation,
+                enableFallback: true
+              });
               console.log(`  Raw API results: ${results.length}`);
               
               // Test 3: Distance analysis
@@ -1540,24 +1252,15 @@ function RouteOptimizer({ mode = 'create' }) {
         
         if (category) {
           try {
-            const results = await searchCategoryPOI(category, userLocation, 20);
-            console.log(`🔍 Full search results: ${results.length}`);
-            
-            if (results.length > 0) {
-              console.log(`🔍 First 5 results:`);
-              results.slice(0, 5).forEach((result, i) => {
-                console.log(`  ${i+1}. ${result.name}`);
-                console.log(`     Address: ${result.address || 'No address'}`);
-                console.log(`     Distance: ${result.distance?.toFixed(2)} mi`);
-                console.log(`     Coordinates: ${result.lat}, ${result.lng}`);
-                console.log(`     Type: ${result.type}`);
-                console.log('     ---');
-              });
-            }
-            
+            const results = await searchDestinations(category, {
+              limit: 20,
+              userLocation: userLocation,
+              enableFallback: true
+            });
+            console.log(`🔍 Full category search results:`, results);
             return results;
           } catch (error) {
-            console.error(`🔍 Full search failed:`, error);
+            console.error(`🔍 Full category search failed:`, error);
             return [];
           }
         } else {
@@ -2601,219 +2304,36 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
-    const trimmedQuery = query.trim();
-    console.log(`📍 Enhanced search for: "${trimmedQuery}"`);
+    const trimmedQuery = query.trim().toLowerCase();
+    console.log(`🔍 RouteOptimizer search for: "${trimmedQuery}"`);
+    console.log(`🔍 Current userLocation:`, userLocation);
+    console.log(`🔍 userLocation type:`, typeof userLocation);
+    console.log(`🔍 userLocation keys:`, userLocation ? Object.keys(userLocation) : 'null');
 
-    // First, check if this is a brand search
-    const detectedBrand = detectBrand(trimmedQuery);
-    
-    if (detectedBrand) {
-      console.log(`🏪 Detected brand: ${detectedBrand}`);
-      
+    // Set loading state
       setIsCategorySearching(true);
       setCategorySearchResults([]); // Clear previous results
       setSearchBoxSuggestions([]); // Clear Search Box suggestions to prevent conflicts
       setHybridResults([]); // Clear hybrid results
       
-      try {
-        // Try Search Box API first (optimized for brand searches)
-        console.log(`🏪 Trying Search Box API for brand: ${detectedBrand}`);
-        const suggestResults = await callSuggestEndpoint(detectedBrand, userLocation);
-        
-        if (suggestResults && suggestResults.length > 0) {
-          console.log(`🏪 Found ${suggestResults.length} suggestions, retrieving details...`);
-          
-          // Get detailed results for each suggestion (limit to top 2 to reduce API calls)
-          const detailedResults = [];
-          for (const suggestion of suggestResults.slice(0, 2)) { // Reduced from 3 to 2
-            try {
-              const detail = await callRetrieveEndpoint(suggestion.mapbox_id);
-              if (detail) {
-                // Calculate distance
-                const distance = calculateDistance(
-                  userLocation?.lat || 32.8626712,
-                  userLocation?.lng || -96.9353651,
-                  detail.geometry.coordinates[1],
-                  detail.geometry.coordinates[0]
-                );
-                
-                const result = {
-                  name: detail.properties?.name || detail.text || suggestion.name,
-                  display_name: detail.properties?.name || detail.text || suggestion.name,
-                  address: detail.properties?.full_address || detail.place_name || suggestion.full_address,
-                  lat: detail.geometry.coordinates[1],
-                  lng: detail.geometry.coordinates[0],
-                  lon: detail.geometry.coordinates[0],
-                  distance: distance,
-                  fullAddress: detail.properties?.full_address || detail.place_name || suggestion.full_address,
-                  type: 'brand_search',
-                  feature_type: detail.properties?.feature_type,
-                  poi_category: detail.properties?.poi_category,
-                  brand: detail.properties?.brand || suggestion.brand,
-                  relevance: suggestion.relevance || 0
-                };
-                
-                detailedResults.push(result);
-              }
-            } catch (retrieveError) {
-              console.log(`🔍 Skipping suggestion due to retrieve error:`, retrieveError.message);
-              continue; // Skip this suggestion and continue with the next one
-            }
-          }
-          
-          // Filter by distance and sort
-          const filteredResults = detailedResults
-            .filter(result => result.distance <= 15) // 15 miles max
-            .sort((a, b) => a.distance - b.distance);
-          
-          setCategorySearchResults(filteredResults);
-          
-          if (filteredResults.length > 0) {
-            const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
-            showLocalNotification(`Found ${filteredResults.length} ${brandName} locations nearby (Search Box API)`, 'success');
-            
-            console.log(`🏪 Search Box API successful for "${detectedBrand}":`, {
-              totalResults: filteredResults.length,
-              firstResult: filteredResults[0] ? {
-                name: filteredResults[0].name,
-                distance: filteredResults[0].distance?.toFixed(1) + ' mi',
-                address: filteredResults[0].address
-              } : null,
-              allResults: filteredResults.map(r => ({
-                name: r.name,
-                distance: r.distance?.toFixed(1) + ' mi',
-                address: r.address
-              }))
-            });
-          } else {
-            throw new Error('No results within 15 miles');
-          }
-        } else {
-          throw new Error('No suggestions found');
-        }
-      } catch (error) {
-        console.error('🏪 Search Box API failed:', error);
-        
-        // Fallback to category search
-        console.log(`🏪 Falling back to category search for brand: ${detectedBrand}`);
-        const brandCategory = BRAND_TO_CATEGORY[detectedBrand];
-        
-        if (brandCategory) {
-          try {
-            const results = await searchCategoryPOI(brandCategory, userLocation, 15);
-            
-            // Filter results to prioritize the specific brand
-            const brandResults = results.filter(result => {
-              const resultName = result.name?.toLowerCase() || '';
-              const resultBrand = result.brand?.toLowerCase() || '';
-              const searchBrand = detectedBrand.toLowerCase();
-              
-              return resultName.includes(searchBrand) || 
-                     resultBrand.includes(searchBrand) ||
-                     searchBrand.includes(resultBrand);
-            });
-            
-            // If we found brand-specific results, use those; otherwise use all category results
-            const finalResults = brandResults.length > 0 ? brandResults : results;
-            setCategorySearchResults(finalResults);
-            
-            if (finalResults.length > 0) {
-              const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
-              const resultType = brandResults.length > 0 ? 'brand-specific' : 'category';
-              showLocalNotification(`Found ${finalResults.length} ${brandName} locations nearby (${resultType} fallback)`, 'success');
-            } else {
-              showLocalNotification(`No ${detectedBrand} locations found within 15 miles`, 'info');
-            }
-          } catch (categoryError) {
-            console.error('🏪 Category fallback also failed:', categoryError);
-            showLocalNotification(`No ${detectedBrand} locations found`, 'warning');
-            setCategorySearchResults([]);
-          }
-        } else {
-          // Final fallback to general search
-          console.log(`🏪 No category mapping, trying general search for brand: ${detectedBrand}`);
-          try {
-            const results = await searchGeneralPOI(detectedBrand, userLocation, 12);
-            setCategorySearchResults(results);
-            
-            if (results.length > 0) {
-              const brandName = detectedBrand.replace(/\b\w/g, l => l.toUpperCase());
-              showLocalNotification(`Found ${results.length} ${brandName} locations nearby (general search)`, 'success');
-            } else {
-              showLocalNotification(`No ${detectedBrand} locations found within 15 miles`, 'info');
-            }
-          } catch (generalError) {
-            console.error('🏪 General search also failed:', generalError);
-            showLocalNotification(`No ${detectedBrand} locations found`, 'warning');
-            setCategorySearchResults([]);
-          }
-        }
-      } finally {
-        setIsCategorySearching(false);
-      }
-      return; // Exit early since we handled brand search
-    }
-
-    // If not a brand, check if this is a category search
-    const detectedCategory = detectCategory(trimmedQuery);
-    
-    if (detectedCategory) {
-      console.log(`📍 Detected category: ${detectedCategory}`);
-      setIsCategorySearching(true);
-      setCategorySearchResults([]); // Clear previous results
-      setSearchBoxSuggestions([]); // Clear Search Box suggestions to prevent conflicts
-      setHybridResults([]); // Clear hybrid results
+    // Use the same simple approach as MobileRideCreator
+    try {
+      const results = await searchDestinations(trimmedQuery, {
+        limit: 8, // Same limit as mobile
+        userLocation: userLocation,
+        enableFallback: true
+      });
       
-      try {
-        const results = await searchCategoryPOI(detectedCategory, userLocation, 12);
-        setCategorySearchResults(results);
-        
-        if (results.length > 0) {
-          const categoryName = detectedCategory.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
-          showLocalNotification(`Found ${results.length} ${categoryName} locations nearby`, 'success');
-          
-          // Log the results for debugging
-          console.log(`📍 Category search successful for "${detectedCategory}":`, {
-            totalResults: results.length,
-            firstResult: results[0] ? {
-              name: results[0].name,
-              distance: results[0].distance?.toFixed(1) + ' mi',
-              address: results[0].address
-            } : null,
-            allResults: results.map(r => ({
-              name: r.name,
-              distance: r.distance?.toFixed(1) + ' mi',
-              address: r.address
-            }))
-          });
-        } else {
-          showLocalNotification(`No ${detectedCategory.replace('_', ' ')} found within 25 miles`, 'info');
-        }
-      } catch (error) {
-        console.error('📍 Category search failed:', error);
-        showLocalNotification('Category search failed, falling back to regular search', 'warning');
-        setCategorySearchResults([]);
-      } finally {
-        setIsCategorySearching(false);
-      }
-    } else {
-      console.log('🔍 No brand or category detected, trying general search');
+      console.log(`🔍 RouteOptimizer search results: ${results.length} found`);
+      console.log(`🔍 Search results:`, results);
       
-      // Try general search as fallback
-      setIsCategorySearching(true);
-      setCategorySearchResults([]);
-      setSearchBoxSuggestions([]);
-      setHybridResults([]);
-      
-      try {
-        const results = await searchGeneralPOI(trimmedQuery, userLocation, 12);
+      // Update state with results (no filtering - same as mobile)
         setCategorySearchResults(results);
         
         if (results.length > 0) {
           showLocalNotification(`Found ${results.length} locations for "${trimmedQuery}"`, 'success');
           
-          // Log the results for debugging
-          console.log(`🔍 General search successful for "${trimmedQuery}":`, {
+        console.log(`🔍 RouteOptimizer search successful for "${trimmedQuery}":`, {
             totalResults: results.length,
             firstResult: results[0] ? {
               name: results[0].name,
@@ -2830,12 +2350,11 @@ function RouteOptimizer({ mode = 'create' }) {
           showLocalNotification(`No locations found for "${trimmedQuery}"`, 'info');
         }
       } catch (error) {
-        console.error('🔍 General search failed:', error);
-        showLocalNotification('Search failed, please try a different term', 'warning');
+      console.error('🔍 RouteOptimizer search failed:', error);
+      showLocalNotification('Search failed', 'error');
         setCategorySearchResults([]);
       } finally {
         setIsCategorySearching(false);
-      }
     }
   };
 
@@ -2861,10 +2380,10 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
     
-    // Debounce the search
+    // Debounce the search (same as mobile - 500ms)
     searchTimeoutRef.current = setTimeout(() => {
       handleEnhancedSearch(query);
-    }, 300);
+    }, 500);
   };
 
   const handleDelete = async (userId) => {
@@ -3126,11 +2645,11 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
-    // Validate driver location
+    // Validate driver location - but don't block if not available
     if (!driver.userLocationCoords || !driver.userLocationCoords.lat || !driver.userLocationCoords.lng) {
-      console.error('Invalid driver location:', driver.userLocationCoords);
-      showLocalNotification('Driver location is required. Please start location tracking.', 'error');
-      return;
+      console.warn('Driver location not available, proceeding with manual location entry');
+      showLocalNotification('Location not available. You can set your location manually on the map.', 'info');
+      // Don't return - let the user continue and set location manually
     }
 
     try {
@@ -3149,21 +2668,29 @@ function RouteOptimizer({ mode = 'create' }) {
         destination: destination
       });
 
-      const [driverAddress, destinationAddress] = await Promise.all([
-        getAddressFromCoords(driver.userLocationCoords.lat, driver.userLocationCoords.lng),
-        getAddressFromCoords(destination.lat, destination.lng)
-      ]);
+      // Handle missing driver location gracefully
+      let driverAddress = 'Location pending';
+      if (driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng) {
+        try {
+          driverAddress = await getAddressFromCoords(driver.userLocationCoords.lat, driver.userLocationCoords.lng);
+        } catch (error) {
+          console.warn('Failed to get driver address:', error);
+          driverAddress = 'Location pending';
+        }
+      }
+
+      const destinationAddress = await getAddressFromCoords(destination.lat, destination.lng);
 
       // Clean and validate the data before creating the group
       const cleanGroupData = {
         driver: {
           uid: driver.isCreator ? user.uid : driver.id,
           name: driver.name || 'Unknown Driver',
-          location: {
+          location: driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng ? {
             lat: driver.userLocationCoords.lat,
             lng: driver.userLocationCoords.lng
-          },
-          address: driverAddress || 'Location not found',
+          } : null,
+          address: driverAddress || 'Location pending',
           isCreator: driver.isCreator || false,
           status: 'confirmed',
           joinedAt: new Date().toISOString()

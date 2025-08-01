@@ -4,21 +4,26 @@ import { useUserAuth } from '../services/auth';
 import { doc, onSnapshot, updateDoc, serverTimestamp, getDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import MapView from '../components/MapView';
-import { useLocation } from '../services/locationTrackingService';
+import { useLocation, LOCATION_PERMISSIONS, LOCATION_CONTEXTS, locationPermissionManager } from '../services/locationTrackingService';
 import rideStatusService, { RIDE_STATUS } from '../services/rideStatusService';
 // Route optimization temporarily disabled - Mapbox integration pending
 import RideInvitationModal from '../components/RideInvitationModal';
 import RouteInformationPanel from '../components/RouteInformationPanel';
+import ErrorBoundary from '../components/ErrorBoundary';
+import LocationToggle from '../components/LocationToggle';
 import '../styles/LiveRideView.css';
 import { 
   Box, Typography, Card, Button, Stack, Divider, Avatar, Chip, Alert, TextField, Modal, IconButton
 } from '@mui/material';
+
+
 import {
   DirectionsCar as CarIcon,
   Person as PersonIcon,
   Fullscreen as FullscreenIcon,
   FullscreenExit as FullscreenExitIcon,
-  Close as CloseIcon
+  Close as CloseIcon,
+  Edit as EditIcon
 } from '@mui/icons-material';
 
 // --- VIBE LOGIC ---
@@ -71,22 +76,29 @@ function LiveRideView() {
   
   // Description editing
   const [editingDescription, setEditingDescription] = useState(false);
+  const [editingDescriptionValue, setEditingDescriptionValue] = useState('');
   const [description, setDescription] = useState('');
   const [savingDescription, setSavingDescription] = useState(false);
   
   // Title editing
   const [editingTitle, setEditingTitle] = useState(false);
+  const [editingTitleValue, setEditingTitleValue] = useState('');
   const [title, setTitle] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
   
   // Location tracking
   const [locationError, setLocationError] = useState(null);
+  const [locationPermissionStatus, setLocationPermissionStatus] = useState(null);
   
   // Route optimization
   const [calculatedRoute, setCalculatedRoute] = useState(null);
   const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
   const [routeError, setRouteError] = useState(null);
   const [lastRouteCalculation, setLastRouteCalculation] = useState(null);
+  const [routeCalculationQueue, setRouteCalculationQueue] = useState([]);
+  const [routeCache, setRouteCache] = useState(new Map());
+  const [retryCount, setRetryCount] = useState(0);
+  const [maxRetries] = useState(3);
   
   // Route information and passenger management for full screen mode
   const [currentRouteStep, setCurrentRouteStep] = useState(0);
@@ -94,6 +106,11 @@ function LiveRideView() {
   const [showFullRoute, setShowFullRoute] = useState(false);
   const [currentLocation, setCurrentLocation] = useState(null);
   const [locationTrackingInitialized, setLocationTrackingInitialized] = useState(false);
+  
+  // Ride expiration management
+  const [isRideExpired, setIsRideExpired] = useState(false);
+  const [rideExpirationTime, setRideExpirationTime] = useState(null);
+  const RIDE_EXPIRATION_HOURS = 24; // Configurable expiration time
 
   const {
     location,
@@ -102,9 +119,18 @@ function LiveRideView() {
     stopTracking
   } = useLocation({
     preset: 'ultra_fast',
-    updateFirebase: true,
+    updateFirebase: true, // Always enable Firebase updates, we'll handle expiration in the callback
     onLocationUpdate: async (locationData) => {
-      if (!ride || ride.driver?.uid !== user.uid) return;
+      if (!ride || ride.driver?.uid !== user.uid || isRideExpired) return;
+
+      // Validate location accuracy and freshness
+      const isAccurate = locationData.accuracy && locationData.accuracy < 100; // Within 100 meters
+      const isRecent = locationData.timestamp && (Date.now() - locationData.timestamp) < 30000; // Within 30 seconds
+      
+      if (!isAccurate || !isRecent) {
+        console.log('📍 Location update skipped - accuracy:', locationData.accuracy, 'recent:', isRecent);
+        return;
+      }
 
       try {
         const rideRef = doc(db, 'rides', rideId);
@@ -114,10 +140,24 @@ function LiveRideView() {
             lng: locationData.longitude,
             accuracy: locationData.accuracy,
             address: locationData.address,
-            lastUpdated: serverTimestamp()
+            lastUpdated: serverTimestamp(),
+            timestamp: locationData.timestamp || Date.now()
           }
         });
         setLocationError(null);
+        
+        // Trigger route recalculation if significant movement detected (only for active rides)
+        if (calculatedRoute && location && !isRideExpired) {
+          const distanceMoved = Math.sqrt(
+            Math.pow(locationData.latitude - location.latitude, 2) + 
+            Math.pow(locationData.longitude - location.longitude, 2)
+          );
+          
+          if (distanceMoved > 0.001) { // More than ~100 meters
+            console.log('📍 Significant movement detected, triggering route update');
+            setTimeout(() => calculateRoute(), 2000);
+          }
+        }
       } catch (error) {
         console.error('Error updating ride with location:', error);
         setLocationError('Failed to update location in ride');
@@ -157,9 +197,132 @@ function LiveRideView() {
   // State to store resolved display names
   const [displayNames, setDisplayNames] = useState({});
 
+  // Route calculation manager with caching and debouncing
+  const routeCalculationManager = useCallback(async (force = false) => {
+    if (!ride) return;
+    
+    // Check if ride is expired
+    if (isRideExpired) {
+      console.log('🚫 Route calculation skipped - ride has expired');
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastCalculation = lastRouteCalculation ? now - lastRouteCalculation : Infinity;
+    
+    // Prevent too frequent calculations (minimum 30 seconds between calculations)
+    if (!force && timeSinceLastCalculation < 30000) {
+      console.log('🚫 Route calculation throttled - last calculation was', Math.round(timeSinceLastCalculation / 1000), 'seconds ago');
+      return;
+    }
+
+    // Check if we have a cached route for the current participant configuration
+    const participantConfig = JSON.stringify({
+      participants: participants.map(p => ({ uid: p.uid, location: p.location, status: p.invitationStatus })),
+      destination: ride.destination?.location,
+      timestamp: Math.floor(now / 30000) // 30-second buckets
+    });
+
+    if (!force && routeCache.has(participantConfig)) {
+      const cachedRoute = routeCache.get(participantConfig);
+      console.log('🚗 Using cached route');
+      setCalculatedRoute(cachedRoute);
+      return;
+    }
+
+    // Queue the calculation if one is already in progress
+    if (isCalculatingRoute) {
+      console.log('🚫 Route calculation queued - one already in progress');
+      setRouteCalculationQueue(prev => [...prev, { force, timestamp: now }]);
+      return;
+    }
+
+    await calculateRoute();
+  }, [ride, participants, lastRouteCalculation, isCalculatingRoute, routeCache, isRideExpired]);
+
+  // Ride expiration logic
+  const checkRideExpiration = useCallback((rideData) => {
+    if (!rideData?.createdAt) return false;
+    
+    const createdAt = rideData.createdAt.toDate ? rideData.createdAt.toDate() : new Date(rideData.createdAt);
+    const expirationTime = new Date(createdAt.getTime() + (RIDE_EXPIRATION_HOURS * 60 * 60 * 1000));
+    const now = new Date();
+    
+    setRideExpirationTime(expirationTime);
+    const expired = now > expirationTime;
+    setIsRideExpired(expired);
+    
+    return expired;
+  }, [RIDE_EXPIRATION_HOURS]);
+
+  // Format time remaining
+  const getTimeRemaining = useCallback(() => {
+    if (!rideExpirationTime) return null;
+    
+    const now = new Date();
+    const timeLeft = rideExpirationTime.getTime() - now.getTime();
+    
+    if (timeLeft <= 0) return 'Expired';
+    
+    const hours = Math.floor(timeLeft / (1000 * 60 * 60));
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m remaining`;
+    } else {
+      return `${minutes}m remaining`;
+    }
+  }, [rideExpirationTime]);
+
+  // Process route calculation queue
+  useEffect(() => {
+    if (!isCalculatingRoute && routeCalculationQueue.length > 0) {
+      const nextCalculation = routeCalculationQueue[0];
+      setRouteCalculationQueue(prev => prev.slice(1));
+      
+      setTimeout(() => {
+        routeCalculationManager(nextCalculation.force);
+      }, 1000);
+    }
+  }, [isCalculatingRoute, routeCalculationQueue, routeCalculationManager]);
+
+  // Cache management - clean up old cache entries
+  useEffect(() => {
+    const cleanupCache = () => {
+      const now = Date.now();
+      const maxAge = 5 * 60 * 1000; // 5 minutes
+      
+      setRouteCache(prev => {
+        const newCache = new Map();
+        for (const [key, value] of prev.entries()) {
+          try {
+            const config = JSON.parse(key);
+            const cacheAge = now - (config.timestamp * 30000);
+            if (cacheAge < maxAge) {
+              newCache.set(key, value);
+            }
+          } catch (e) {
+            // Invalid cache entry, remove it
+            console.log('🧹 Cleaning up invalid cache entry');
+          }
+        }
+        return newCache;
+      });
+    };
+
+    const interval = setInterval(cleanupCache, 60000); // Clean up every minute
+    return () => clearInterval(interval);
+  }, []);
+
   // Calculate optimized route based on participants and destination
   const calculateRoute = async () => {
     if (!ride) return;
+    
+    // Check if ride is expired
+    if (isRideExpired) {
+      console.log('🚫 Route calculation skipped - ride has expired');
+      return;
+    }
 
     // Prevent multiple simultaneous calculations
     if (isCalculatingRoute) {
@@ -169,10 +332,6 @@ function LiveRideView() {
 
     // Check if we've calculated recently (within last 30 seconds)
     const now = Date.now();
-    if (lastRouteCalculation && (now - lastRouteCalculation) < 30000) {
-      console.log('🚫 Route calculated recently, skipping...');
-      return;
-    }
 
     console.log('🚗 Starting route calculation...');
     setIsCalculatingRoute(true);
@@ -183,15 +342,67 @@ function LiveRideView() {
       // Create waypoints array
       const waypoints = [];
       
-      // Use participants array which now includes all users with locations
+      // Get all participants with locations (only accepted ones)
       const allUsersWithLocations = participants.filter(p => 
-        p.location && p.location.lat && p.location.lng && p.role !== 'driver'
+        p.location && p.location.lat && p.location.lng && 
+        p.role !== 'driver' && 
+        p.invitationStatus === 'accepted'
       );
       
-      // Reduced logging to prevent console spam
-      if (allUsersWithLocations.length > 0) {
-        console.log('Users with locations for route calculation:', allUsersWithLocations.length);
+      // Also include invitees with RSVP locations that might not be in participants yet (only accepted ones)
+      const inviteesWithLocations = [];
+      if (ride.invitations) {
+        Object.entries(ride.invitations).forEach(([inviteeId, invitation]) => {
+          // Skip if already in participants or not accepted
+          const alreadyInParticipants = participants.some(p => p.uid === inviteeId);
+          if (!alreadyInParticipants && 
+              invitation.status === 'accepted' && 
+              invitation.response && 
+              invitation.response.location) {
+            const response = invitation.response;
+            if (response.location && response.location.lat && response.location.lng) {
+              inviteesWithLocations.push({
+                uid: inviteeId,
+                displayName: invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User',
+                location: response.location,
+                pickupLocation: response.pickupLocation,
+                readyTime: response.readyTime,
+                role: invitation.role || 'passenger',
+                invitationStatus: invitation.status,
+                type: 'pickup'
+              });
+            }
+          }
+        });
       }
+      
+      // Combine all users with locations
+      const allPickupPoints = [...allUsersWithLocations, ...inviteesWithLocations];
+      
+      // Check if we've calculated recently (within last 30 seconds)
+      if (lastRouteCalculation && (now - lastRouteCalculation) < 30000) {
+        console.log('🚫 Route calculated recently, checking if new pickup points...');
+        
+        // Check if we have new pickup points that weren't in the previous calculation
+        const currentPickupPoints = allPickupPoints.length;
+        const previousPickupPoints = calculatedRoute?.waypointInfo?.length ? calculatedRoute.waypointInfo.length - 1 : 0;
+        
+        if (currentPickupPoints <= previousPickupPoints) {
+          console.log('🚫 No new pickup points, skipping route calculation');
+          setIsCalculatingRoute(false);
+          return;
+        } else {
+          console.log('🔄 New pickup points detected, forcing route recalculation');
+        }
+      }
+      
+      console.log('🚗 Route calculation participants:', {
+        participantsWithLocations: allUsersWithLocations.length,
+        inviteesWithLocations: inviteesWithLocations.length,
+        totalPickupPoints: allPickupPoints.length,
+        participants: allUsersWithLocations.map(p => ({ uid: p.uid, name: p.displayName, status: p.invitationStatus })),
+        invitees: inviteesWithLocations.map(p => ({ uid: p.uid, name: p.displayName, status: p.invitationStatus }))
+      });
       
       // Add driver's starting location as the first waypoint (origin)
       const driver = participants.find(p => p.role === 'driver' || p.uid === ride.driver?.uid);
@@ -219,18 +430,17 @@ function LiveRideView() {
         console.log('🚗 Added current location as driver origin waypoint');
       }
 
-      // Add all passengers with locations to waypoints
-      allUsersWithLocations.forEach(user => {
-        if (user.role !== 'driver') { // Don't add driver twice
+      // Add all pickup points to waypoints
+      allPickupPoints.forEach(pickupPoint => {
         waypoints.push({
-          ...user,
-          lat: user.location.lat,
-          lng: user.location.lng,
-          location: user.location,
+          ...pickupPoint,
+          lat: pickupPoint.location.lat,
+          lng: pickupPoint.location.lng,
+          location: pickupPoint.location,
           type: 'pickup',
-          displayName: user.displayName
+          displayName: pickupPoint.displayName
         });
-        }
+        console.log('🚗 Added pickup waypoint:', pickupPoint.displayName, 'at', pickupPoint.location);
       });
 
       // Add destination
@@ -270,13 +480,13 @@ function LiveRideView() {
 
       if (waypoints.length >= 2) {
         // Check if we have the expected waypoints for a proper route
-        const expectedWaypoints = 1 + allUsersWithLocations.length + (ride.destination && ride.destination.location ? 1 : 0);
+        const expectedWaypoints = 1 + allPickupPoints.length + (ride.destination && ride.destination.location ? 1 : 0);
         
         console.log('Route calculation check:', {
           actualWaypoints: waypoints.length,
           expectedWaypoints: expectedWaypoints,
-          driver: waypoints.filter(w => w.type === 'driver').length,
-          passengers: allUsersWithLocations.length,
+          driver: waypoints.filter(w => w.type === 'origin' || w.type === 'driver').length,
+          pickupPoints: allPickupPoints.length,
           destination: ride.destination && ride.destination.location ? 1 : 0
         });
         
@@ -370,12 +580,41 @@ function LiveRideView() {
               optimizationType: 'multi-stop-pickup'
             });
 
+            // Reset retry count on success
+            setRetryCount(0);
+
+            // Cache the successful route
+            const participantConfig = JSON.stringify({
+              participants: participants.map(p => ({ uid: p.uid, location: p.location, status: p.invitationStatus })),
+              destination: ride.destination?.location,
+              timestamp: Math.floor(Date.now() / 30000)
+            });
+            setRouteCache(prev => new Map(prev).set(participantConfig, enhancedRouteData));
+            
             setCalculatedRoute(enhancedRouteData);
           } else {
             throw new Error('No routes returned from Mapbox API');
           }
         } catch (error) {
           console.error('❌ Route optimization failed:', error);
+          
+          // Retry logic for transient errors
+          if (retryCount < maxRetries && (
+            error.message.includes('network') || 
+            error.message.includes('timeout') || 
+            error.message.includes('rate limit')
+          )) {
+            console.log(`🔄 Retrying route calculation (${retryCount + 1}/${maxRetries})...`);
+            setRetryCount(prev => prev + 1);
+            setTimeout(() => {
+              routeCalculationManager(true);
+            }, 2000 * (retryCount + 1)); // Exponential backoff
+            return;
+          }
+          
+          // Reset retry count on success or permanent failure
+          setRetryCount(0);
+          
           // Fallback to basic route calculation
           console.log('🔄 Falling back to basic route calculation...');
           
@@ -473,7 +712,13 @@ function LiveRideView() {
         const rideData = doc.data();
         setRide(rideData);
         setDescription(rideData.description || '');
-        setTitle(rideData.groupName || rideData.name || 'Untitled Ride');
+        const rideTitle = rideData.groupName || rideData.name || 'Untitled Ride';
+        setTitle(rideTitle);
+        console.log('🎯 Setting ride title:', { 
+          groupName: rideData.groupName, 
+          name: rideData.name, 
+          finalTitle: rideTitle 
+        });
 
         // Stop location tracking if ride is cancelled
         if (rideData.status === RIDE_STATUS.CANCELLED && isTracking) {
@@ -523,9 +768,15 @@ function LiveRideView() {
           });
         }
         
-        // Add invitations (including accepted ones with pickup locations)
+        // Add invitations (only accepted and pending ones - exclude declined)
         if (rideData.invitations) {
           Object.entries(rideData.invitations).forEach(([inviteeId, invitation]) => {
+            // Skip declined invitations
+            if (invitation.status === 'declined') {
+              console.log('🚫 Skipping declined participant:', inviteeId);
+              return;
+            }
+            
             const isAlreadyParticipant = allParticipants.some(p => p.uid === inviteeId);
             if (!isAlreadyParticipant) {
               const participantData = {
@@ -540,7 +791,7 @@ function LiveRideView() {
                 color: '#607D8B'
               };
               
-              // Add location data from RSVP response if available (regardless of status)
+              // Add location data from RSVP response if available (only for accepted/pending)
               if (invitation.response) {
                 const response = invitation.response;
                 if (response.location && response.location.lat && response.location.lng) {
@@ -564,20 +815,33 @@ function LiveRideView() {
           });
         }
         
-        // Remove duplicates
+        // Remove duplicates and filter out declined participants
         const uniqueParticipants = [];
         const seenUids = new Set();
         
         allParticipants.forEach(participant => {
           if (!seenUids.has(participant.uid)) {
             seenUids.add(participant.uid);
+            
+            // Check if this participant has declined their invitation
+            const invitation = rideData.invitations?.[participant.uid];
+            if (invitation && invitation.status === 'declined') {
+              console.log('🚫 Filtering out declined participant from display:', participant.uid);
+              return; // Skip this participant
+            }
+            
             uniqueParticipants.push(participant);
           }
         });
         
-        setParticipants(uniqueParticipants);
-
-        // Set participants immediately with available data
+        console.log('👥 Final participants list:', uniqueParticipants.map(p => ({
+          uid: p.uid,
+          displayName: p.displayName,
+          status: p.invitationStatus,
+          role: p.role,
+          hasLocation: !!(p.location && p.location.lat && p.location.lng)
+        })));
+        
         setParticipants(uniqueParticipants);
         
         // Resolve display names for all unique UIDs
@@ -594,9 +858,30 @@ function LiveRideView() {
           }
         });
 
-        // Calculate route when participants change (only if we don't already have a route)
-        if (uniqueParticipants.length > 0 && !calculatedRoute) {
-          setTimeout(() => calculateRoute(), 1000); // Small delay to ensure display names are loaded
+        // Calculate route when participants or invitations change
+        const hasParticipantsWithLocations = uniqueParticipants.some(p => 
+          p.location && p.location.lat && p.location.lng && p.invitationStatus === 'accepted'
+        );
+        const hasInvitationsWithLocations = rideData.invitations && Object.values(rideData.invitations).some(inv => 
+          inv.status === 'accepted' && 
+          inv.response && inv.response.location && inv.response.location.lat && inv.response.location.lng
+        );
+        
+        if ((hasParticipantsWithLocations || hasInvitationsWithLocations) && rideData.destination?.location) {
+          // Check if ride is expired before calculating route
+          const createdAt = rideData.createdAt?.toDate ? rideData.createdAt.toDate() : new Date(rideData.createdAt);
+          const expirationTime = new Date(createdAt.getTime() + (RIDE_EXPIRATION_HOURS * 60 * 60 * 1000));
+          const isExpired = new Date() > expirationTime;
+          
+          if (!isExpired) {
+          console.log('🔄 Triggering route calculation due to participant/invitation changes');
+          setTimeout(() => {
+            // Use the route calculation manager for better control
+            routeCalculationManager(true); // Force calculation for participant changes
+          }, 1000); // Small delay to ensure display names are loaded
+          } else {
+            console.log('🚫 Skipping route calculation - ride has expired');
+          }
         }
         
         // Set up invitations with names
@@ -796,7 +1081,9 @@ function LiveRideView() {
     if (!locationTrackingInitialized) {
     if (isDriver && !isTracking) {
       console.log('Starting location tracking for driver:', user.uid);
-      startTracking(user.uid).catch(error => {
+      startTracking(user.uid, { 
+        context: LOCATION_CONTEXTS.DRIVER_MODE 
+      }).catch(error => {
         console.error('Error starting location tracking:', error);
         setLocationError('Failed to start location tracking');
       });
@@ -830,14 +1117,71 @@ function LiveRideView() {
     }
   }, [ride?.driver?.uid, user?.uid, isTracking, locationTrackingInitialized]);
 
+  // Handle location toggle change
+  const handleLocationToggleChange = (enabled, overrideData) => {
+    console.log('Location toggle changed:', { enabled, overrideData });
+    
+    if (enabled && isTracking && ride?.driver?.uid === user?.uid) {
+      // Location was enabled, restart tracking if needed
+      console.log('Location enabled, ensuring tracking is active');
+      if (!isTracking) {
+        startTracking(user.uid, { 
+          context: LOCATION_CONTEXTS.DRIVER_MODE 
+        });
+      }
+    } else if (!enabled && isTracking) {
+      // Location was disabled, stop tracking
+      console.log('Location disabled, stopping tracking');
+      stopTracking();
+    }
+  };
+
+
+
+  // Load location permission status
+  useEffect(() => {
+    const loadPermissionStatus = async () => {
+      if (user?.uid) {
+        try {
+          const status = await locationPermissionManager.getPermissionStatus(user.uid);
+          setLocationPermissionStatus(status);
+        } catch (error) {
+          console.error('Error loading permission status:', error);
+        }
+      }
+    };
+
+    loadPermissionStatus();
+  }, [user?.uid]);
+
   // Reset location tracking initialization when ride changes
   useEffect(() => {
     setLocationTrackingInitialized(false);
   }, [rideId]);
 
+  // Recalculate route when invitations change (RSVP responses)
+  useEffect(() => {
+    if (!ride || !ride.invitations || !ride.destination?.location) return;
+    
+    // Check if any invitations have location data from RSVP responses
+    const hasInvitationsWithLocations = Object.values(ride.invitations).some(inv => 
+      inv.response && inv.response.location && inv.response.location.lat && inv.response.location.lng
+    );
+    
+    if (hasInvitationsWithLocations) {
+      console.log('🔄 Invitations with locations detected, triggering route recalculation');
+      setTimeout(() => {
+        // Ensure ride state is still available before calculating route
+        if (ride) {
+          calculateRoute();
+        }
+      }, 1000);
+    }
+  }, [ride?.invitations, ride?.destination?.location]);
+
   // Get current user's RSVP status
   const getCurrentUserRSVPStatus = () => {
-    if (!user || !ride?.invitations) return null;
+    if (!user || !ride || !ride.invitations) return null;
     return ride.invitations[user.uid];
   };
 
@@ -928,6 +1272,22 @@ function LiveRideView() {
           }
         }
       } else if (currentRSVP?.status === 'accepted' && rsvpData.status !== 'accepted') {
+        // User is changing from accepted to declined/maybe - remove from participants
+        if (ride.driver?.uid === user.uid) {
+          await updateDoc(rideRef, {
+            driver: null
+          });
+        } else {
+          const updatedPassengers = (ride.passengers || []).filter(p => p.uid !== user.uid);
+          const updatedPassengerUids = (ride.passengerUids || []).filter(uid => uid !== user.uid);
+          
+          await updateDoc(rideRef, {
+            passengers: updatedPassengers,
+            passengerUids: updatedPassengerUids
+          });
+        }
+      } else if (rsvpData.status === 'declined' || rsvpData.status === 'maybe') {
+        // User is declining or saying maybe - ensure they're not in participants
         if (ride.driver?.uid === user.uid) {
           await updateDoc(rideRef, {
             driver: null
@@ -946,6 +1306,12 @@ function LiveRideView() {
       setShowInvitationModal(false);
       setUserInvitation(null);
       setIsManuallyOpened(false);
+      
+      // Trigger route recalculation after RSVP status change
+      console.log('🔄 RSVP status changed, triggering route recalculation');
+      setTimeout(() => {
+        routeCalculationManager(true); // Force calculation for RSVP changes
+      }, 2000); // Give time for Firestore to update
     } catch (error) {
       console.error('Error submitting RSVP:', error);
       alert('Failed to submit RSVP. Please try again.');
@@ -1089,10 +1455,20 @@ function LiveRideView() {
 
   // Update current location for route tracking
   useEffect(() => {
-    if (location && isMapFullScreen) {
+    if (location && isMapFullScreen && !isRideExpired) {
       setCurrentLocation(location);
     }
-  }, [location, isMapFullScreen]);
+  }, [location, isMapFullScreen, isRideExpired]);
+
+  // Check ride expiration when ride data loads
+  useEffect(() => {
+    if (ride) {
+      const expired = checkRideExpiration(ride);
+      if (expired) {
+        console.log('🚗 Ride has expired, disabling location tracking and route updates');
+      }
+    }
+  }, [ride, checkRideExpiration]);
 
   // Process route information for turn-by-turn directions
   const getRouteInformation = () => {
@@ -1312,19 +1688,26 @@ function LiveRideView() {
   }
 
   // Vibe palette
-  const vibe = getVibePalette(ride?.destination);
+  const vibe = getVibePalette(ride?.destination || null);
   
   // Check if user can edit ride details (all accepted participants can edit)
-  const canEditRide = ride && (
+  const canEditRide = ride ? (
     ride.driver?.uid === user?.uid || 
     (ride.passengers && ride.passengers.some(p => p.uid === user?.uid)) ||
     (ride.invitations && ride.invitations[user?.uid]?.status === 'accepted')
-  );
+  ) : false;
 
   return (
-    <Box sx={{ minHeight: '100vh', background: vibe.gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', p: 4 }}>
+    <Box sx={{ 
+      minHeight: '100vh', 
+      background: '#f8f9fa',
+      display: 'flex', 
+      flexDirection: 'column',
+      position: 'relative',
+      overflow: 'auto'
+    }}>
       {/* RSVP Modal */}
-      {showInvitationModal && ride && user && (
+      {showInvitationModal && ride && user && ride.createdBy && (
         <RideInvitationModal
           isOpen={showInvitationModal}
           onClose={() => { setShowInvitationModal(false); setUserInvitation(null); }}
@@ -1338,534 +1721,723 @@ function LiveRideView() {
           onRSVPSubmit={handleRSVPSubmit}
         />
       )}
-      
-      <Box sx={{ 
-          perspective: 1800,
-          width: '100%',
-          maxWidth: 1100,
-          minHeight: 500,
-          position: 'relative',
+
+            {/* Main Content - Flowing Single Page Design */}
+      <Box sx={{
+        flex: 1,
+        maxWidth: 800,
+        mx: 'auto',
+        width: '100%',
+        px: { xs: 2, sm: 0 },
+        background: '#fff',
+        borderRadius: { xs: 0, sm: 2 },
+        boxShadow: { xs: 'none', sm: '0 4px 12px rgba(0,0,0,0.1)' },
+        overflow: 'visible',
+        minHeight: '100vh',
+        pb: { xs: 4, sm: 2 }
       }}>
-        {/* Card Flip Container */}
-        <Box
-          sx={{
+        
+        {/* Expiration Warning Banner */}
+        {isRideExpired && (
+          <Box sx={{
+            background: 'linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%)',
+            border: '1px solid #ef5350',
+            borderRadius: { xs: 0, sm: 2 },
+            p: 2,
+            mb: 2,
+            textAlign: 'center'
+          }}>
+            <Typography variant="body1" fontWeight={600} color="error" sx={{ mb: 0.5 }}>
+              ⏰ Ride Expired
+            </Typography>
+            <Typography variant="body2" color="error">
+              This ride has expired and is no longer active. Location tracking and route updates are disabled.
+            </Typography>
+            <Typography variant="caption" color="error" sx={{ display: 'block', mt: 1, fontStyle: 'italic' }}>
+              Performance optimized: API calls and location updates disabled
+            </Typography>
+          </Box>
+        )}
+        
+        {/* 1. MAP DIV */}
+          <Box sx={{
             width: '100%',
-            minHeight: 500,
-            borderRadius: 6,
-            boxShadow: 6,
+          height: { xs: 250, sm: 350 },
             position: 'relative',
-            transformStyle: 'preserve-3d',
-            transition: 'transform 0.7s cubic-bezier(.4,2,.3,1)',
-            transform: isFlipped ? 'rotateY(180deg)' : 'none',
-            background: 'transparent',
-          }}
-        >
-          {/* FRONT (Postcard) */}
-          <Card
-            sx={{
-              width: '100%',
-              minHeight: 500,
-              borderRadius: 6,
-              boxShadow: 6,
-            display: 'flex',
-              overflow: 'hidden',
-              background: 'rgba(255,255,255,0.92)',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-              backfaceVisibility: 'hidden',
-              zIndex: 2,
-            }}
-          >
-            {/* Left Side: Ride Info */}
-            <Box sx={{ flex: 2, p: 5, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start' }}>
-                            {/* Action Buttons */}
-              <Box sx={{ position: 'absolute', top: 20, right: 20, zIndex: 10, display: 'flex', gap: 1 }}>
-                <Button 
-                  variant="outlined"
-                  color="primary"
-                  size="small"
-                  onClick={() => {
-                    if (!ride) return; // Prevent opening modal if ride is not loaded
-                    setUserInvitation(ride.invitations?.[user?.uid] || { status: 'accepted' });
-                    setShowInvitationModal(true);
-                    setIsManuallyOpened(true);
-                  }}
-                  disabled={!ride}
-                  sx={{
-                    borderRadius: 2,
-                    fontWeight: 600,
-                    borderColor: vibe.accent,
-                    color: vibe.accent,
-                    px: 2,
-                    py: 1,
-                    '&:hover': {
-                      borderColor: vibe.accent,
-                      backgroundColor: `${vibe.accent}10`
-                    }
-                  }}
-                >
-                  Change RSVP
-                </Button>
-              <Button 
-                variant="outlined"
-                  color="error"
-                  size="small"
-                  onClick={handleLeaveRide}
-                  sx={{
-                    borderRadius: 2,
-                    fontWeight: 600,
-                    borderColor: '#f44336',
-                    color: '#f44336',
-                    px: 2,
-                    py: 1,
-                    '&:hover': {
-                      borderColor: '#d32f2f',
-                      backgroundColor: '#ffebee'
-                    }
-                  }}
-                >
-                  Leave Ride
-              </Button>
+          overflow: 'hidden',
+            cursor: 'pointer',
+            transition: 'all 0.3s ease',
+            '&:hover': {
+            transform: 'scale(1.01)',
+            boxShadow: '0 8px 25px rgba(0,0,0,0.15)'
+            }
+          }} onClick={() => setIsMapModalOpen(true)}>
+              <MapView
+                users={participants}
+                destination={ride.destination?.location ? {
+                  lat: ride.destination.location.lat,
+                  lng: ride.destination.location.lng
+                } : ride.destination}
+                calculatedRoute={calculatedRoute}
+                userLocation={location}
+                isLiveRide={true}
+                autoFit={true}
+                compact={true}
+            hideRouteInfo={true}
+              />
+            
+          {/* Map Info Overlay */}
+          <Box sx={{
+              position: 'absolute',
+            bottom: 0,
+              left: 0,
+              right: 0,
+            background: 'rgba(255,255,255,0.95)',
+            backdropFilter: 'blur(10px)',
+            p: 2,
+            borderTop: '1px solid rgba(0,0,0,0.1)',
+              display: 'flex',
+              alignItems: 'center',
+            justifyContent: 'space-between',
+            zIndex: 10,
+            pointerEvents: 'none'
+            }}>
+            <Typography variant="body2" color="text.secondary" fontWeight={600}>
+              Live Route Map • {participants.filter(p => p.location && p.invitationStatus === 'accepted').length} participants
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Tap to view full screen
+                </Typography>
+            </Box>
           </Box>
               
-              {/* Editable Title */}
-              <Box mb={2}>
-                {canEditRide && editingTitle ? (
-                  <Box display="flex" alignItems="center" gap={1}>
-                    <TextField
-                      value={title}
-                      onChange={e => setTitle(e.target.value)}
-                      fullWidth
-                      size="small"
-                      sx={{ background: '#fff', borderRadius: 2 }}
-                    />
-                    <Button onClick={handleTitleSave} disabled={savingTitle} variant="contained" sx={{ background: vibe.accent, color: '#fff', borderRadius: 2, minWidth: 80 }}>
-                      {savingTitle ? 'Saving...' : 'Save'}
-                    </Button>
-                    <Button onClick={() => { setEditingTitle(false); setTitle(ride.groupName || ride.name || 'Untitled Ride'); }} variant="text" sx={{ color: vibe.accent }}>
-                      Cancel
-                    </Button>
-                  </Box>
-                ) : (
-                  <Box display="flex" alignItems="center" gap={1}>
-                    <Typography variant="h4" fontWeight={700} color={vibe.text} sx={{ flex: 1 }}>
-                      {title}
-              </Typography>
-                    {canEditRide && (
-                      <Button onClick={() => setEditingTitle(true)} variant="text" sx={{ color: vibe.accent, fontWeight: 600 }}>
-                        Edit
-                      </Button>
-                    )}
-                  </Box>
-                )}
-              </Box>
-              <Divider sx={{ my: 2, background: vibe.accent, opacity: 0.2 }} />
-              
-              {/* Editable Description */}
-              <Box mb={2}>
-                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600} mb={0.5}>Description</Typography>
-                {canEditRide && editingDescription ? (
-                  <Box display="flex" alignItems="center" gap={1}>
-                    <TextField
-                      value={description}
-                      onChange={e => setDescription(e.target.value)}
-                      multiline
-                      minRows={2}
-                      maxRows={5}
-                      fullWidth
-                      size="small"
-                      sx={{ background: '#fff', borderRadius: 2 }}
-                    />
-                    <Button onClick={handleDescriptionSave} disabled={savingDescription} variant="contained" sx={{ background: vibe.accent, color: '#fff', borderRadius: 2, minWidth: 80 }}>
-                      {savingDescription ? 'Saving...' : 'Save'}
-                    </Button>
-                    <Button onClick={() => { setEditingDescription(false); setDescription(ride.description || ''); }} variant="text" sx={{ color: vibe.accent }}>
-                      Cancel
-                    </Button>
-                  </Box>
-                ) : (
-                  <Box display="flex" alignItems="center" gap={1}>
-                    <Typography variant="body1" color={vibe.text} sx={{ whiteSpace: 'pre-line', flex: 1 }}>
-                      {description || 'No description provided.'}
-                    </Typography>
-                    {canEditRide && (
-                      <Button onClick={() => setEditingDescription(true)} variant="text" sx={{ color: vibe.accent, fontWeight: 600 }}>
-                        Edit
-                      </Button>
-                    )}
-                  </Box>
-                )}
-              </Box>
-              
-              <Box mb={2}>
-                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Destination</Typography>
-                <Typography variant="body1" color={vibe.text}>
-                  {ride.destination?.address || 'No destination set'}
-                </Typography>
-              </Box>
-              
-              <Box mb={2}>
-                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Status</Typography>
-                <Chip 
-                  label={ride.status || 'Unknown'} 
-                  color={ride.status === 'active' ? 'success' : 'warning'} 
-                  sx={{ fontWeight: 600, fontSize: 16, background: vibe.accent, color: '#fff' }} 
-                />
-              </Box>
-              
-              <Box mb={2}>
-                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600}>Created At</Typography>
-                <Typography variant="body2" color={vibe.text}>
-                  {ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate().toLocaleString() : ride.createdAt) : 'N/A'}
-                  </Typography>
-      </Box>
-            </Box>
-            
-            {/* Right Side: Users & Map */}
-            <Box sx={{ flex: 1.2, p: 5, borderLeft: `2px solid ${vibe.accent}22`, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'flex-start', background: 'rgba(255,255,255,0.85)', height: '100%' }}>
-              {/* Map Preview */}
-                            <Box width="100%" mb={4} display="flex" flexDirection="column" alignItems="flex-end" sx={{ mt: 8 }}>
-                {/* Route Status */}
-                {routeError && (
-                  <Alert severity="error" sx={{ mb: 2, fontSize: '0.75rem' }}>
-                    {routeError}
-                  </Alert>
-                )}
-                {isCalculatingRoute && (
-                  <Alert severity="info" sx={{ mb: 2, fontSize: '0.75rem' }}>
-                    Calculating optimized route...
-                  </Alert>
-                )}
-                {calculatedRoute && (
-                  <Alert severity="success" sx={{ mb: 2, fontSize: '0.75rem' }}>
-                    Route optimized! {calculatedRoute.totalDistance ? `${Math.round(calculatedRoute.totalDistance / 1000)}km` : ''}
-                  </Alert>
-                )}
-                
-                <Box
-                  sx={{ 
-                    width: 180,
-                    height: 120,
-                    borderRadius: 3,
-                    boxShadow: 2,
-                    overflow: 'hidden',
-                    background: '#e0e7ef',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    position: 'relative',
-                    border: `2px solid ${vibe.accent}`,
-                    mr: 0
-                  }}
-                  onClick={() => setIsMapModalOpen(true)}
-                >
-                  <MapView
-                    users={participants}
-                    destination={ride.destination?.location ? {
-                      lat: ride.destination.location.lat,
-                      lng: ride.destination.location.lng,
-                      address: ride.destination.address
-                    } : ride.destination}
-                    calculatedRoute={calculatedRoute}
-                    userLocation={location}
-                    isLiveRide={false}
-                    compact={true}
-                  />
-                  <Box sx={{ position: 'absolute', bottom: 8, right: 8, background: '#fff', borderRadius: 2, px: 1, py: 0.5, boxShadow: 1, color: vibe.accent, fontWeight: 600, fontSize: 13, opacity: 0.9 }}>
-                    View Map
-                  </Box>
-                </Box>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
-                  <Typography variant="caption" color={vibe.accent}>
-                    Click to zoom and see live route
-                  </Typography>
-                  <Button
-                    size="small"
+        {/* 2. RIDE DETAILS DIV */}
+        <Box sx={{
+          p: { xs: 3, sm: 4 },
+          pt: { xs: 4, sm: 5 },
+          background: 'white',
+          borderRadius: '16px',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+          border: '1px solid rgba(0, 0, 0, 0.06)',
+          mx: { xs: 2, sm: 3 },
+          mb: 3
+        }}>
+          {/* Title */}
+          <Box sx={{ 
+            mb: 4,
+            pb: 3,
+            borderBottom: '2px solid rgba(0, 0, 0, 0.06)'
+          }}>
+              {canEditRide && editingTitle ? (
+                <Box display="flex" alignItems="center" gap={1}>
+                  <TextField
+                    value={editingTitleValue}
+                    onChange={(e) => setEditingTitleValue(e.target.value)}
                     variant="outlined"
-                    onClick={calculateRoute}
-                    disabled={isCalculatingRoute}
-                    sx={{
-                      fontSize: '0.7rem',
-                      py: 0.5,
-                      px: 1,
-                      borderColor: vibe.accent,
-                      color: vibe.accent,
-                      '&:hover': {
-                        borderColor: vibe.accent,
-                        backgroundColor: `${vibe.accent}10`
-                      }
-                    }}
+                    size="small"
+                    sx={{ flex: 1 }}
+                    autoFocus
+                  />
+                  <Button 
+                    size="small" 
+                    onClick={handleTitleSave}
+                    variant="contained"
+                    sx={{ background: vibe.accent }}
                   >
-                    {isCalculatingRoute ? 'Calculating...' : 'Recalculate Route'}
+                    Save
+                  </Button>
+                  <Button 
+                    size="small" 
+                    onClick={() => { setEditingTitle(false); setEditingTitleValue(title); }}
+                    variant="outlined"
+                  >
+                    Cancel
                   </Button>
                 </Box>
-          </Box>
-              
-              {/* Who's going */}
-              <Box width="100%" mt="auto" pt={6}>
-                <Typography variant="subtitle1" color={vibe.accent} fontWeight={600} mb={1}>Who's going</Typography>
-                <Stack spacing={1}>
-                  {participants.map((p, idx) => {
-                    const isCurrentUser = p.uid === user?.uid;
-                    const statusText = p.invitationStatus === 'accepted' ? 'Confirmed' :
-                                      p.invitationStatus === 'maybe' ? 'Maybe' :
-                                      p.invitationStatus === 'pending' ? 'Pending' :
-                                      p.invitationStatus === 'declined' ? 'Declined' : '';
-                    
-                    const statusColor = p.invitationStatus === 'accepted' ? '#4caf50' :
-                                       p.invitationStatus === 'maybe' ? '#ff9800' :
-                                       p.invitationStatus === 'pending' ? '#9e9e9e' :
-                                       p.invitationStatus === 'declined' ? '#f44336' : '#9e9e9e';
-                    
-                    return (
-                      <Box key={p.uid || idx} display="flex" alignItems="center" gap={1}>
-                        <Avatar 
-                          src={p.photoURL || (isCurrentUser ? user.photoURL : '/default-avatar.png')} 
-                          alt={p.displayName} 
-                          sx={{ width: 36, height: 36, bgcolor: vibe.accent }} 
-                        />
-                        <Box sx={{ flex: 1 }}>
-                          <Typography color={vibe.text} fontWeight={500}>
-                            {displayNames[p.uid] || p.displayName || p.name || `User ${p.uid?.slice(-4)}` || 'Unknown User'}
-                            {isCurrentUser && <span style={{ color: vibe.accent, fontWeight: 600 }}> (You)</span>}
-                          </Typography>
-                          {statusText && (
-                            <Typography variant="caption" color={statusColor} fontWeight={600}>
-                              {statusText}
-                            </Typography>
-                          )}
-                        </Box>
-                        {/* Role icons */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                          {p.role === 'driver' && (
-                            <Chip 
-                              label="Driver" 
-                              size="small" 
-                              icon={<CarIcon sx={{ fontSize: 14 }} />}
-                              sx={{ 
-                                background: vibe.accent, 
-                                color: '#fff', 
-                                fontSize: 10,
-                                height: 20,
-                                '& .MuiChip-icon': { color: '#fff' }
-                              }} 
-                            />
-                          )}
-                          {p.role === 'passenger' && (
-                            <Chip 
-                              label="Passenger" 
-                              size="small" 
-                              icon={<PersonIcon sx={{ fontSize: 14 }} />}
-                              sx={{ 
-                                background: '#9e9e9e', 
-                                color: '#fff', 
-                                fontSize: 10,
-                                height: 20,
-                                '& .MuiChip-icon': { color: '#fff' }
-                              }} 
-                            />
-                          )}
-                        </Box>
-                      </Box>
-                    );
-                  })}
-                </Stack>
-                
-                {/* Show message if no participants */}
-                {participants.length === 0 && (
-                  <Typography variant="body2" color={vibe.text} sx={{ fontStyle: 'italic' }}>
-                    No participants yet
-              </Typography>
-                )}
+              ) : (
+                <Box display="flex" alignItems="center" gap={1}>
+                <Typography 
+                  variant="h4" 
+                  fontWeight={700} 
+                  color={vibe.text} 
+                  sx={{ 
+                    flex: 1, 
+                    fontSize: { xs: '1.5rem', sm: '2rem' },
+                    lineHeight: 1.2
+                  }}
+                >
+                    {title || ride?.groupName || ride?.name || 'Untitled Ride'}
+                  </Typography>
+                  {canEditRide && (
+                    <IconButton 
+                      size="small" 
+                      onClick={() => { setEditingTitle(true); setEditingTitleValue(title); }}
+                      sx={{ color: vibe.accent }}
+                    >
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  )}
+                </Box>
+              )}
+            </Box>
+
+            {/* Ride Details Grid */}
+            <Box sx={{ 
+              display: 'grid', 
+              gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, 
+              gap: 2.5, 
+              mb: 4 
+            }}>
+              {/* Destination */}
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'flex-start', 
+              gap: 2,
+              p: 2.5,
+              background: 'rgba(248, 249, 250, 0.8)',
+              borderRadius: '12px',
+              border: '1px solid rgba(0, 0, 0, 0.04)',
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                background: 'rgba(248, 249, 250, 1)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)'
+              }
+            }}>
+                <Box sx={{ 
+                  width: 44, 
+                  height: 44, 
+                  borderRadius: '50%', 
+                  background: `${vibe.accent}20`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                }}>
+                  <Typography variant="h6" color={vibe.accent}>🎯</Typography>
+                </Box>
+              <Box sx={{ flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Destination
+                  </Typography>
+                <Typography variant="body2" color="text.primary" sx={{ 
+                  fontWeight: 500,
+                  lineHeight: 1.2,
+                  wordBreak: 'break-word'
+                }}>
+                    {ride.destination?.address || 'No destination set'}
+                  </Typography>
                 </Box>
               </Box>
-            
-            {/* Turned corner */}
-            <Box
-                    sx={{ 
-                position: 'absolute',
-                bottom: 0,
-                right: 0,
-                width: 64,
-                height: 64,
-                cursor: 'pointer',
-                zIndex: 10,
-                background: 'none',
-              }}
-              onClick={() => setIsFlipped(true)}
-            >
-              <svg width="64" height="64" viewBox="0 0 64 64" style={{ position: 'absolute', bottom: 0, right: 0 }}>
-                <polygon points="0,64 64,0 64,64" fill="#e0e7ef" />
-                <text x="48" y="56" fontSize="14" fill="#b08968" fontWeight="bold" textAnchor="end" style={{ pointerEvents: 'none' }}>flip</text>
-              </svg>
-            </Box>
-          </Card>
-          
-          {/* BACK (Invitee Status) */}
-          <Card
-            sx={{
-              width: '100%',
-              minHeight: 500,
-              borderRadius: 6,
-              boxShadow: 6,
-              display: 'flex',
-              overflow: 'hidden',
-              background: 'rgba(255,255,255,0.97)',
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              backfaceVisibility: 'hidden',
-              transform: 'rotateY(180deg)',
-              zIndex: 3,
-            }}
-          >
-            {/* Left: Groupchat */}
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', p: 6 }}>
-              <Typography variant="h5" color="#4e342e" fontWeight={600} mb={2}>groupchat</Typography>
-              <Box sx={{ width: '100%', height: 200, background: '#f5f3e7', borderRadius: 3, boxShadow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#b08968', fontSize: 22, fontWeight: 500 }}>
-                (chat UI WIP)
+
+              {/* Created Date */}
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                <Box sx={{ 
+                  width: 40, 
+                  height: 40, 
+                  borderRadius: '50%', 
+                  background: `${vibe.accent}15`,
+                  display: 'flex',
+                  alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+                }}>
+                  <Typography variant="h6" color={vibe.accent}>📅</Typography>
+                </Box>
+              <Box sx={{ flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Created
+                  </Typography>
+                  <Typography variant="body2" color="text.primary" sx={{ fontWeight: 500 }}>
+                    {ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate().toLocaleDateString() : ride.createdAt) : 'N/A'}
+                  </Typography>
+                </Box>
+              </Box>
+
+              {/* Ride Status */}
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                <Box sx={{ 
+                  width: 40, 
+                  height: 40, 
+                  borderRadius: '50%', 
+                  background: `${vibe.accent}15`,
+                  display: 'flex',
+                  alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+                }}>
+                  <Typography variant="h6" color={vibe.accent}>🚗</Typography>
+                </Box>
+              <Box sx={{ flex: 1 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                    Status
+                  </Typography>
+                  <Typography variant="body2" color="text.primary" sx={{ fontWeight: 500, textTransform: 'capitalize' }}>
+                  {isRideExpired ? 'Expired' : (ride.status || 'Active')}
+                </Typography>
+                {isRideExpired && (
+                  <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
+                    This ride has expired and is no longer active
+                  </Typography>
+                )}
               </Box>
             </Box>
             
-            {/* Divider */}
-            <Divider orientation="vertical" flexItem sx={{ mx: 0, my: 6, borderColor: '#e0c9b3', borderWidth: 2 }} />
-            
-            {/* Right: Invitee status */}
-            <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'flex-start', p: 6 }}>
-              <Typography variant="h6" color="#4e342e" fontWeight={600} mb={3}>Invitation Status</Typography>
-              
-              {/* Driver Status */}
-              {ride.driver && (
-                <Box sx={{ mb: 3, width: '100%' }}>
-                  <Typography variant="subtitle2" color="#7c5e48" fontWeight={600} mb={1}>Driver</Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2, background: '#f5f3e7', borderRadius: 2 }}>
-                    <Avatar 
-                      src={ride.driver.photoURL || '/default-avatar.png'} 
-                      alt={ride.driver.displayName || ride.driver.name || 'Driver'} 
-                      sx={{ width: 32, height: 32, bgcolor: '#b08968' }} 
-                    />
-                    <Box sx={{ flex: 1 }}>
-                      <Typography variant="body2" color="#4e342e" fontWeight={500}>
-                        {displayNames[ride.driver.uid] || ride.driver.displayName || ride.driver.name || `User ${ride.driver.uid?.slice(-4)}` || 'Driver'}
-                      </Typography>
-                      <Chip label="Confirmed" size="small" sx={{ background: '#4caf50', color: '#fff', fontSize: 10, height: 20 }} />
-                    </Box>
+            {/* Ride Expiration Time */}
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'flex-start', 
+              gap: 2,
+              p: 2.5,
+              background: 'rgba(248, 249, 250, 0.8)',
+              borderRadius: '12px',
+              border: '1px solid rgba(0, 0, 0, 0.04)',
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                background: 'rgba(248, 249, 250, 1)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)'
+              }
+            }}>
+              <Box sx={{ 
+                width: 44, 
+                height: 44, 
+                borderRadius: '50%', 
+                background: isRideExpired ? '#ffebee' : `${vibe.accent}20`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+              }}>
+                <Typography variant="h6" color={isRideExpired ? '#d32f2f' : vibe.accent}>⏰</Typography>
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  {isRideExpired ? 'Expired' : 'Time Remaining'}
+                </Typography>
+                <Typography variant="body2" color={isRideExpired ? 'error' : 'text.primary'} sx={{ fontWeight: 500 }}>
+                  {getTimeRemaining() || 'Unknown'}
+                </Typography>
+              </Box>
+            </Box>
+
+              {/* Meeting Time (if available) */}
+              {ride.meetingTime && (
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+                  <Box sx={{ 
+                    width: 40, 
+                    height: 40, 
+                    borderRadius: '50%', 
+                    background: `${vibe.accent}15`,
+                    display: 'flex',
+                    alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                  }}>
+                    <Typography variant="h6" color={vibe.accent}>🕐</Typography>
+                  </Box>
+                <Box sx={{ flex: 1 }}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                      Meeting Time
+                    </Typography>
+                    <Typography variant="body2" color="text.primary" sx={{ fontWeight: 500 }}>
+                      {ride.meetingTime}
+                    </Typography>
                   </Box>
                 </Box>
               )}
-              
-              {/* Invitees Status */}
-              {ride.invitations && Object.keys(ride.invitations).length > 0 && (
-                <Box sx={{ width: '100%' }}>
-                  <Typography variant="subtitle2" color="#7c5e48" fontWeight={600} mb={2}>Invitees</Typography>
-                  <Stack spacing={1}>
-                    {invitationsWithNames.map(({ inviteeId, invitation, displayName }) => {
-                      // Skip driver if they're also in invitations
-                      if (ride.driver?.uid === inviteeId) return null;
-                      
-                      const isCurrentUser = inviteeId === user?.uid;
-                      
-                      const statusColor = invitation.status === 'accepted' ? '#4caf50' : 
-                                        invitation.status === 'declined' ? '#f44336' : 
-                                        invitation.status === 'maybe' ? '#ff9800' : '#9e9e9e';
-                      
-                      const statusText = invitation.status === 'pending' ? 'Pending' :
-                                        invitation.status === 'accepted' ? 'Accepted' :
-                                        invitation.status === 'declined' ? 'Declined' :
-                                        invitation.status === 'maybe' ? 'Maybe' : 'Unknown';
-                      
-                      return (
-                        <Box key={inviteeId} sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 1.5, background: '#f5f3e7', borderRadius: 2 }}>
-                          <Avatar 
-                            src={invitation.inviteePhotoURL || (isCurrentUser ? user.photoURL : '/default-avatar.png')} 
-                            alt={displayName} 
-                            sx={{ width: 28, height: 28, bgcolor: '#b08968' }} 
-                          />
-                          <Box sx={{ flex: 1 }}>
-                            <Typography variant="body2" color="#4e342e" fontWeight={500}>
-                              {displayNames[inviteeId] || displayName || invitation.inviteeName || `User ${inviteeId?.slice(-4)}` || 'Unknown User'}
-                              {isCurrentUser && <span style={{ color: '#b08968', fontWeight: 600 }}> (You)</span>}
-                            </Typography>
-                          </Box>
-                          <Chip 
-                            label={statusText} 
-                            size="small"
-                            sx={{ 
-                              background: statusColor, 
-                              color: '#fff', 
-                              fontSize: 10, 
-                              height: 18,
-                              fontWeight: 600
-                            }} 
-                          />
-                        </Box>
-                      );
-                    })}
-          </Stack>
+            </Box>
+
+            {/* Description */}
+            <Box sx={{ 
+              mb: 4,
+              p: 3,
+              background: 'rgba(248, 249, 250, 0.6)',
+              borderRadius: '12px',
+              border: '1px solid rgba(0, 0, 0, 0.04)'
+            }}>
+              <Typography variant="subtitle2" color="text.secondary" fontWeight={600} mb={2} sx={{ textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Description
+              </Typography>
+              {canEditRide && editingDescription ? (
+                <Box display="flex" flexDirection="column" gap={1}>
+                  <TextField
+                    value={editingDescriptionValue}
+                    onChange={(e) => setEditingDescriptionValue(e.target.value)}
+                    variant="outlined"
+                    multiline
+                    rows={3}
+                    size="small"
+                  />
+                  <Box display="flex" gap={1}>
+                    <Button 
+                      size="small" 
+                      onClick={handleDescriptionSave}
+                      variant="contained"
+                      sx={{ background: vibe.accent }}
+                    >
+                      Save
+                    </Button>
+                    <Button 
+                      size="small" 
+                      onClick={() => { setEditingDescription(false); setEditingDescriptionValue(description); }}
+                      variant="outlined"
+                    >
+                      Cancel
+                    </Button>
+                  </Box>
+                </Box>
+              ) : (
+                <Box display="flex" alignItems="flex-start" gap={2}>
+                  <Typography variant="body2" color="text.primary" sx={{ 
+                    flex: 1,
+                    p: 2,
+                    background: 'white',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(0, 0, 0, 0.06)',
+                    minHeight: '60px',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}>
+                    {description || 'No description provided'}
+                  </Typography>
+                  {canEditRide && (
+                    <IconButton 
+                      size="small" 
+                      onClick={() => { setEditingDescription(true); setEditingDescriptionValue(description); }}
+                      sx={{ 
+                        color: vibe.accent, 
+                        background: 'white',
+                        border: '1px solid rgba(0, 0, 0, 0.06)',
+                        '&:hover': {
+                          background: 'rgba(0, 0, 0, 0.02)'
+                        }
+                      }}
+                    >
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  )}
                 </Box>
               )}
+          </Box>
+            </Box>
+
+        {/* 3. ACTIONS DIV */}
+        <Box sx={{
+          p: { xs: 3, sm: 4 },
+          pt: 0
+        }}>
+            {/* Passengers Section */}
+            <Box sx={{ 
+              mb: 4,
+              p: 3,
+              background: 'rgba(248, 249, 250, 0.6)',
+              borderRadius: '12px',
+              border: '1px solid rgba(0, 0, 0, 0.04)'
+            }}>
+              <Typography variant="subtitle2" color="text.secondary" fontWeight={600} mb={3} sx={{ textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Passengers
+              </Typography>
               
-              {/* No invitations message */}
-              {(!ride.invitations || Object.keys(ride.invitations).length === 0) && (
-                <Box sx={{ width: '100%', textAlign: 'center', color: '#b08968', mt: 2 }}>
-                  <Typography variant="body2">No invitations sent yet</Typography>
+              {/* Driver */}
+              {ride.driver && (
+                <Box sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 2, 
+                  mb: 2,
+                  p: 2.5,
+                  background: 'white',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(0, 0, 0, 0.06)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
+                  }
+                }}>
+                  <Avatar 
+                    src={ride.driver.photoURL} 
+                    sx={{ width: 40, height: 40, background: vibe.accent }}
+                  >
+                    {ride.driver.displayName?.charAt(0) || 'D'}
+                  </Avatar>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {ride.driver.displayName || 'Driver'}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Driver
+                    </Typography>
+                  </Box>
+                  <Chip 
+                    label="Driver" 
+                    size="small" 
+                    sx={{ 
+                      background: vibe.accent, 
+                      color: '#fff',
+                      fontSize: '0.7rem'
+                    }} 
+                  />
                 </Box>
               )}
+
+              {/* Passengers */}
+              {participants.filter(p => p.role !== 'driver' && p.invitationStatus === 'accepted').map((passenger, index) => (
+                <Box key={passenger.uid} sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 2, 
+                  mb: index < participants.filter(p => p.role !== 'driver' && p.invitationStatus === 'accepted').length - 1 ? 2 : 0,
+                  p: 2.5,
+                  background: 'white',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(0, 0, 0, 0.06)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)'
+                  }
+                }}>
+                  <Avatar 
+                    src={passenger.photoURL} 
+                    sx={{ width: 40, height: 40 }}
+                  >
+                    {passenger.displayName?.charAt(0) || 'P'}
+                  </Avatar>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {passenger.displayName || `Passenger ${index + 1}`}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Passenger
+                    </Typography>
+                  </Box>
+                  <Chip 
+                    label="Accepted" 
+                    size="small" 
+                    color="success"
+                    sx={{ fontSize: '0.7rem' }}
+                  />
+                </Box>
+              ))}
+
+              {/* Pending Invitations */}
+              {participants.filter(p => p.invitationStatus === 'pending').map((invitee, index) => (
+                <Box key={invitee.uid} sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 2, 
+                  mb: index < participants.filter(p => p.invitationStatus === 'pending').length - 1 ? 2 : 0,
+                  p: 2.5,
+                  background: 'rgba(255, 193, 7, 0.1)',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(255, 193, 7, 0.3)',
+                  boxShadow: '0 2px 8px rgba(255, 193, 7, 0.1)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    boxShadow: '0 4px 12px rgba(255, 193, 7, 0.15)'
+                  }
+                }}>
+                  <Avatar 
+                    src={invitee.photoURL} 
+                    sx={{ width: 40, height: 40 }}
+                  >
+                    {invitee.displayName?.charAt(0) || 'I'}
+                  </Avatar>
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {invitee.displayName || `Invitee ${index + 1}`}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Pending Response
+                    </Typography>
+                  </Box>
+                  <Chip 
+                    label="Pending" 
+                    size="small" 
+                    color="warning"
+                    sx={{ fontSize: '0.7rem' }}
+                  />
+                </Box>
+              ))}
             </Box>
-            
-            {/* Turned corner to flip back */}
-            <Box
-              sx={{
-                position: 'absolute',
-                bottom: 0,
-                right: 0,
-                width: 64,
-                height: 64,
-                cursor: 'pointer',
-                zIndex: 10,
-                background: 'none',
-              }}
-              onClick={() => setIsFlipped(false)}
-            >
-              <svg width="64" height="64" viewBox="0 0 64 64" style={{ position: 'absolute', bottom: 0, right: 0 }}>
-                <polygon points="0,64 64,0 64,64" fill="#e0e7ef" />
-                <text x="48" y="56" fontSize="14" fill="#b08968" fontWeight="bold" textAnchor="end" style={{ pointerEvents: 'none' }}>flip</text>
-              </svg>
+
+            {/* Location Sharing Section */}
+            <Box sx={{ 
+              mb: 4,
+              p: 3,
+              background: 'rgba(248, 249, 250, 0.6)',
+              borderRadius: '12px',
+              border: '1px solid rgba(0, 0, 0, 0.04)'
+            }}>
+              <Typography variant="subtitle2" color="text.secondary" fontWeight={600} mb={3} sx={{ textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Location Sharing
+              </Typography>
+              {isRideExpired ? (
+                <Box sx={{ 
+                  p: 2, 
+                  background: '#ffebee', 
+                  borderRadius: 2, 
+                  border: '1px solid #ffcdd2',
+                  textAlign: 'center'
+                }}>
+                  <Typography variant="body2" color="error">
+                    Location sharing is disabled for expired rides
+                  </Typography>
+                </Box>
+              ) : (
+              <LocationToggle
+                userId={user?.uid}
+                rideId={rideId}
+                isDriver={ride?.driver?.uid === user?.uid}
+                isTracking={isTracking}
+                onToggleChange={handleLocationToggleChange}
+                compact={false}
+              />
+              )}
             </Box>
-          </Card>
+
+            {/* Action Buttons */}
+            <Box sx={{ 
+              display: 'flex', 
+              flexDirection: { xs: 'column', sm: 'row' },
+              gap: 2,
+              pt: 4,
+              mt: 3,
+              borderTop: '2px solid rgba(0, 0, 0, 0.06)'
+            }}>
+              <Button 
+                variant="outlined"
+                color="primary"
+                size="large"
+                onClick={() => {
+                  if (!ride) return;
+                  setUserInvitation(ride.invitations?.[user?.uid] || { status: 'accepted' });
+                  setShowInvitationModal(true);
+                  setIsManuallyOpened(true);
+                }}
+                disabled={!ride}
+                sx={{
+                  borderRadius: 2,
+                  fontWeight: 600,
+                  borderColor: vibe.accent,
+                  color: vibe.accent,
+                  px: 4,
+                  py: 1.5,
+                  fontSize: '1rem',
+                  minHeight: '48px',
+                  '&:hover': {
+                    borderColor: vibe.accent,
+                    backgroundColor: `${vibe.accent}10`
+                  }
+                }}
+              >
+                Change RSVP
+              </Button>
+
+              <Button 
+                variant="outlined"
+                color="error"
+                size="large"
+                onClick={handleLeaveRide}
+                sx={{
+                  borderRadius: 2,
+                  fontWeight: 600,
+                  borderColor: '#f44336',
+                  color: '#f44336',
+                  px: 4,
+                  py: 1.5,
+                  fontSize: '1rem',
+                  minHeight: '48px',
+                  '&:hover': {
+                    borderColor: '#d32f2f',
+                    backgroundColor: '#ffebee'
+                  }
+                }}
+              >
+                Leave Ride
+              </Button>
+            </Box>
         </Box>
+
+        {/* Route Status */}
+        {routeError && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              Route calculation error: {routeError}
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => routeCalculationManager(true)}
+              disabled={isCalculatingRoute}
+              sx={{ mt: 1 }}
+            >
+              {isCalculatingRoute ? 'Calculating...' : 'Retry Route'}
+            </Button>
+          </Alert>
+        )}
+
+        {/* Route Calculation Status */}
+        {isCalculatingRoute && (
+          <Alert severity="info" sx={{ mb: 3 }}>
+            <Typography variant="body2">
+              Calculating optimal route...
+            </Typography>
+          </Alert>
+        )}
       </Box>
       
       {/* Map Modal */}
-      <Modal open={isMapModalOpen} onClose={handleMapModalClose}>
+      <Modal 
+        open={isMapModalOpen} 
+        onClose={handleMapModalClose}
+        sx={{
+          '& .MuiModal-backdrop': {
+            backdropFilter: 'blur(4px)',
+            backgroundColor: 'rgba(0,0,0,0.8)'
+          },
+          '& .MuiModal-root': {
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }
+        }}
+      >
         <Box sx={{ 
-          position: 'absolute', 
-          top: '50%', 
-          left: '50%', 
-          transform: 'translate(-50%, -50%)', 
-          width: { xs: '95vw', sm: 700 },
-          height: 'auto',
-          maxWidth: 700,
-          maxHeight: '90vh',
+          position: 'fixed', 
+          top: 0, 
+          left: 0, 
+          right: 0, 
+          bottom: 0,
+          width: '100vw', 
+          height: '100vh', 
+          maxWidth: '100vw',
+          maxHeight: '100vh',
           bgcolor: '#fff', 
-          borderRadius: 4, 
-          boxShadow: 24, 
-          p: 3, 
+          borderRadius: 0, 
+          boxShadow: 'none', 
+          p: 0, 
           outline: 'none',
           display: 'flex',
-          flexDirection: 'column'
+          flexDirection: 'column',
+          transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          zIndex: 9999
         }}>
           {/* Header */}
           <Box sx={{ 
             display: 'flex', 
             justifyContent: 'space-between', 
             alignItems: 'center', 
-            p: 0,
+            p: 2,
             pb: 2,
-            borderBottom: 'none',
-            background: 'transparent'
+            borderBottom: '1px solid rgba(0,0,0,0.1)',
+            background: 'rgba(255,255,255,0.98)',
+            backdropFilter: 'blur(15px)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 1000
           }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="h6" color={vibe.accent}>
@@ -1910,10 +2482,10 @@ function LiveRideView() {
           {/* Map Container */}
           <Box sx={{ 
             width: '100%', 
-            height: { xs: 300, sm: 400 }, 
-            borderRadius: 3, 
+            height: 'calc(100vh - 80px)', 
+            borderRadius: 0, 
             overflow: 'hidden', 
-            boxShadow: 2,
+            boxShadow: 'none',
             flex: 1,
             position: 'relative'
           }}>
@@ -1927,172 +2499,72 @@ function LiveRideView() {
               calculatedRoute={calculatedRoute}
               userLocation={location}
               isLiveRide={true}
+              autoFit={true}
+              hideRouteInfo={false}
             />
             
-            {/* Floating Full Screen Button for Mobile */}
-            {!isMapFullScreen && (
-              <Box sx={{ 
-                position: 'absolute', 
-                top: 16, 
-                right: 16, 
-                zIndex: 1000,
-                display: { xs: 'block', sm: 'none' }
-              }}>
-                <IconButton
-                  onClick={handleMapFullScreenToggle}
-                  sx={{
-                    background: 'rgba(255,255,255,0.9)',
-                    color: vibe.accent,
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-                    '&:hover': {
-                      background: 'rgba(255,255,255,1)',
-                      transform: 'scale(1.1)'
-                    },
-                    transition: 'all 0.2s ease'
-                  }}
-                  size="small"
-                  title="Full Screen"
-                >
-                  <FullscreenIcon />
-                </IconButton>
+            {/* Route Information Overlay */}
+            <Box sx={{
+              position: 'absolute',
+              top: 16,
+              left: 16,
+              right: 16,
+              background: 'rgba(255,255,255,0.95)',
+              backdropFilter: 'blur(10px)',
+              borderRadius: 2,
+              p: 2,
+              border: '1px solid rgba(0,0,0,0.1)',
+              zIndex: 1000
+            }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Box>
+                  <Typography variant="body2" fontWeight={600} color="text.primary">
+                    Route Information
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {calculatedRoute?.routes?.[0]?.distance ? 
+                      `${(calculatedRoute.routes[0].distance / 1609.34).toFixed(1)} miles` : 
+                      calculatedRoute?.routes?.[0]?.legs?.[0]?.distance ? 
+                      `${(calculatedRoute.routes[0].legs[0].distance / 1609.34).toFixed(1)} miles` : 
+                      'Calculating...'}
+                  </Typography>
+                </Box>
+                <Box sx={{ textAlign: 'right' }}>
+                  <Typography variant="body2" fontWeight={600} color="text.primary">
+                    {calculatedRoute?.routes?.[0]?.duration ? 
+                      `${Math.round(calculatedRoute.routes[0].duration / 60)} min` :
+                      calculatedRoute?.routes?.[0]?.legs?.[0]?.duration ? 
+                      `${Math.round(calculatedRoute.routes[0].legs[0].duration / 60)} min` :
+                      'Calculating...'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Estimated Time
+                  </Typography>
+                </Box>
               </Box>
-            )}
-            
-
-          </Box>
-          
-          {/* Footer - only show in non-fullscreen mode */}
-          {!isMapFullScreen && (
-            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
-              <Button 
-                onClick={handleMapModalClose} 
-                sx={{ color: vibe.accent, fontWeight: 600 }}
-              >
-                Close
-              </Button>
+              
+              {/* Route Steps/Directions */}
+              {calculatedRoute?.routes?.[0]?.legs?.[0]?.steps && (
+                <Box sx={{ mt: 2, maxHeight: 120, overflowY: 'auto' }}>
+                  <Typography variant="caption" fontWeight={600} color="text.primary" display="block" mb={1}>
+                    Directions:
+                  </Typography>
+                  {calculatedRoute.routes[0].legs[0].steps.slice(0, 3).map((step, index) => (
+                    <Typography key={index} variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                      {index + 1}. {step.maneuver.instruction}
+                    </Typography>
+                  ))}
+                  {calculatedRoute.routes[0].legs[0].steps.length > 3 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                      ... and {calculatedRoute.routes[0].legs[0].steps.length - 3} more steps
+                    </Typography>
+                  )}
+                </Box>
+              )}
             </Box>
-          )}
+          </Box>
         </Box>
       </Modal>
-
-      {/* Fullscreen Map Container */}
-            {isMapFullScreen && (
-        <Box sx={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          zIndex: 9999,
-          background: '#fff',
-          display: 'flex',
-          flexDirection: 'column'
-        }}>
-          {/* Fullscreen Header */}
-          <Box sx={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            p: 2,
-            borderBottom: '1px solid #e0e0e0',
-            background: 'rgba(255,255,255,0.98)',
-            backdropFilter: 'blur(10px)',
-            zIndex: 1000
-          }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Typography variant="h6" color={vibe.accent}>
-                Live Ride Route
-              </Typography>
-              <Chip 
-                label="Full Screen" 
-                size="small" 
-                sx={{ 
-                  background: vibe.accent, 
-                  color: '#fff', 
-                  fontSize: '0.7rem',
-                  height: 20
-                }} 
-              />
-            </Box>
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <IconButton 
-                onClick={handleMapFullScreenToggle}
-                sx={{ 
-                  color: vibe.accent,
-                  background: 'rgba(0,0,0,0.05)',
-                  '&:hover': {
-                    background: 'rgba(0,0,0,0.1)',
-                    transform: 'scale(1.1)'
-                  },
-                  transition: 'all 0.2s ease'
-                }}
-                size="small"
-                title="Exit Full Screen"
-              >
-                <FullscreenExitIcon />
-              </IconButton>
-              <IconButton 
-                onClick={handleMapModalClose}
-                sx={{ 
-                  color: vibe.accent,
-                  '&:hover': {
-                    background: 'rgba(0,0,0,0.1)',
-                    transform: 'scale(1.1)'
-                  },
-                  transition: 'all 0.2s ease'
-                }}
-                size="small"
-                title="Close Map"
-              >
-                <CloseIcon />
-              </IconButton>
-            </Box>
-          </Box>
-          
-          {/* Fullscreen Map */}
-          <Box sx={{
-            flex: 1,
-            position: 'relative',
-            overflow: 'hidden'
-          }}>
-            <MapView
-              users={participants}
-              destination={ride.destination?.location ? {
-                lat: ride.destination.location.lat,
-                lng: ride.destination.location.lng,
-                address: ride.destination.address
-              } : ride.destination}
-              calculatedRoute={calculatedRoute}
-              userLocation={location}
-              isLiveRide={true}
-            />
-            
-            {/* Enhanced Route Information Panel - Full Screen Mode */}
-              <Box sx={{
-                position: 'absolute',
-                bottom: 0,
-                left: 0,
-                right: 0,
-                background: 'rgba(255,255,255,0.95)',
-                backdropFilter: 'blur(10px)',
-                borderTop: '1px solid rgba(0,0,0,0.1)',
-                zIndex: 1000,
-                maxHeight: '40vh',
-                overflow: 'hidden'
-              }}>
-                <RouteInformationPanel
-                  routeInfo={getRouteInformation()}
-                  passengerInfo={getCurrentPassengerInfo()}
-                  onPassengerStatusUpdate={updatePassengerStatus}
-                  showFullRoute={showFullRoute}
-                  onToggleFullRoute={() => setShowFullRoute(!showFullRoute)}
-                  vibe={vibe}
-                  currentLocation={currentLocation}
-                />
-              </Box>
-          </Box>
-            </Box>
-          )}
     </Box>
   );
 }

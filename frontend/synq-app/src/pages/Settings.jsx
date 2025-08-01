@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useUserAuth } from '../services/auth';
 import SimpleLoading from '../components/SimpleLoading';
 import { formatPhoneNumberToE164, validatePhoneNumber } from '../utils/phoneNumberFormatter';
+import LocationPermissionSettings from '../components/LocationPermissionSettings';
+import { locationPermissionManager } from '../services/locationTrackingService';
 // MUI imports
 import Container from '@mui/material/Container';
 import Card from '@mui/material/Card';
@@ -22,12 +24,16 @@ import ListItem from '@mui/material/ListItem';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import PersonIcon from '@mui/icons-material/Person';
+import LocationOnIcon from '@mui/icons-material/LocationOn';
+import SecurityIcon from '@mui/icons-material/Security';
 
 function Settings() {
   const { user, needsProfileSetup, setNeedsProfileSetup } = useUserAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('profile');
   const [formData, setFormData] = useState({
     displayName: user?.displayName || '',
     phoneNumber: '',
@@ -39,6 +45,14 @@ function Settings() {
       navigate('/login');
       return;
     }
+    
+    // Check for tab parameter in URL
+    const urlParams = new URLSearchParams(location.search);
+    const tabParam = urlParams.get('tab');
+    if (tabParam && ['profile', 'location'].includes(tabParam)) {
+      setActiveTab(tabParam);
+    }
+    
     // Load existing profile data
     const loadProfile = async () => {
       try {
@@ -56,7 +70,7 @@ function Settings() {
       }
     };
     loadProfile();
-  }, [user, navigate]);
+  }, [user, navigate, location.search]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -119,6 +133,92 @@ function Settings() {
     return <SimpleLoading message="Updating your profile..." size="medium" />;
   }
 
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'profile':
+        return (
+          <Box>
+            <Typography variant="h6" sx={{ mb: 2 }}>
+              Profile Settings
+            </Typography>
+            {error && (
+              <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+                {error}
+              </Alert>
+            )}
+            <Box component="form" onSubmit={handleSubmit}>
+              <Stack spacing={3}>
+                <TextField
+                  label="Display Name"
+                  name="displayName"
+                  value={formData.displayName}
+                  onChange={handleChange}
+                  required
+                  fullWidth
+                  inputProps={{ minLength: 2, maxLength: 30 }}
+                  helperText="This is how other users will see you in the app"
+                  disabled={loading}
+                />
+                <TextField
+                  label="Phone Number"
+                  name="phoneNumber"
+                  value={formData.phoneNumber}
+                  onChange={handleChange}
+                  required
+                  fullWidth
+                  type="tel"
+                  placeholder="e.g., 214-984-7766 or (214) 984-7766"
+                  inputProps={{ pattern: '[\d\s\-\(\)]+' }}
+                  helperText="Enter your 10-digit US phone number. We'll use this for SMS notifications and ride coordination."
+                  disabled={loading}
+                />
+                <Divider sx={{ my: 2 }} />
+                <Alert icon={<InfoOutlinedIcon fontSize="inherit" />} severity="info">
+                  <Typography variant="subtitle1" fontWeight={600}>Coming Soon!</Typography>
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                    <li>Join communities based on your interests</li>
+                    <li>Set your preferred routes</li>
+                    <li>Connect with like-minded riders</li>
+                  </ul>
+                </Alert>
+                <Button
+                  type="submit"
+                  variant="contained"
+                  color="primary"
+                  size="large"
+                  disabled={loading}
+                  fullWidth
+                >
+                  {loading ? 'Updating...' : 'Save Changes'}
+                </Button>
+              </Stack>
+            </Box>
+          </Box>
+        );
+      
+      case 'location':
+        return (
+          <Box>
+            <Typography variant="h6" sx={{ mb: 2 }}>
+              Location Sharing Settings
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+              Configure your default location sharing preferences. You can override these settings for individual rides.
+            </Typography>
+            <LocationPermissionSettings
+              userId={user?.uid}
+              onSettingsChange={(newSettings) => {
+                console.log('Location settings updated in Settings page:', newSettings);
+              }}
+            />
+          </Box>
+        );
+      
+      default:
+        return null;
+    }
+  };
+
   return (
     <Container maxWidth="md" sx={{ mt: 8 }}>
       <Card elevation={3}>
@@ -130,72 +230,32 @@ function Settings() {
                 Settings
               </Typography>
               <List>
-                <ListItem selected>
+                <ListItem 
+                  button 
+                  selected={activeTab === 'profile'}
+                  onClick={() => setActiveTab('profile')}
+                >
                   <ListItemIcon>
                     <PersonIcon />
                   </ListItemIcon>
                   <ListItemText primary="Profile" />
+                </ListItem>
+                <ListItem 
+                  button 
+                  selected={activeTab === 'location'}
+                  onClick={() => setActiveTab('location')}
+                >
+                  <ListItemIcon>
+                    <LocationOnIcon />
+                  </ListItemIcon>
+                  <ListItemText primary="Location Sharing" />
                 </ListItem>
                 {/* Add more nav items here for future settings sections */}
               </List>
             </Box>
             {/* Main Content */}
             <Box flex={1}>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Profile Settings
-              </Typography>
-              {error && (
-                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-                  {error}
-                </Alert>
-              )}
-              <Box component="form" onSubmit={handleSubmit}>
-                <Stack spacing={3}>
-                  <TextField
-                    label="Display Name"
-                    name="displayName"
-                    value={formData.displayName}
-                    onChange={handleChange}
-                    required
-                    fullWidth
-                    inputProps={{ minLength: 2, maxLength: 30 }}
-                    helperText="This is how other users will see you in the app"
-                    disabled={loading}
-                  />
-                  <TextField
-                    label="Phone Number"
-                    name="phoneNumber"
-                    value={formData.phoneNumber}
-                    onChange={handleChange}
-                    required
-                    fullWidth
-                    type="tel"
-                    placeholder="e.g., 214-984-7766 or (214) 984-7766"
-                    inputProps={{ pattern: '[\d\s\-\(\)]+' }}
-                    helperText="Enter your 10-digit US phone number. We'll use this for SMS notifications and ride coordination."
-                    disabled={loading}
-                  />
-                  <Divider sx={{ my: 2 }} />
-                  <Alert icon={<InfoOutlinedIcon fontSize="inherit" />} severity="info">
-                    <Typography variant="subtitle1" fontWeight={600}>Coming Soon!</Typography>
-                    <ul style={{ margin: 0, paddingLeft: 20 }}>
-                      <li>Join communities based on your interests</li>
-                      <li>Set your preferred routes</li>
-                      <li>Connect with like-minded riders</li>
-                    </ul>
-                  </Alert>
-                  <Button
-                    type="submit"
-                    variant="contained"
-                    color="primary"
-                    size="large"
-                    disabled={loading}
-                    fullWidth
-                  >
-                    {loading ? 'Updating...' : 'Save Changes'}
-                  </Button>
-                </Stack>
-              </Box>
+              {renderTabContent()}
             </Box>
           </Box>
         </CardContent>
