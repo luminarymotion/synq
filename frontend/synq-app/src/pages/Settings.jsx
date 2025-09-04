@@ -6,8 +6,7 @@ import { useUserAuth } from '../services/auth';
 import SimpleLoading from '../components/SimpleLoading';
 import { formatPhoneNumberToE164, validatePhoneNumber } from '../utils/phoneNumberFormatter';
 import LocationPermissionSettings from '../components/LocationPermissionSettings';
-import ErrorLogsDashboard from '../components/ErrorLogsDashboard';
-
+import { locationPermissionManager } from '../services/locationTrackingService';
 // MUI imports
 import Container from '@mui/material/Container';
 import Card from '@mui/material/Card';
@@ -27,7 +26,6 @@ import ListItemText from '@mui/material/ListItemText';
 import PersonIcon from '@mui/icons-material/Person';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import SecurityIcon from '@mui/icons-material/Security';
-import BugReportIcon from '@mui/icons-material/BugReport';
 
 function Settings() {
   const { user, needsProfileSetup, setNeedsProfileSetup } = useUserAuth();
@@ -215,13 +213,6 @@ function Settings() {
             />
           </Box>
         );
-
-      case 'errorLogs':
-        return (
-          <Box>
-            <ErrorLogsDashboard />
-          </Box>
-        );
       
       default:
         return null;
@@ -258,16 +249,6 @@ function Settings() {
                     <LocationOnIcon />
                   </ListItemIcon>
                   <ListItemText primary="Location Sharing" />
-                </ListItem>
-                <ListItem 
-                  button 
-                  selected={activeTab === 'errorLogs'}
-                  onClick={() => setActiveTab('errorLogs')}
-                >
-                  <ListItemIcon>
-                    <BugReportIcon />
-                  </ListItemIcon>
-                  <ListItemText primary="Error Logs" />
                 </ListItem>
                 {/* Add more nav items here for future settings sections */}
               </List>

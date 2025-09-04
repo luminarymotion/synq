@@ -8,7 +8,7 @@ const CONFIG = {
     apiKey: import.meta.env.VITE_MAPBOX_API_KEY,
     searchBoxUrl: 'https://api.mapbox.com/search/searchbox/v1',
     geocodingUrl: 'https://api.mapbox.com/geocoding/v5/mapbox.places',
-    directionsUrl: 'https://api.mapbox.com/directions/v5',
+    directionsUrl: 'https://api.mapbox.com/directions/v5/mapbox/driving',
     timeout: 5000,
     maxRetries: 2
   },
@@ -696,112 +696,35 @@ export const getAddressFromCoords = async (lat, lng) => {
   return `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`;
 };
 
-// Routing profiles supported by Mapbox Directions API v5
-export const ROUTING_PROFILES = {
-  DRIVING: 'mapbox/driving',
-  DRIVING_TRAFFIC: 'mapbox/driving-traffic',
-  WALKING: 'mapbox/walking',
-  CYCLING: 'mapbox/cycling'
-};
-
-// Enhanced directions function with v5 API support
-export const getDirections = async (startLocation, endLocation, options = {}) => {
+// Get realistic driving directions between two points
+export const getDirections = async (startLocation, endLocation) => {
   if (!isApiKeyConfigured()) {
     throw new Error('Mapbox API key not configured');
   }
-
-  const {
-    profile = ROUTING_PROFILES.DRIVING,
-    alternatives = false,
-    avoid = [],
-    exclude = [],
-    annotations = ['distance', 'duration'],
-    continueStraight = false,
-    avoidManeuverRadius = null,
-    overview = 'full',
-    geometries = 'geojson',
-    steps = true,
-    language = 'en',
-    avoidTolls = false
-  } = options;
 
   try {
     await rateLimiter.wait();
     
     const coordinates = `${startLocation.lng},${startLocation.lat};${endLocation.lng},${endLocation.lat}`;
-    const url = new URL(`${CONFIG.mapbox.directionsUrl}/${profile}/${coordinates}.json`);
+    const url = `${CONFIG.mapbox.directionsUrl}/${coordinates}.json?access_token=${CONFIG.mapbox.apiKey}&overview=full&geometries=geojson`;
     
-    // Add required parameters
-    url.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-    url.searchParams.append('overview', overview);
-    url.searchParams.append('geometries', geometries);
-    url.searchParams.append('steps', steps.toString());
-    url.searchParams.append('language', language);
+    console.log('📍 Getting directions:', { start: startLocation, end: endLocation });
+    console.log('📍 Directions URL coordinates:', coordinates);
+    console.log('📍 Full directions URL:', url);
     
-    // Add optional parameters
-    if (alternatives) {
-      url.searchParams.append('alternatives', 'true');
-    }
-    
-    if (avoid.length > 0) {
-      url.searchParams.append('avoid', avoid.join(','));
-    }
-    
-    if (exclude.length > 0) {
-      url.searchParams.append('exclude', exclude.join(','));
-    }
-    
-    // Handle toll avoidance
-    if (avoidTolls) {
-      url.searchParams.append('exclude', 'toll');
-    }
-    
-    if (annotations.length > 0) {
-      url.searchParams.append('annotations', annotations.join(','));
-    }
-    
-    if (continueStraight) {
-      url.searchParams.append('continue_straight', 'true');
-    }
-    
-    if (avoidManeuverRadius) {
-      url.searchParams.append('avoid_maneuver_radius', avoidManeuverRadius.toString());
-    }
-    
-    console.log('📍 Getting directions with v5 API:', { 
-      start: startLocation, 
-      end: endLocation,
-      profile,
-      alternatives,
-      avoid,
-      exclude,
-      avoidTolls
-    });
-    
-    const data = await fetchWithTimeout(url.toString(), {}, CONFIG.mapbox.timeout);
+    const data = await fetchWithTimeout(url, {}, CONFIG.mapbox.timeout);
     
     if (data.routes && data.routes.length > 0) {
-      // Return all routes if alternatives requested, otherwise just the first
-      const routes = alternatives ? data.routes : [data.routes[0]];
-      
-      return routes.map(route => ({
+      const route = data.routes[0];
+      return {
         geometry: route.geometry,
         distance: route.distance * 0.000621371, // Convert meters to miles
         duration: route.duration / 60, // Convert seconds to minutes
-        weight: route.weight,
-        weight_name: route.weight_name,
-        legs: route.legs?.map(leg => ({
-          distance: leg.distance * 0.000621371,
-          duration: leg.duration / 60,
-          steps: leg.steps,
-          summary: leg.summary,
-          annotation: leg.annotation
-        })),
         summary: {
           distance: (route.distance * 0.000621371).toFixed(1),
           duration: Math.round(route.duration / 60)
         }
-      }));
+      };
     }
     
     throw new Error('No route found');
@@ -810,231 +733,6 @@ export const getDirections = async (startLocation, endLocation, options = {}) =>
     throw error;
   }
 };
-
-// Multi-waypoint routing with v5 API support
-export const getMultiWaypointDirections = async (waypoints, options = {}) => {
-  if (!isApiKeyConfigured()) {
-    throw new Error('Mapbox API key not configured');
-  }
-
-  if (!waypoints || waypoints.length < 2) {
-    throw new Error('At least 2 waypoints required');
-  }
-
-  if (waypoints.length > 25) {
-    throw new Error('Maximum 25 waypoints supported');
-  }
-
-  const {
-    profile = ROUTING_PROFILES.DRIVING_TRAFFIC,
-    alternatives = true, // Always get alternatives for better route selection
-    avoid = [],
-    exclude = [],
-    annotations = ['distance', 'duration', 'congestion'],
-    continueStraight = false,
-    avoidManeuverRadius = null,
-    overview = 'full',
-    geometries = 'geojson',
-    steps = true,
-    language = 'en',
-    avoidTolls = false
-  } = options;
-
-  try {
-    await rateLimiter.wait();
-    
-    // Build coordinates string from waypoints
-    const coordinates = waypoints.map(wp => {
-      const lat = wp.lat || wp.latitude || wp.location?.lat || wp.location?.latitude;
-      const lng = wp.lng || wp.longitude || wp.location?.lng || wp.location?.longitude;
-      return `${lng},${lat}`;
-    }).join(';');
-
-    const url = new URL(`${CONFIG.mapbox.directionsUrl}/${profile}/${coordinates}.json`);
-    
-    // Add required parameters
-    url.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-    url.searchParams.append('overview', overview);
-    url.searchParams.append('geometries', geometries);
-    url.searchParams.append('steps', steps.toString());
-    url.searchParams.append('language', language);
-    
-    // Add optional parameters
-    if (alternatives) {
-      url.searchParams.append('alternatives', 'true');
-    }
-    
-    if (avoid.length > 0) {
-      url.searchParams.append('avoid', avoid.join(','));
-    }
-    
-    if (exclude.length > 0) {
-      url.searchParams.append('exclude', exclude.join(','));
-    }
-    
-    // Handle toll avoidance
-    if (avoidTolls) {
-      url.searchParams.append('exclude', 'toll');
-    }
-    
-    if (annotations.length > 0) {
-      url.searchParams.append('annotations', annotations.join(','));
-    }
-    
-    if (continueStraight) {
-      url.searchParams.append('continue_straight', 'true');
-    }
-    
-    if (avoidManeuverRadius) {
-      url.searchParams.append('avoid_maneuver_radius', avoidManeuverRadius.toString());
-    }
-    
-    console.log('📍 Getting multi-waypoint directions:', { 
-      waypointCount: waypoints.length,
-      profile,
-      alternatives,
-      avoid,
-      exclude,
-      avoidTolls
-    });
-    
-    const data = await fetchWithTimeout(url.toString(), {}, CONFIG.mapbox.timeout);
-    
-    if (data.routes && data.routes.length > 0) {
-      // Use smart route selection to pick the best route
-      const bestRoute = selectBestRoute(data.routes, waypoints, {
-        preferDirect: true,
-        avoidResidential: true,
-        maxDistanceMultiplier: 2.5
-      });
-      
-      // Return the best route in the expected format
-      return [{
-        geometry: bestRoute.geometry,
-        distance: bestRoute.distance * 0.000621371,
-        duration: bestRoute.duration / 60,
-        weight: bestRoute.weight,
-        weight_name: bestRoute.weight_name,
-        legs: bestRoute.legs?.map((leg, index) => ({
-          distance: leg.distance * 0.000621371,
-          duration: leg.duration / 60,
-          steps: leg.steps,
-          summary: leg.summary,
-          annotation: leg.annotation,
-          from: waypoints[index]?.name || `Waypoint ${index + 1}`,
-          to: waypoints[index + 1]?.name || `Waypoint ${index + 2}`
-        })),
-        waypoints: bestRoute.waypoints?.map((wp, index) => ({
-          location: [wp[0], wp[1]],
-          name: waypoints[index]?.name || `Waypoint ${index + 1}`,
-          type: waypoints[index]?.type || 'waypoint'
-        })),
-        summary: {
-          distance: (bestRoute.distance * 0.000621371).toFixed(1),
-          duration: Math.round(bestRoute.duration / 60),
-          waypointCount: waypoints.length
-        }
-      }];
-    }
-    
-    throw new Error('No route found');
-  } catch (error) {
-    console.error('Error getting multi-waypoint directions:', error);
-    throw error;
-  }
-};
-
-// Electric Vehicle routing support
-// COMMENTED OUT - EV routing not needed at the moment
-/*
-export const getEVDirections = async (startLocation, endLocation, evOptions = {}) => {
-  if (!isApiKeyConfigured()) {
-    throw new Error('Mapbox API key not configured');
-  }
-
-  const {
-    engine = 'electric',
-    batteryCapacity = 75000, // Wh (75 kWh)
-    currentCharge = 60000,   // Wh (60 kWh)
-    minChargeAtChargingStation = 30000, // Wh (30 kWh)
-    minChargeAtDestination = 20000,     // Wh (20 kWh)
-    maxChargeAtChargingStation = 75000, // Wh (75 kWh)
-    chargingStations = true,
-    ...otherOptions
-  } = evOptions;
-
-  try {
-    await rateLimiter.wait();
-    
-    const coordinates = `${startLocation.lng},${startLocation.lat};${endLocation.lng},${endLocation.lat}`;
-    const url = new URL(`${CONFIG.mapbox.directionsUrl}/${ROUTING_PROFILES.DRIVING}/${coordinates}.json`);
-    
-    // Add required parameters
-    url.searchParams.append('access_token', CONFIG.mapbox.apiKey);
-    url.searchParams.append('overview', 'full');
-    url.searchParams.append('geometries', 'geojson');
-    url.searchParams.append('steps', 'true');
-    url.searchParams.append('annotations', 'distance,duration,state_of_charge');
-    
-    // Add EV-specific parameters
-    url.searchParams.append('engine', engine);
-    url.searchParams.append('battery_capacity', batteryCapacity.toString());
-    url.searchParams.append('current_charge', currentCharge.toString());
-    url.searchParams.append('min_charge_at_charging_station', minChargeAtChargingStation.toString());
-    url.searchParams.append('min_charge_at_destination', minChargeAtDestination.toString());
-    url.searchParams.append('max_charge_at_charging_station', maxChargeAtChargingStation.toString());
-    
-    if (chargingStations) {
-      url.searchParams.append('charging_stations', 'true');
-    }
-    
-    // Add other options
-    Object.entries(otherOptions).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.append(key, value.toString());
-      }
-    });
-    
-    console.log('🔋 Getting EV directions:', { 
-      start: startLocation, 
-      end: endLocation,
-      batteryCapacity,
-      currentCharge,
-      chargingStations
-    });
-    
-    const data = await fetchWithTimeout(url.toString(), {}, CONFIG.mapbox.timeout);
-    
-    if (data.routes && data.routes.length > 0) {
-      const route = data.routes[0];
-      
-      return {
-        geometry: route.geometry,
-        distance: route.distance * 0.000621371,
-        duration: route.duration / 60,
-        legs: route.legs?.map(leg => ({
-          distance: leg.distance * 0.000621371,
-          duration: leg.duration / 60,
-          steps: leg.steps,
-          annotation: leg.annotation,
-          chargingStops: leg.charging_stops || []
-        })),
-        chargingStops: route.charging_stops || [],
-        summary: {
-          distance: (route.distance * 0.000621371).toFixed(1),
-          duration: Math.round(route.duration / 60),
-          chargingStops: route.charging_stops?.length || 0
-        }
-      };
-    }
-    
-    throw new Error('No EV route found');
-  } catch (error) {
-    console.error('Error getting EV directions:', error);
-    throw error;
-  }
-};
-*/
 
 // Location tracking
 export const getCurrentLocation = () => {
@@ -1065,93 +763,6 @@ export const getCurrentLocation = () => {
       options
     );
   });
-};
-
-// Utility functions for route analysis and comparison
-export const compareRoutes = (routes) => {
-  if (!routes || routes.length < 2) {
-    return null;
-  }
-
-  const comparison = routes.map((route, index) => ({
-    index,
-    distance: route.distance,
-    duration: route.duration,
-    efficiency: route.distance / route.duration, // miles per minute
-    trafficImpact: route.weight_name === 'routability' ? 'Traffic optimized' : 'Standard'
-  }));
-
-  // Sort by efficiency (best first)
-  comparison.sort((a, b) => a.efficiency - b.efficiency);
-
-  return {
-    routes: comparison,
-    fastest: comparison[0],
-    shortest: routes.reduce((shortest, route, index) => 
-      route.distance < shortest.distance ? { ...route, index } : shortest, 
-      { distance: Infinity, index: 0 }
-    ),
-    mostEfficient: comparison[0]
-  };
-};
-
-// Extract turn-by-turn instructions from route steps
-export const extractTurnByTurnInstructions = (route) => {
-  if (!route.legs || route.legs.length === 0) {
-    return [];
-  }
-
-  const instructions = [];
-  
-  route.legs.forEach((leg, legIndex) => {
-    if (leg.steps) {
-      leg.steps.forEach((step, stepIndex) => {
-        if (step.maneuver) {
-          instructions.push({
-            legIndex,
-            stepIndex,
-            instruction: step.maneuver.instruction,
-            type: step.maneuver.type,
-            modifier: step.maneuver.modifier,
-            distance: step.distance * 0.000621371, // Convert to miles
-            duration: step.duration / 60, // Convert to minutes
-            location: step.maneuver.location,
-            bearing_before: step.maneuver.bearing_before,
-            bearing_after: step.maneuver.bearing_after
-          });
-        }
-      });
-    }
-  });
-
-  return instructions;
-};
-
-// Get route summary with detailed breakdown
-export const getRouteSummary = (route) => {
-  if (!route) return null;
-
-  const summary = {
-    totalDistance: route.distance,
-    totalDuration: route.duration,
-    averageSpeed: route.distance / (route.duration / 60), // mph
-    waypointCount: route.waypoints?.length || 0,
-    legCount: route.legs?.length || 0
-  };
-
-  if (route.legs) {
-    summary.legs = route.legs.map((leg, index) => ({
-      index,
-      from: leg.from,
-      to: leg.to,
-      distance: leg.distance,
-      duration: leg.duration,
-      averageSpeed: leg.distance / (leg.duration / 60),
-      stepCount: leg.steps?.length || 0
-    }));
-  }
-
-  return summary;
 };
 
 // Utility exports
@@ -1280,196 +891,6 @@ export const debugMapboxSearch = async (query = 'food', userLocation = null) => 
   }
 };
 
-
-
-// Route quality scoring function to select better routes
-export const scoreRouteQuality = (route, waypoints) => {
-  let score = 0;
-  
-  // Prefer shorter routes (but not too short - avoid U-turns)
-  const distanceScore = Math.max(0, 100 - (route.distance * 10));
-  score += distanceScore;
-  
-  // Prefer faster routes
-  const durationScore = Math.max(0, 100 - (route.duration * 2));
-  score += durationScore;
-  
-  // Penalize routes with too many turns
-  if (route.legs && route.legs.length > 0) {
-    const totalSteps = route.legs.reduce((total, leg) => total + (leg.steps?.length || 0), 0);
-    const turnPenalty = Math.min(50, totalSteps * 5); // Penalty for excessive turns
-    score -= turnPenalty;
-  }
-  
-  // Bonus for routes that stay on main roads
-  if (route.weight_name === 'routability') {
-    score += 20; // Prefer routability over traffic
-  }
-  
-  // Penalty for routes that seem to loop around
-  if (waypoints && waypoints.length >= 3) {
-    const startEndDistance = calculateDistanceInternal(
-      waypoints[0].lat || waypoints[0].location?.lat,
-      waypoints[0].lng || waypoints[0].location?.lng,
-      waypoints[waypoints.length - 1].lat || waypoints[waypoints.length - 1].location?.lat,
-      waypoints[waypoints.length - 1].lng || waypoints[waypoints.length - 1].location?.lng
-    );
-    
-    // If route distance is much longer than direct distance, penalize
-    const routeEfficiency = startEndDistance / route.distance;
-    if (routeEfficiency < 0.3) { // Route is more than 3x longer than direct
-      score -= 30;
-    }
-  }
-  
-  return Math.max(0, score);
-};
-
-// Smart route selection that prefers sensible routes
-export const selectBestRoute = (routes, waypoints, options = {}) => {
-  if (!routes || routes.length === 0) return null;
-  if (routes.length === 1) return routes[0];
-  
-  const {
-    preferDirect = true,
-    avoidResidential = true,
-    maxDistanceMultiplier = 2.5 // Don't accept routes more than 2.5x direct distance
-  } = options;
-  
-  // Score each route
-  const scoredRoutes = routes.map(route => ({
-    route,
-    score: scoreRouteQuality(route, waypoints)
-  }));
-  
-  // Sort by score (highest first)
-  scoredRoutes.sort((a, b) => b.score - a.score);
-  
-  console.log('🏆 Route quality scores:', scoredRoutes.map(sr => ({
-    score: sr.score,
-    distance: sr.route.distance,
-    duration: sr.route.duration,
-    weight_name: sr.route.weight_name
-  })));
-  
-  // Filter out obviously bad routes
-  const goodRoutes = scoredRoutes.filter(sr => {
-    // Reject routes that are too long compared to direct distance
-    if (waypoints && waypoints.length >= 2) {
-      const startEndDistance = calculateDistanceInternal(
-        waypoints[0].lat || waypoints[0].location?.lat,
-        waypoints[0].lng || waypoints[0].location?.lng,
-        waypoints[waypoints.length - 1].lat || waypoints[waypoints.length - 1].location?.lat,
-        waypoints[waypoints.length - 1].lng || waypoints[waypoints.length - 1].location?.lng
-      );
-      
-      const routeEfficiency = startEndDistance / sr.route.distance;
-      if (routeEfficiency < 0.4) { // Route is more than 2.5x longer than direct
-        console.log('❌ Rejecting inefficient route:', {
-          directDistance: startEndDistance,
-          routeDistance: sr.route.distance,
-          efficiency: routeEfficiency
-        });
-        return false;
-      }
-    }
-    
-    return true;
-  });
-  
-  if (goodRoutes.length === 0) {
-    console.log('⚠️ No good routes found, using best available');
-    return scoredRoutes[0].route;
-  }
-  
-  // If the best route has a very low score, it might be too complex
-  // In this case, we could suggest trying a different routing profile
-  if (goodRoutes[0].score < 30) {
-    console.log('⚠️ Best route has low quality score, consider using mapbox/driving instead of mapbox/driving-traffic');
-  }
-  
-  console.log('✅ Selected best route with score:', goodRoutes[0].score);
-  return goodRoutes[0].route;
-};
-
-// Enhanced multi-waypoint routing with automatic profile fallback
-export const getMultiWaypointDirectionsWithFallback = async (waypoints, options = {}) => {
-  const {
-    profile = ROUTING_PROFILES.DRIVING_TRAFFIC,
-    fallbackProfile = ROUTING_PROFILES.DRIVING,
-    ...otherOptions
-  } = options;
-  
-  try {
-    console.log('🗺️ Trying primary routing profile:', profile);
-    
-    // Try the primary profile first
-    const primaryRoutes = await getMultiWaypointDirections(waypoints, {
-      ...otherOptions,
-      profile
-    });
-    
-    if (primaryRoutes && primaryRoutes.length > 0) {
-      const primaryRoute = primaryRoutes[0];
-      
-      // Check if the route quality is acceptable
-      const qualityScore = scoreRouteQuality(primaryRoute, waypoints);
-      console.log('🏆 Primary route quality score:', qualityScore);
-      
-      if (qualityScore >= 40) {
-        console.log('✅ Primary route quality is acceptable, using it');
-        return primaryRoutes;
-      } else {
-        console.log('⚠️ Primary route quality is poor, trying fallback profile:', fallbackProfile);
-      }
-    }
-    
-    // If primary route is poor quality, try fallback profile
-    if (profile !== fallbackProfile) {
-      console.log('🔄 Attempting fallback routing with:', fallbackProfile);
-      
-      const fallbackRoutes = await getMultiWaypointDirections(waypoints, {
-        ...otherOptions,
-        profile: fallbackProfile
-      });
-      
-      if (fallbackRoutes && fallbackRoutes.length > 0) {
-        const fallbackRoute = fallbackRoutes[0];
-        const fallbackScore = scoreRouteQuality(fallbackRoute, waypoints);
-        console.log('🏆 Fallback route quality score:', fallbackScore);
-        
-        if (fallbackScore > qualityScore) {
-          console.log('✅ Fallback route is better, using it');
-          return fallbackRoutes;
-        }
-      }
-    }
-    
-    // Return the best available route
-    console.log('✅ Using best available route');
-    return primaryRoutes;
-    
-  } catch (error) {
-    console.error('❌ Error in fallback routing:', error);
-    
-    // If primary profile fails, try fallback
-    if (profile !== fallbackProfile) {
-      try {
-        console.log('🔄 Primary profile failed, trying fallback:', fallbackProfile);
-        return await getMultiWaypointDirections(waypoints, {
-          ...otherOptions,
-          profile: fallbackProfile
-        });
-      } catch (fallbackError) {
-        console.error('❌ Fallback profile also failed:', fallbackError);
-        throw fallbackError;
-      }
-    }
-    
-    throw error;
-  }
-};
-
 // Export service object for backward compatibility
 export const MAPBOX_SERVICE = {
   config: CONFIG.mapbox,
@@ -1479,20 +900,7 @@ export const MAPBOX_SERVICE = {
   getCurrentLocation,
   calculateDistance: calculateDistanceInternal,
   clearSearchCache,
-  isApiKeyConfigured,
-  // New v5 API functions
-  getDirections,
-  getMultiWaypointDirections,
-  // getEVDirections, // Commented out - EV routing not needed
-  ROUTING_PROFILES,
-  compareRoutes,
-  extractTurnByTurnInstructions,
-  getRouteSummary,
-  // Route quality functions
-  scoreRouteQuality,
-  selectBestRoute,
-  // Enhanced routing with fallback
-  getMultiWaypointDirectionsWithFallback
+  isApiKeyConfigured
 };
 
 // Expose globally for debugging
@@ -1501,19 +909,6 @@ if (typeof window !== 'undefined') {
   window.searchDestinations = searchDestinations;
   window.getCurrentLocation = getCurrentLocation;
   window.clearSearchCache = clearSearchCache;
-  // New v5 API functions
-  window.getDirections = getDirections;
-  window.getMultiWaypointDirections = getMultiWaypointDirections;
-  // window.getEVDirections = getEVDirections; // Commented out - EV routing not needed
-  window.ROUTING_PROFILES = ROUTING_PROFILES;
-  window.compareRoutes = compareRoutes;
-  window.extractTurnByTurnInstructions = extractTurnByTurnInstructions;
-  window.getRouteSummary = getRouteSummary;
-  // Route quality functions
-  window.scoreRouteQuality = scoreRouteQuality;
-  window.selectBestRoute = selectBestRoute;
-  // Enhanced routing with fallback
-  window.getMultiWaypointDirectionsWithFallback = getMultiWaypointDirectionsWithFallback;
 }
 
 // Expose debug function globally

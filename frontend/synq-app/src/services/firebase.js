@@ -2,9 +2,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { getAnalytics, logEvent } from 'firebase/analytics';
-import { getPerformance } from 'firebase/performance';
-import { getFunctions } from 'firebase/functions';
 
 const firebaseConfig = {
   apiKey: "AIzaSyCOezunDP8H_q1QYvBChcj3IztTp_dbhlE",
@@ -34,37 +31,10 @@ console.log("Auth object properties:", {
 // Initialize Firestore
 const db = getFirestore(app);
 
-// Initialize Analytics
-let analytics = null;
-try {
-  analytics = getAnalytics(app);
-  console.log("Firebase Analytics initialized");
-} catch (error) {
-  console.log("Analytics not available:", error.message);
-}
-
-// Initialize Performance Monitoring
-let performance = null;
-try {
-  performance = getPerformance(app);
-  console.log("Firebase Performance Monitoring initialized");
-} catch (error) {
-  console.log("Performance Monitoring not available:", error.message);
-}
-
-// Initialize Cloud Functions
-let functions = null;
-try {
-  functions = getFunctions(app);
-  console.log("Firebase Functions initialized");
-} catch (error) {
-  console.log("Functions not available:", error.message);
-}
-
 // Set persistence to LOCAL (persists even after browser restart)
 setPersistence(auth, browserLocalPersistence)
   .catch((error) => {
     console.error("Auth persistence error:", error);
   });
 
-export { auth, db, analytics, performance, functions, logEvent };
+export { auth, db };

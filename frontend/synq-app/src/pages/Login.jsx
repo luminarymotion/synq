@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { useUserAuth } from '../services/auth';
 import SimpleLoading from '../components/SimpleLoading';
-import errorLogger from '../services/errorLogger';
 import '../App.css';
 
 function Login() {
@@ -16,19 +15,6 @@ function Login() {
   const [loading, setLoading] = useState(false);
   const { googleSignIn } = useUserAuth();
   const navigate = useNavigate();
-  const location = useLocation();
-  
-  // Get redirect path from URL parameters
-  const searchParams = new URLSearchParams(location.search);
-  const redirectPath = searchParams.get('redirect') || '/dashboard';
-  
-  console.log('🔐 Login page - redirect path:', redirectPath);
-  
-  // Log that someone accessed the login page (for debugging)
-  errorLogger.logUserAction('login_page_accessed', {
-    redirectPath,
-    hasRedirectParam: !!searchParams.get('redirect')
-  });
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -51,24 +37,12 @@ function Login() {
 
     try {
       await signInWithEmailAndPassword(auth, formData.email, formData.password);
-      console.log('Login successful, redirecting to:', redirectPath);
-      
-      // Log successful authentication for debugging
-      errorLogger.logUserAction('login_success', {
-        redirectPath,
-        email: formData.email,
-        hasRedirect: !!searchParams.get('redirect')
-      });
-      
-      navigate(redirectPath, { replace: true }); // Redirect to intended destination after successful login
+      console.log('Login successful');
+      navigate('/dashboard'); // Redirect to dashboard after successful login
     } catch (error) {
       console.error('Error signing in:', error);
-      
-      // Log authentication error
-      errorLogger.logAuthError(error, {
-        email: formData.email,
-        redirectPath
-      });
+      console.error('Error code:', error.code);
+      console.error('Error message:', error.message);
       
       // Provide more user-friendly error messages
       let userMessage = 'Login failed. Please check your credentials.';
@@ -95,8 +69,6 @@ function Login() {
 
     try {
       await googleSignIn();
-      // Note: Google sign-in redirect is handled by the auth context
-      // The redirect will happen automatically when the user state updates
     } catch (error) {
       console.error('Error signing in with Google:', error);
       setError(error.message);

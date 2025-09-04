@@ -1,5 +1,5 @@
 import './App.css';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import { Toaster } from 'react-hot-toast';
 import Login from './pages/Login';
@@ -14,15 +14,12 @@ import Header from './components/Header';
 import GlobalLoading from './components/GlobalLoading';
 import LocationTrackingTest from './components/LocationTrackingTest';
 import LocationTrackingTestSimple from './components/LocationTrackingTestSimple';
-import ReviewRideDetailsDemo from './components/ReviewRideDetailsDemo';
 import { UserAuthContextProvider, useUserAuth } from './services/auth';
-import errorLogger from './services/errorLogger';
 import './styles/theme.css';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useUserAuth();
-  const location = useLocation();
   
   if (loading) {
     return (
@@ -40,17 +37,7 @@ const ProtectedRoute = ({ children }) => {
   }
   
   if (!user) {
-    // Store the intended destination for redirect after login
-    const redirectPath = location.pathname + location.search;
-    console.log('🔐 Redirecting to login with path:', redirectPath);
-    
-    // Log deep link access attempt for debugging
-    errorLogger.logDeepLinkError({
-      originalPath: redirectPath,
-      referrer: document.referrer
-    });
-    
-    return <Navigate to={`/login?redirect=${encodeURIComponent(redirectPath)}`} replace />;
+    return <Navigate to="/login" />;
   }
 
   return children;
@@ -96,7 +83,6 @@ function App() {
 // Component that uses the auth context - moved inside the provider
 const AppContent = () => {
   const { user, loading, needsProfileSetup } = useUserAuth();
-  const location = useLocation();
 
   // Show global loading during authentication
   if (loading) {
@@ -114,32 +100,9 @@ const AppContent = () => {
     );
   }
 
-  // Helper function to get the appropriate redirect path
-  const getRedirectPath = () => {
-    // If user is authenticated and trying to access auth pages, redirect appropriately
-    if (user) {
-      if (needsProfileSetup) {
-        return '/settings';
-      }
-      
-      // Check if there's a redirect parameter in the URL
-      const searchParams = new URLSearchParams(location.search);
-      const redirectParam = searchParams.get('redirect');
-      
-      if (redirectParam) {
-        return redirectParam;
-      }
-      
-      return '/dashboard';
-    }
-    
-    return '/login';
-  };
-
   return (
     <div className="App">
-      {/* Show Header for authenticated users or on auth pages */}
-      {(user || location.pathname === '/login' || location.pathname === '/signup') && <Header />}
+      <Header />
       <Routes>
         {/* Root path - redirect based on auth and profile status */}
         <Route path="/" element={
@@ -157,12 +120,20 @@ const AppContent = () => {
         {/* Auth routes - redirect to settings if needed */}
         <Route path="/login" element={
           user ? (
-            <Navigate to={getRedirectPath()} />
+            needsProfileSetup ? (
+              <Navigate to="/settings" />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
           ) : <Login />
         } />
         <Route path="/signup" element={
           user ? (
-            <Navigate to={getRedirectPath()} />
+            needsProfileSetup ? (
+              <Navigate to="/settings" />
+            ) : (
+              <Navigate to="/dashboard" />
+            )
           ) : <SignUp />
         } />
 
@@ -211,11 +182,6 @@ const AppContent = () => {
         } />
         <Route path="/test-simple" element={
           <LocationTrackingTestSimple />
-        } />
-        <Route path="/review-modal-demo" element={
-          <ProtectedRoute>
-            <ReviewRideDetailsDemo />
-          </ProtectedRoute>
         } />
       </Routes>
     </div>
