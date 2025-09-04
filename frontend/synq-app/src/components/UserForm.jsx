@@ -410,6 +410,24 @@ function UserForm({
           </div>
         </div>
 
+        {/* Car Seats Available - Only show for drivers */}
+        {form.role === 'driver' && (
+          <div className="form-group">
+            <label htmlFor="carSeatsAvailable">Car Seats Available</label>
+            <input
+              type="number"
+              id="carSeatsAvailable"
+              name="carSeatsAvailable"
+              value={form.carSeatsAvailable || 1}
+              onChange={onChange}
+              className="form-control"
+              min="1"
+              max="8"
+              required
+            />
+          </div>
+        )}
+
         {/* Starting Location - Only show for drivers */}
         {form.role === 'driver' && (
           <div className="form-group">

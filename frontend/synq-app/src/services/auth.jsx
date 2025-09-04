@@ -195,13 +195,15 @@ export function UserAuthContextProvider({ children }) {
             if (error.message.includes('offline') || 
                 error.message.includes('Failed to get document') ||
                 error.message.includes('network') ||
-                error.message.includes('timeout')) {
+                error.message.includes('timeout') ||
+                error.code === 'permission-denied') {
                 console.warn('Firebase is offline or experiencing connectivity issues. App will continue in offline mode.');
-                // Don't set error state for connectivity issues
+                // Don't set error state for connectivity issues or permission issues
                 return;
             }
             
-            setError(error.message || 'Failed to set up user profile');
+            // Only set error for critical issues, not for profile setup issues
+            console.warn('Profile setup issue, but continuing with app initialization:', error.message);
         }
     };
 
@@ -362,7 +364,16 @@ export function UserAuthContextProvider({ children }) {
 
             try {
                 if (currentUser) {
-                    await ensureUserProfile(currentUser);
+                    // Add a small delay to ensure Firebase is fully initialized
+                    setTimeout(async () => {
+                        try {
+                            await ensureUserProfile(currentUser);
+                        } catch (profileError) {
+                            console.error('Error ensuring user profile:', profileError);
+                            // Don't set the main error state for profile issues
+                            // Just log it and continue
+                        }
+                    }, 1000);
                 } else {
                     console.log('No current user, resetting states');
                     setNeedsProfileSetup(false);

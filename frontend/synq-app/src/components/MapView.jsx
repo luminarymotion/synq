@@ -33,6 +33,13 @@ function MapView({
   const [routeDetails, setRouteDetails] = useState(null);
   const [warning, setWarning] = useState(null);
   const [isRecalculating, setIsRecalculating] = useState(false);
+  
+  // Track if we've already auto-zoomed for the current suggestions to prevent view resets
+  const hasAutoZoomedForSuggestions = useRef(false);
+  const lastSuggestionsCount = useRef(0);
+  
+  // Track if we're currently zooming to a POI to prevent manual auto-fit interference
+  const isZoomingToPOI = useRef(false);
 
   // Initialize map
   useEffect(() => {
@@ -51,6 +58,50 @@ function MapView({
 
       // Add click handler
       map.current.on('click', (e) => {
+        console.log('🗺️ General map click detected:', {
+          hasFeatures: e.features && e.features.length > 0,
+          featureCount: e.features ? e.features.length : 0,
+          clickType: e.features && e.features.length > 0 ? 'feature' : 'map',
+          features: e.features ? e.features.map(f => f.properties?.name || 'unnamed') : []
+        });
+        
+        // Skip if click was on a feature (like POI markers) - let those handlers deal with it
+        if (e.features && e.features.length > 0) {
+          console.log('🗺️ Click was on a feature, skipping general map click handler');
+          console.log('🗺️ Feature details:', e.features[0]?.properties);
+          return;
+        }
+        
+        // Additional check: query for features at the clicked point to catch timing issues
+        if (map.current) {
+          console.log('🗺️ Querying for features at click point:', e.point);
+          
+          // Check if the suggestion layers are ready
+          const regularLayer = map.current.getLayer('suggestions-markers-regular-layer');
+          const exactLayer = map.current.getLayer('suggestions-markers-exact-layer');
+          
+          if (!regularLayer || !exactLayer) {
+            console.log('🗺️ Suggestion layers not ready yet, skipping feature query');
+          } else {
+            const features = map.current.queryRenderedFeatures(e.point, {
+              layers: ['suggestions-markers-regular-layer', 'suggestions-markers-exact-layer']
+            });
+            
+            console.log('🗺️ queryRenderedFeatures result:', {
+              featuresFound: features?.length || 0,
+              featureNames: features ? features.map(f => f.properties?.name || 'unnamed') : [],
+              layers: ['suggestions-markers-regular-layer', 'suggestions-markers-exact-layer'],
+              layersReady: !!regularLayer && !!exactLayer
+            });
+            
+            if (features && features.length > 0) {
+              console.log('🗺️ Found features via queryRenderedFeatures:', features.map(f => f.properties?.name || 'unnamed'));
+              console.log('🗺️ Skipping general map click handler due to POI markers at location');
+              return;
+            }
+          }
+        }
+        
         const { lng, lat } = e.lngLat;
         
         if (onMapClick) {
@@ -61,6 +112,15 @@ function MapView({
             onSetDestinationFromMap({ lat, lng });
         }
     });
+    
+    // Reset auto-zoom flag when user manually interacts with the map
+    map.current.on('moveend', () => {
+      hasAutoZoomedForSuggestions.current = false;
+    });
+    
+    map.current.on('zoomend', () => {
+      hasAutoZoomedForSuggestions.current = false;
+    });
 
       // Wait for map to load before adding sources/layers
       map.current.on('load', () => {
@@ -70,6 +130,16 @@ function MapView({
 
       // Handle map errors
       map.current.on('error', (e) => {
+        // Filter out common layer-related errors that we handle gracefully
+        if (e.error && e.error.message && 
+            (e.error.message.includes("does not exist in the map's style") ||
+             e.error.message.includes("suggestions-markers"))) {
+          // These are expected errors that we handle gracefully, just log as warning
+          console.warn('Mapbox layer error (handled gracefully):', e.error.message);
+          return;
+        }
+        
+        // Log and handle actual map errors
         console.error('Mapbox error:', e);
         setError('Failed to load map');
       });
@@ -88,6 +158,37 @@ function MapView({
       }
     };
   }, []);
+
+  // Force map to be fully rendered and interactive
+  const forceMapRender = useCallback(() => {
+    if (!map.current || !mapLoaded) return;
+    
+    console.log('🗺️ Force rendering map to ensure interactivity...');
+    
+    try {
+      // Force multiple render cycles
+      map.current.triggerRepaint();
+      map.current.resize();
+      
+      // Add a small delay to ensure layers are fully created before modifying them
+      setTimeout(() => {
+        // Force a style update - only if layers exist
+        if (map.current && map.current.isStyleLoaded()) {
+          // Check if layers exist before trying to modify them
+          if (map.current.getLayer('suggestions-markers-regular-layer')) {
+            map.current.setPaintProperty('suggestions-markers-regular-layer', 'circle-opacity', 0.9);
+          }
+          if (map.current.getLayer('suggestions-markers-exact-layer')) {
+            map.current.setPaintProperty('suggestions-markers-exact-layer', 'circle-opacity', 1.0);
+          }
+        }
+      }, 50); // Small delay to ensure layers are ready
+      
+      console.log('🗺️ Force render completed');
+    } catch (error) {
+      console.warn('Error during force render:', error);
+    }
+  }, [mapLoaded]);
 
   // Safe function to remove sources and layers
   const safeRemoveSource = useCallback((sourceId) => {
@@ -170,6 +271,9 @@ function MapView({
 
   // Manual auto-fit function that can be called from parent
   const manualAutoFit = useCallback(() => {
+    // Reset auto-zoom flag when manually fitting map
+    hasAutoZoomedForSuggestions.current = false;
+    
     const allPoints = [];
     
     // Add user locations (only for accepted participants)
@@ -221,10 +325,12 @@ function MapView({
       }
     }
     
-    if (allPoints.length > 0) {
+    if (allPoints.length > 0 && !isZoomingToPOI.current) {
       const padding = compact ? 40 : 80;
       console.log('🗺️ Manual auto-fit triggered with', allPoints.length, 'points');
       smoothFitMapToPoints(allPoints, padding, 1000);
+    } else if (isZoomingToPOI.current) {
+      console.log('🗺️ Skipping manual auto-fit - currently zooming to POI');
     }
   }, [users, destination, userLocation, route, destinationSuggestions, compact, smoothFitMapToPoints, mapLoaded]);
 
@@ -298,19 +404,36 @@ function MapView({
   // Update internal route state when calculatedRoute prop changes
   useEffect(() => {
     console.log('MapView - calculatedRoute prop changed:', calculatedRoute);
+    if (calculatedRoute) {
+      console.log('MapView - Route structure:', {
+        type: calculatedRoute.type,
+        hasFeatures: !!calculatedRoute.features,
+        featuresCount: calculatedRoute.features?.length || 0,
+        firstFeature: calculatedRoute.features?.[0] ? {
+          type: calculatedRoute.features[0].type,
+          hasGeometry: !!calculatedRoute.features[0].geometry,
+          geometryType: calculatedRoute.features[0].geometry?.type,
+          hasCoordinates: !!calculatedRoute.features[0].geometry?.coordinates,
+          coordinatesCount: calculatedRoute.features[0].geometry?.coordinates?.length || 0
+        } : null
+      });
+    }
     setRoute(calculatedRoute); // Set route to null when calculatedRoute is null
   }, [calculatedRoute]);
 
   // Calculate estimated pickup time based on route segments
   const calculateEstimatedPickupTime = (route, pickupIndex) => {
-    if (!route || !route.features || pickupIndex >= route.features[0].geometry.coordinates.length) {
+    if (!route || !route.features || !route.features[0] || 
+        !route.features[0].geometry || !route.features[0].geometry.coordinates ||
+        !Array.isArray(route.features[0].geometry.coordinates) ||
+        pickupIndex >= route.features[0].geometry.coordinates.length) {
       return null;
     }
 
     // Sum up the duration of all segments up to this pickup point
     const totalDuration = route.features[0].geometry.coordinates
       .slice(0, pickupIndex + 1)
-      .reduce((sum, coord) => sum + coord[2], 0);
+      .reduce((sum, coord) => sum + (coord[2] || 0), 0);
 
     // Convert seconds to minutes and round to nearest minute
     return Math.round(totalDuration / 60);
@@ -396,23 +519,26 @@ function MapView({
         // Single route
         const routeFeature = route.features[0];
         
-        if (safeAddSource('route', {
-          type: 'geojson',
-          data: routeFeature
-        })) {
-          safeAddLayer({
-            id: 'route-line',
-            type: 'line',
-            source: 'route',
-            layout: {
-              'line-join': 'round',
-              'line-cap': 'round'
-            },
-            paint: {
-              'line-color': '#2196F3',
-              'line-width': 6
-            }
-          });
+                // Ensure the route feature has valid geometry
+        if (routeFeature.geometry && routeFeature.geometry.coordinates && Array.isArray(routeFeature.geometry.coordinates)) {
+          if (safeAddSource('route', {
+            type: 'geojson',
+            data: routeFeature
+          })) {
+            safeAddLayer({
+              id: 'route-line',
+              type: 'line',
+              source: 'route',
+              layout: {
+                'line-join': 'round',
+                'line-cap': 'round'
+              },
+              paint: {
+                'line-color': '#2196F3',
+                'line-width': 6
+              }
+            });
+          }
         }
       }
 
@@ -421,10 +547,26 @@ function MapView({
       
       // Add route coordinates
       if (route.features && route.features.length > 0) {
-        const coordinates = route.features[0].geometry.coordinates;
-        coordinates.forEach(coord => {
-          allPoints.push({ lng: coord[0], lat: coord[1] });
+        const feature = route.features[0];
+        console.log('🗺️ Processing route feature:', {
+          type: feature.type,
+          hasGeometry: !!feature.geometry,
+          geometryType: feature.geometry?.type,
+          hasCoordinates: !!feature.geometry?.coordinates,
+          coordinatesCount: feature.geometry?.coordinates?.length || 0
         });
+        
+        if (feature.geometry && feature.geometry.coordinates && Array.isArray(feature.geometry.coordinates)) {
+          const coordinates = feature.geometry.coordinates;
+          console.log('🗺️ Processing coordinates:', coordinates.length);
+          coordinates.forEach(coord => {
+            if (Array.isArray(coord) && coord.length >= 2) {
+              allPoints.push({ lng: coord[0], lat: coord[1] });
+            }
+          });
+        } else {
+          console.log('🗺️ No valid coordinates found in route feature');
+        }
       } else if (route.routes && Array.isArray(route.routes)) {
         // Multi-vehicle route
         route.routes.forEach(vehicleRoute => {
@@ -473,6 +615,17 @@ function MapView({
   // Add destination suggestions markers with enhanced coordinate handling
   useEffect(() => {
     if (!mapLoaded) return;
+
+    // Check if suggestions have actually changed (not just length)
+    const currentSuggestionsHash = JSON.stringify(destinationSuggestions?.map(s => ({ lat: s.lat, lng: s.lng || s.lon, name: s.name })));
+    const suggestionsChanged = currentSuggestionsHash !== lastSuggestionsCount.current;
+    
+    // Reset auto-zoom flag if suggestions have actually changed
+    if (suggestionsChanged) {
+      hasAutoZoomedForSuggestions.current = false;
+      lastSuggestionsCount.current = currentSuggestionsHash;
+      console.log('🗺️ Suggestions changed, resetting auto-zoom flag');
+    }
 
     // Remove existing suggestion layers and sources
     safeRemoveLayer('suggestions-markers-regular-layer');
@@ -586,6 +739,19 @@ function MapView({
         })) {
           console.log('🗺️ Successfully added suggestions source');
           
+          // Wait for source to be ready before adding layers
+          const source = map.current.getSource('suggestions-markers');
+          if (source && source.loaded) {
+            console.log('🗺️ Source is already loaded, proceeding with layers');
+          } else {
+            console.log('🗺️ Source not yet loaded, waiting for load event');
+            map.current.on('sourcedata', (e) => {
+              if (e.sourceId === 'suggestions-markers' && e.isSourceLoaded) {
+                console.log('🗺️ Suggestions source loaded, now ready for clicks');
+              }
+            });
+          }
+          
           // Enhanced marker styling with different colors based on coordinate source
           const getMarkerColor = (coordinateSource) => {
             switch (coordinateSource) {
@@ -633,6 +799,38 @@ function MapView({
           
           // Add click handlers for both layers
           if (onSuggestionSelect) {
+            console.log('🗺️ Setting up click handlers for suggestion layers');
+            
+            // Check if layers exist before attaching handlers
+            const regularLayerExists = map.current.getLayer('suggestions-markers-regular-layer');
+            const exactLayerExists = map.current.getLayer('suggestions-markers-exact-layer');
+            
+            console.log('🗺️ Layer existence check:', {
+              regularLayer: !!regularLayerExists,
+              exactLayer: !!exactLayerExists,
+              regularLayerDetails: regularLayerExists ? {
+                id: regularLayerExists.id,
+                type: regularLayerExists.type,
+                source: regularLayerExists.source
+              } : null,
+              exactLayerDetails: exactLayerExists ? {
+                id: exactLayerExists.id,
+                type: exactLayerExists.type,
+                source: exactLayerExists.source
+              } : null
+            });
+            
+            // Remove existing click handlers first to prevent duplicates
+            console.log('🗺️ Removing existing click handlers...');
+            map.current.off('click', 'suggestions-markers-regular-layer');
+            map.current.off('click', 'suggestions-markers-exact-layer');
+            map.current.off('mouseenter', 'suggestions-markers-regular-layer');
+            map.current.off('mouseenter', 'suggestions-markers-exact-layer');
+            map.current.off('mouseleave', 'suggestions-markers-regular-layer');
+            map.current.off('mouseleave', 'suggestions-markers-exact-layer');
+            console.log('🗺️ Existing click handlers removed');
+            
+            console.log('🗺️ Attaching click handler for regular suggestions layer');
             // Click handler for regular suggestions
             map.current.on('click', 'suggestions-markers-regular-layer', (e) => {
               console.log('🗺️ Regular suggestion clicked:', e.features[0]?.properties);
@@ -641,11 +839,17 @@ function MapView({
                 point: e.point,
                 lngLat: e.lngLat
               });
+              console.log('🗺️ Click handler execution - Regular layer');
+              
               if (e.features.length > 0) {
+                console.log('🗺️ Calling showPOIPopup for regular suggestion');
                 showPOIPopup(e.features[0].properties, e.lngLat);
+              } else {
+                console.log('❌ No features found in click event');
               }
             });
             
+            console.log('🗺️ Attaching click handler for exact match suggestions layer');
             // Click handler for exact match suggestions
             map.current.on('click', 'suggestions-markers-exact-layer', (e) => {
               console.log('🗺️ Exact match suggestion clicked:', e.features[0]?.properties);
@@ -654,8 +858,13 @@ function MapView({
                 point: e.point,
                 lngLat: e.lngLat
               });
+              console.log('🗺️ Click handler execution - Exact match layer');
+              
               if (e.features.length > 0) {
+                console.log('🗺️ Calling showPOIPopup for exact match suggestion');
                 showPOIPopup(e.features[0].properties, e.lngLat);
+              } else {
+                console.log('❌ No features found in click event');
               }
             });
             
@@ -672,13 +881,51 @@ function MapView({
             map.current.on('mouseleave', 'suggestions-markers-exact-layer', () => {
               map.current.getCanvas().style.cursor = '';
             });
-          }
+            
+            // Force immediate render to make layers clickable right away
+            console.log('🗺️ Forcing immediate render to make layers clickable...');
+            
+            // Use our comprehensive force render function
+            forceMapRender();
+            
+            // Additional aggressive rendering methods
+            map.current.triggerRepaint();
+            map.current.resize();
+            
+            // Force a style update to ensure layers are interactive
+            if (map.current.isStyleLoaded()) {
+              // Check if layers exist before trying to modify them
+              if (map.current.getLayer('suggestions-markers-regular-layer')) {
+                map.current.setPaintProperty('suggestions-markers-regular-layer', 'circle-opacity', 0.9);
+              }
+              if (map.current.getLayer('suggestions-markers-exact-layer')) {
+                map.current.setPaintProperty('suggestions-markers-exact-layer', 'circle-opacity', 1.0);
+              }
+            }
+            
+            // Wait for render cycle as backup
+            map.current.once('render', () => {
+              console.log('🗺️ Render cycle completed, layers are now clickable');
+              console.log('🗺️ Final layer status check:', {
+                regularLayer: !!map.current.getLayer('suggestions-markers-regular-layer'),
+                exactLayer: !!map.current.getLayer('suggestions-markers-exact-layer'),
+                regularLayerSource: !!map.current.getSource('suggestions-markers')
+              });
+              
+              // Force one more render cycle after the first one completes
+              setTimeout(() => {
+                console.log('🗺️ Forcing final render cycle...');
+                forceMapRender();
+              }, 100);
+            });
+          } // Close the if (onSuggestionSelect) block
           
           if (suggestionFeatures.length > 0) {
             console.log('🔴 Successfully added enhanced markers layer');
             
-            // Auto-zoom to fit suggestions and user location
-            if (suggestionFeatures.length > 0) {
+            // Only auto-zoom if this is a new set of suggestions or if we haven't auto-zoomed yet
+            const isNewSuggestions = suggestionsChanged;
+            if (isNewSuggestions && !hasAutoZoomedForSuggestions.current && suggestionFeatures.length > 0) {
               const bounds = new mapboxgl.LngLatBounds();
               
               // Add user location to bounds if available
@@ -688,8 +935,10 @@ function MapView({
               
               // Add all suggestions to bounds
               suggestionFeatures.forEach(feature => {
-                const coords = feature.geometry.coordinates;
-                bounds.extend(coords);
+                if (feature.geometry && feature.geometry.coordinates && Array.isArray(feature.geometry.coordinates)) {
+                  const coords = feature.geometry.coordinates;
+                  bounds.extend(coords);
+                }
               });
               
               // Fit map to bounds with padding
@@ -699,7 +948,12 @@ function MapView({
                 maxZoom: 15
               });
               
-              console.log('🗺️ Auto-zoomed to fit suggestions and user location');
+              console.log('🗺️ Auto-zoomed to fit suggestions and user location (first time)');
+              
+              // Mark that we've auto-zoomed for these suggestions
+              hasAutoZoomedForSuggestions.current = true;
+            } else if (isNewSuggestions) {
+              console.log('🗺️ Skipping auto-zoom - already zoomed for current suggestions or no new suggestions');
             }
             
             // Enhanced click handler with better popup content (DISABLED - using dual-layer system)
@@ -988,6 +1242,14 @@ function MapView({
       }
     }
   }, [users?.length, destination?.lat, destination?.lng, destinationSuggestions?.length, poiMarkers?.length, mapLoaded, safeRemoveLayer, safeRemoveSource, safeAddSource, safeAddLayer, onSuggestionSelect]);
+
+  // Reset auto-zoom flag when destination changes
+  useEffect(() => {
+    if (destination?.lat && destination?.lng) {
+      hasAutoZoomedForSuggestions.current = false;
+      console.log('🗺️ Destination changed, resetting auto-zoom flag');
+    }
+  }, [destination?.lat, destination?.lng]);
 
   // Add POI markers functionality
   useEffect(() => {
@@ -1420,10 +1682,94 @@ function MapView({
   // Show POI popup with detailed information
   const showPOIPopup = (properties, lngLat) => {
     console.log('📍 Creating enhanced popup for:', properties.name);
+    console.log('📍 POI coordinates:', { lng: lngLat.lng, lat: lngLat.lat });
+    console.log('📍 User location:', userLocation);
+    console.log('📍 Map instance:', !!map.current);
     
     // Remove any existing popups first
     const existingPopups = document.querySelectorAll('.mapboxgl-popup');
     existingPopups.forEach(popup => popup.remove());
+    
+    // Auto-zoom to show both user location and POI
+    if (map.current) {
+      console.log('🗺️ Attempting to auto-zoom to show POI and reference point');
+      
+      // Set flag to prevent manual auto-fit interference
+      isZoomingToPOI.current = true;
+      
+      const bounds = new mapboxgl.LngLatBounds();
+      
+      // Add POI location to bounds (ensure coordinates are numbers)
+      const poiLng = parseFloat(lngLat.lng);
+      const poiLat = parseFloat(lngLat.lat);
+      bounds.extend([poiLng, poiLat]);
+      console.log('🗺️ Added POI location to bounds:', [poiLng, poiLat]);
+      
+      // Try to add user location if available, otherwise use current map center
+      if (userLocation && userLocation.lat && userLocation.lng) {
+        console.log('🗺️ Using user location for bounds');
+        const userLng = parseFloat(userLocation.lng);
+        const userLat = parseFloat(userLocation.lat);
+        bounds.extend([userLng, userLat]);
+        console.log('🗺️ Added user location to bounds:', [userLng, userLat]);
+      } else {
+        console.log('🗺️ User location not available, using current map center');
+        const currentCenter = map.current.getCenter();
+        bounds.extend([currentCenter.lng, currentCenter.lat]);
+        console.log('🗺️ Added current map center to bounds:', [currentCenter.lng, currentCenter.lat]);
+      }
+      
+      // Log current map view before zooming
+      const currentView = {
+        center: map.current.getCenter(),
+        zoom: map.current.getZoom(),
+        bounds: map.current.getBounds()
+      };
+      console.log('🗺️ Current map view before zoom:', currentView);
+      
+      // Log the calculated bounds
+      console.log('🗺️ Calculated bounds for zoom:', {
+        southwest: bounds.getSouthWest(),
+        northeast: bounds.getNorthEast(),
+        center: bounds.getCenter()
+      });
+      
+      // Fit map to bounds with padding to show both markers
+      try {
+        map.current.fitBounds(bounds, {
+          padding: 80,
+          duration: 1000,
+          maxZoom: 15
+        });
+        console.log('🗺️ Map zoomed to show POI and reference point');
+        
+        // Log the new map view after zooming
+        setTimeout(() => {
+          const newView = {
+            center: map.current.getCenter(),
+            zoom: map.current.getZoom(),
+            bounds: map.current.getBounds()
+          };
+          console.log('🗺️ New map view after zoom:', newView);
+          console.log('🗺️ View change summary:', {
+            centerChanged: currentView.center.lng !== newView.center.lng || currentView.center.lat !== newView.center.lat,
+            zoomChanged: currentView.zoom !== newView.zoom,
+            oldZoom: currentView.zoom,
+            newZoom: newView.zoom
+          });
+          
+          // Clear the POI zooming flag
+          isZoomingToPOI.current = false;
+          console.log('🗺️ POI zooming flag cleared');
+        }, 1100); // Wait for zoom animation to complete
+      } catch (error) {
+        console.error('❌ Error during fitBounds:', error);
+      }
+    } else {
+      console.log('❌ Cannot auto-zoom - map not available');
+    }
+    
+    // Popup will be created later in the function
     
     // Helper functions for popup content
     const getCategoryIcon = (category) => {
@@ -1701,6 +2047,21 @@ function MapView({
         console.log('🗺️ Forcing map refresh due to new suggestions');
         map.current.triggerRepaint();
       }
+      
+      // Debug: Test if layers are clickable after a delay
+      setTimeout(() => {
+        if (map.current) {
+          const regularLayer = map.current.getLayer('suggestions-markers-regular-layer');
+          const exactLayer = map.current.getLayer('suggestions-markers-exact-layer');
+          
+          console.log('🗺️ Debug: Layer status after delay:', {
+            regularLayer: !!regularLayer,
+            exactLayer: !!exactLayer,
+            regularLayerSource: regularLayer ? map.current.getSource(regularLayer.source) : null,
+            exactLayerSource: exactLayer ? map.current.getSource(exactLayer.source) : null
+          });
+        }
+      }, 1000);
     } else {
       console.log('🗺️ No destination suggestions to display');
     }

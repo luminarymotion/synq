@@ -33,17 +33,40 @@ import {
   Warning as WarningIcon,
   Help as HelpIcon
 } from '@mui/icons-material';
-import {
-  locationPermissionManager,
-  LOCATION_PERMISSIONS,
-  CONSENT_LEVELS,
-  LOCATION_CONTEXTS
-} from '../services/locationTrackingService';
+// Simplified location permission settings - removed dependency on locationTrackingService
 
 const LocationPermissionSettings = ({ userId, onSettingsChange }) => {
+  // Simple constants for location permissions
+  const LOCATION_PERMISSIONS = {
+    NEVER: 'never',
+    WHILE_USING: 'while_using',
+    RIDE_ONLY: 'ride_only',
+    DRIVER_ONLY: 'driver_only',
+    ALWAYS: 'always'
+  };
+  
+  const CONSENT_LEVELS = {
+    EXPLICIT: 'explicit',
+    IMPLICIT: 'implicit',
+    DENIED: 'denied'
+  };
+  
+  const LOCATION_CONTEXTS = {
+    RIDE_CREATION: 'ride_creation',
+    RIDE_JOINING: 'ride_joining',
+    LOCATION_SHARING: 'location_sharing'
+  };
+  
   const [permissionStatus, setPermissionStatus] = useState(null);
-  const [userPreferences, setUserPreferences] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [userPreferences, setUserPreferences] = useState({
+    permissionLevel: LOCATION_PERMISSIONS.WHILE_USING,
+    features: {
+      rideCreation: true,
+      rideJoining: true,
+      locationSharing: false
+    }
+  });
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [showHelpDialog, setShowHelpDialog] = useState(false);
@@ -57,13 +80,9 @@ const LocationPermissionSettings = ({ userId, onSettingsChange }) => {
         setLoading(true);
         setError(null);
 
-        const [status, prefs] = await Promise.all([
-          locationPermissionManager.getPermissionStatus(userId),
-          locationPermissionManager.getUserPreferences(userId)
-        ]);
-
-        setPermissionStatus(status);
-        setUserPreferences(prefs);
+        // Simplified - just set default preferences
+        setPermissionStatus('granted');
+        // userPreferences already has default values
       } catch (err) {
         setError('Failed to load permission settings: ' + err.message);
       } finally {
@@ -97,7 +116,7 @@ const LocationPermissionSettings = ({ userId, onSettingsChange }) => {
         }
       };
 
-      await locationPermissionManager.saveUserPreferences(userId, updatedPrefs);
+      // Simplified - just update local state
       setUserPreferences(updatedPrefs);
       
       if (onSettingsChange) {
@@ -114,7 +133,7 @@ const LocationPermissionSettings = ({ userId, onSettingsChange }) => {
   const applyPendingChanges = async () => {
     try {
       setSaving(true);
-      await locationPermissionManager.saveUserPreferences(userId, pendingChanges);
+      // Simplified - just update local state
       setUserPreferences(pendingChanges);
       setPendingChanges(null);
       setShowConfirmDialog(false);
