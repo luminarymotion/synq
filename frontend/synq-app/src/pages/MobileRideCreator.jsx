@@ -16,10 +16,12 @@ import MapView from '../components/MapView';
 import UserSearch from '../components/UserSearch';
 import UserTable from '../components/UserTable';
 import UserForm from '../components/UserForm';
-import { useLocation as useLocationTracking } from '../services/locationTrackingService';
+import RideDetailsVerificationModal from '../components/RideDetailsVerificationModal';
+import { getCurrentLocation } from '../services/locationService';
 import { getCoordsFromAddress, getDirections, searchDestinations } from '../services/locationService';
 import { toast } from 'react-hot-toast';
 import SimpleLoading from '../components/SimpleLoading';
+import errorLogger from '../services/errorLogger';
 
 import {
   Box,
@@ -58,7 +60,8 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
-  Search as SearchIcon
+  Search as SearchIcon,
+  Share as ShareIcon
 } from '@mui/icons-material';
 
 import '../styles/MobileRideCreator.css';
@@ -77,7 +80,6 @@ function MobileRideCreator() {
   const [destination, setDestination] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [participants, setParticipants] = useState([]);
-  const [rideName, setRideName] = useState('');
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -89,6 +91,24 @@ function MobileRideCreator() {
   const [isLoading, setIsLoading] = useState(false);
   const [showFriendSearch, setShowFriendSearch] = useState(false);
   const [showDestinationSearch, setShowDestinationSearch] = useState(false);
+  const [showVerificationModal, setShowVerificationModal] = useState(false);
+  const [rideDataForVerification, setRideDataForVerification] = useState(null);
+  const [userRole, setUserRole] = useState('driver'); // New state for user role
+  const [avoidTolls, setAvoidTolls] = useState(false); // New state for tolls preference
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [createdRideId, setCreatedRideId] = useState(null);
+  
+  // Location tracking state
+  const [locationError, setLocationError] = useState(null);
+  const [hasLocationError, setHasLocationError] = useState(false);
+  
+  // Debug state
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  
+  // Safari help modal
+  const [showSafariHelpModal, setShowSafariHelpModal] = useState(false);
+  const [debugLogs, setDebugLogs] = useState([]);
+  const [locationStatusMessage, setLocationStatusMessage] = useState('');
   
   // Route calculation state
   const [calculatedRoute, setCalculatedRoute] = useState(null);
@@ -108,19 +128,16 @@ function MobileRideCreator() {
     
     const trimmedQuery = query.trim().toLowerCase();
     console.log(`🔍 Mobile search for: "${trimmedQuery}"`);
-    console.log(`🔍 Current trackingLocation:`, trackingLocation);
     console.log(`🔍 Current userLocation state:`, userLocation);
-    console.log(`🔍 trackingLocation type:`, typeof trackingLocation);
-    console.log(`🔍 trackingLocation keys:`, trackingLocation ? Object.keys(trackingLocation) : 'null');
     
     // Set loading state
     setIsSearching(true);
     
-    // Use the centralized locationService with current tracking location
+    // Use the centralized locationService with current user location
     try {
       const results = await searchDestinations(trimmedQuery, {
         limit: 8,
-        userLocation: trackingLocation, // Use current tracking location instead of stale state
+        userLocation: userLocation, // Use current user location
         enableFallback: true
       });
       
@@ -221,26 +238,29 @@ function MobileRideCreator() {
       // Get realistic driving directions from Mapbox
       const directions = await getDirections(normalizedStartLocation, normalizedEndLocation);
       
+      // getDirections now returns an array of routes, take the first one
+      const firstRoute = directions[0];
+      
       const route = {
         type: 'FeatureCollection',
         features: [{
           type: 'Feature',
-          geometry: directions.geometry,
+          geometry: firstRoute.geometry,
           properties: {
             name: 'Route Preview',
             summary: {
-              distance: directions.distance * 1609.34, // Convert miles to meters
-              duration: directions.duration * 60, // Convert minutes to seconds
+              distance: firstRoute.distance * 1609.34, // Convert miles to meters
+              duration: firstRoute.duration * 60, // Convert minutes to seconds
             }
           }
         }],
-        totalDistance: directions.distance * 1609.34,
-        totalDuration: directions.duration * 60
+        totalDistance: firstRoute.distance * 1609.34,
+        totalDuration: firstRoute.duration * 60
       };
       
       console.log('✅ Route calculation completed for mobile view:', {
-        distance: directions.distance,
-        duration: directions.duration
+        distance: firstRoute.distance,
+        duration: firstRoute.duration
       });
 
       setCalculatedRoute(route);
@@ -404,46 +424,103 @@ function MobileRideCreator() {
     }
   };
 
-  // Location tracking - start automatically
-  const { location: trackingLocation, isTracking, startTracking, stopTracking } = useLocationTracking({
-    preset: 'ultra_fast',
-    updateFirebase: false,
-    onLocationUpdate: (locationData) => {
-      console.log('Location update received in MobileRideCreator:', locationData);
+  // Simple location tracking using getCurrentLocation
+  const [isTracking, setIsTracking] = useState(false);
+  
+  // Function to get current location once
+  const getCurrentLocationOnce = async () => {
+    try {
+      setIsTracking(true);
+      setLocationError(null);
+      setHasLocationError(false);
       
-      if (locationData && locationData.latitude && locationData.longitude) {
-        const { latitude: lat, longitude: lng, accuracy, address } = locationData;
+      const locationData = await getCurrentLocation();
+      console.log('📍 Location received in MobileRideCreator:', locationData);
+      
+      if (locationData && locationData.lat && locationData.lng) {
+        const { lat, lng, accuracy } = locationData;
         
         // Validate coordinates
         if (typeof lat === 'number' && typeof lng === 'number' && 
             !isNaN(lat) && !isNaN(lng) &&
             lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
           
+          console.log('📍 Setting user location:', { lat, lng });
           setUserLocation({ lat, lng });
           setLocationError(null);
           setHasLocationError(false);
           
           // Update status message
-          setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
+          const accuracyText = accuracy ? ` (accuracy: ${Math.round(accuracy)}m)` : '';
+          setLocationStatusMessage(`Location obtained${accuracyText}`);
           
           // Auto-update destination if we have a valid location and destination
           if (destination && destination.lat && destination.lng) {
             handleDestinationChange(destination);
           }
         } else {
-          console.warn('Invalid coordinates received:', { lat, lng });
+          throw new Error('Invalid coordinates received');
         }
+      } else {
+        throw new Error('No location data received');
       }
-    },
-    onError: (error) => {
-      console.error('Location tracking error in MobileRideCreator:', error);
-      setLocationError(error.message);
+    } catch (error) {
+      console.error('📍 Location error:', error);
       setHasLocationError(true);
-      setLocationStatusMessage('Location tracking failed');
+      setLocationError(error.message);
+      setLocationStatusMessage('Location failed. Please enter manually.');
+    } finally {
+      setIsTracking(false);
     }
-  });
+  };
 
-  // Auto-start location tracking when component mounts
+  // Mobile Safari location permission handling
+  const [locationPermissionRequested, setLocationPermissionRequested] = useState(false);
+  const [locationPermissionGranted, setLocationPermissionGranted] = useState(false);
+
+  // Check if we're on mobile Safari
+  const isMobileSafari = () => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    return /safari/.test(userAgent) && !/chrome/.test(userAgent) && /iphone|ipad|ipod/.test(userAgent);
+  };
+
+  // Handle location permission request for mobile Safari
+  const handleLocationPermissionRequest = async () => {
+    if (locationPermissionRequested) return;
+    
+    setLocationPermissionRequested(true);
+    errorLogger.logLocationPermission(false, 'user_initiated');
+    
+    try {
+      console.log('📍 Requesting location permission for mobile Safari...');
+      await getCurrentLocationOnce();
+      setLocationPermissionGranted(true);
+      errorLogger.logLocationPermission(true, 'user_initiated');
+      console.log('📍 Location permission granted');
+      
+      // Clear any existing error messages
+      setLocationError(null);
+      setHasLocationError(false);
+      setLocationStatusMessage('Location obtained');
+    } catch (error) {
+      console.warn('📍 Location permission denied:', error.message);
+      errorLogger.logLocationError(error, { context: 'permission_denied' });
+      setLocationPermissionGranted(false);
+      
+      // Enhanced error handling for Safari
+      if (isMobileSafari()) {
+        setLocationError('Safari blocked location access. Try these quick fixes:');
+        setHasLocationError(true);
+        setLocationStatusMessage('Tap "Fix Location" for Safari help');
+      } else {
+        setLocationError(`Location access denied: ${error.message}. Please enable location permissions in your browser settings.`);
+        setHasLocationError(true);
+        setLocationStatusMessage('Location permission denied - tap the map to try again');
+      }
+    }
+  };
+
+  // Auto-start location tracking when component mounts (only for non-mobile Safari)
   useEffect(() => {
     let isInitialized = false;
     
@@ -451,12 +528,33 @@ function MobileRideCreator() {
       if (isInitialized) return;
       isInitialized = true;
       
+      // Don't auto-start on mobile Safari - wait for user interaction
+      if (isMobileSafari()) {
+        console.log('📍 Mobile Safari detected - waiting for user interaction to request location');
+        setLocationStatusMessage('Tap the map to enable location tracking');
+        return;
+      }
+      
       try {
         console.log('📍 Auto-starting location tracking for ride creation...');
-        await startTracking();
+        console.log('📍 Browser info:', {
+          userAgent: navigator.userAgent,
+          isSafari: /safari/i.test(navigator.userAgent) && !/chrome/i.test(navigator.userAgent),
+          isMobile: /mobile|iphone|ipad|ipod|android/i.test(navigator.userAgent),
+          hasGeolocation: !!navigator.geolocation
+        });
+        
+        await getCurrentLocationOnce();
+        console.log('📍 Location obtained successfully');
       } catch (error) {
         console.warn('📍 Could not auto-start location tracking:', error.message);
+        console.warn('📍 Error details:', error);
         isInitialized = false; // Reset flag on error
+        
+        // Show user-friendly error message
+        setLocationError(`Location tracking failed: ${error.message}. Please check your browser settings and try again.`);
+        setHasLocationError(true);
+        setLocationStatusMessage('Location tracking failed - please check permissions');
       }
     };
 
@@ -465,11 +563,10 @@ function MobileRideCreator() {
       initializeLocationTracking();
     }, 100);
 
-    // Cleanup: stop tracking when component unmounts
+    // Cleanup: no cleanup needed for simple location tracking
     return () => {
       clearTimeout(timer);
-      console.log('📍 Stopping location tracking for ride creation...');
-      stopTracking();
+      console.log('📍 Location tracking cleanup completed');
     };
   }, []); // Remove dependencies to prevent re-initialization
 
@@ -494,24 +591,7 @@ function MobileRideCreator() {
     console.log('🔍 State changed - showSearchResults:', showSearchResults, 'searchResults.length:', searchResults.length);
   }, [showSearchResults, searchResults]);
 
-  // Update user location when tracking starts
-  useEffect(() => {
-    if (trackingLocation && isTracking) {
-      // Only log in development and reduce frequency
-      if (import.meta.env.DEV && Math.random() < 0.1) { // Log only 10% of updates
-        console.log('📍 Location updated for ride creation:', trackingLocation);
-        console.log('📍 Location object structure:', {
-          type: typeof trackingLocation,
-          keys: Object.keys(trackingLocation),
-          hasLat: 'lat' in trackingLocation,
-          hasLng: 'lng' in trackingLocation,
-          lat: trackingLocation.lat,
-          lng: trackingLocation.lng
-        });
-      }
-      setUserLocation(trackingLocation);
-    }
-  }, [trackingLocation, isTracking]);
+  // Update user location when tracking starts - removed as we now use getCurrentLocationOnce
 
   // Recalculate route when user location changes and destination is set
   useEffect(() => {
@@ -552,21 +632,147 @@ function MobileRideCreator() {
     }
   }, [userLocation, destination, isCalculatingRoute, isTracking, lastCalculatedDestination]); // Added lastCalculatedDestination to dependencies
 
-  // Fallback: Set a default location if tracking fails after 5 seconds
+  // Fallback: Set a default location only if location tracking has actually failed
   useEffect(() => {
-    const fallbackTimer = setTimeout(() => {
-      if (!userLocation && !isTracking) {
-        console.log('📍 Setting fallback location for map rendering');
+    let fallbackTimer;
+    
+    // Only set fallback if:
+    // 1. No user location exists
+    // 2. Location tracking is not active (failed or not started)
+    // 3. No location permission has been requested (for mobile Safari)
+    // 4. No location error exists (indicating tracking is still in progress)
+    if (!userLocation && !isTracking && !locationPermissionRequested && !hasLocationError) {
+      fallbackTimer = setTimeout(() => {
+        console.log('📍 Setting fallback location - no location tracking active after 15 seconds');
         setUserLocation({
           lat: 32.7767, // Dallas default
           lng: -96.7970,
           address: 'Dallas, TX'
         });
-      }
-    }, 5000);
+      }, 15000); // Increased to 15 seconds to give more time for location to be received
+    }
 
-    return () => clearTimeout(fallbackTimer);
-  }, [userLocation, isTracking]);
+    return () => {
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+      }
+    };
+  }, [userLocation, isTracking, locationPermissionRequested, hasLocationError]);
+
+  // Debug effect to monitor location tracking state
+  useEffect(() => {
+    console.log('📍 Location tracking state changed:', {
+      hasUserLocation: !!userLocation,
+      userLocation,
+      isTracking,
+      locationPermissionRequested,
+      locationPermissionGranted,
+      hasLocationError,
+      locationError,
+      locationStatusMessage
+    });
+  }, [userLocation, isTracking, locationPermissionRequested, locationPermissionGranted, hasLocationError, locationError, locationStatusMessage]);
+
+  // Manual location test function
+  const testLocationTracking = async () => {
+    console.log('📍 Manual location test started');
+    errorLogger.logUserAction('manual_location_test_started');
+    
+    try {
+      await getCurrentLocationOnce();
+      console.log('📍 Manual location test - location obtained');
+      errorLogger.logUserAction('manual_location_test_success');
+      
+      // Clear any existing error messages
+      setLocationError(null);
+      setHasLocationError(false);
+      setLocationStatusMessage('Location obtained');
+    } catch (error) {
+      console.error('📍 Manual location test failed:', error);
+      errorLogger.logLocationError(error, { context: 'manual_test_failed' });
+      setLocationError(`Location test failed: ${error.message}`);
+      setHasLocationError(true);
+      setLocationStatusMessage('Location test failed');
+    }
+  };
+
+  const toggleDebugLogging = () => {
+    if (debugEnabled) {
+      setDebugEnabled(false);
+      toast.success('Debug logging disabled');
+    } else {
+      setDebugEnabled(true);
+      toast.success('Debug logging enabled - check Firebase Analytics console');
+    }
+  };
+
+  // Safari-specific location help functions
+  const openSafariHelpModal = () => {
+    setShowSafariHelpModal(true);
+  };
+
+  const closeSafariHelpModal = () => {
+    setShowSafariHelpModal(false);
+  };
+
+  const tryPrivateBrowsing = () => {
+    // Open the same URL in a new private browsing tab
+    const currentUrl = window.location.href;
+    window.open(currentUrl, '_blank');
+    closeSafariHelpModal();
+  };
+
+  const tryRefreshPage = () => {
+    window.location.reload();
+  };
+
+  const copySafariInstructions = () => {
+    const instructions = `1. Tap the AA button in Safari's address bar
+2. Tap "Website Settings" 
+3. Set Location to "Ask" or "Allow"
+4. Refresh the page`;
+    
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(instructions);
+      toast.success('Instructions copied to clipboard!');
+    } else {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = instructions;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      toast.success('Instructions copied to clipboard!');
+    }
+  };
+
+  // Debug: Add debug controls to the UI (only in development)
+  const renderDebugControls = () => {
+    if (import.meta.env.DEV) {
+      return (
+        <Box sx={{ position: 'absolute', top: 10, right: 10, zIndex: 1000, display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={testLocationTracking}
+            sx={{ fontSize: '0.75rem' }}
+          >
+            Test Location
+          </Button>
+          <Button
+            variant={debugEnabled ? "contained" : "outlined"}
+            size="small"
+            onClick={toggleDebugLogging}
+            sx={{ fontSize: '0.75rem' }}
+          >
+            {debugEnabled ? 'Debug ON' : 'Debug OFF'}
+          </Button>
+        </Box>
+      );
+    }
+    return null;
+  };
 
 
 
@@ -1143,10 +1349,10 @@ function MobileRideCreator() {
   // Location handlers (kept for potential manual override)
   const handleStartLocationTracking = async () => {
     try {
-      await startTracking();
-      toast.success('Location tracking started');
+      await getCurrentLocationOnce();
+      toast.success('Location obtained');
     } catch (error) {
-      toast.error('Failed to start location tracking');
+      toast.error('Failed to get location');
     }
   };
 
@@ -1264,67 +1470,80 @@ function MobileRideCreator() {
       return;
     }
 
-    setIsLoading(true);
-    try {
-      // Validate and clean participant data
-      const validPassengers = participants.map(p => {
-        // Ensure all required fields are present and valid
-        const passenger = {
-          uid: p.uid || p.id,
-          displayName: p.displayName || p.name || 'Unknown User',
-          photoURL: p.photoURL || '',
-          role: p.role || 'passenger'
-        };
-
-        // Handle location data - set to null if undefined/invalid
-        if (p.location && typeof p.location === 'object' && 
-            (p.location.lat || p.location.latitude) && 
-            (p.location.lng || p.location.longitude)) {
-          passenger.location = {
-            lat: p.location.lat || p.location.latitude,
-            lng: p.location.lng || p.location.longitude
-          };
-        } else {
-          passenger.location = null; // Set to null instead of undefined
-        }
-
-        return passenger;
-      });
-
-      console.log('🚗 Creating ride with validated data:', {
-        destination,
-        driver: {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          location: userLocation
-        },
-        passengers: validPassengers
-      });
-
-      const rideData = {
-        name: rideName || `Ride to ${destination.address || destination.name}`,
-        destination: {
-          location: {
-            lat: destination.lat,
-            lng: destination.lng
-          },
-          address: destination.address || destination.name
-        },
-        driver: {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          location: userLocation,
-          photoURL: user.photoURL || ''
-        },
-        passengers: validPassengers,
-        createdAt: serverTimestamp(),
-        status: 'created'
+    // Validate and clean participant data
+    const validPassengers = participants.map(p => {
+      // Ensure all required fields are present and valid
+      const passenger = {
+        uid: p.uid || p.id,
+        displayName: p.displayName || p.name || 'Unknown User',
+        photoURL: p.photoURL || '',
+        role: p.role || 'passenger'
       };
 
-      const result = await createRide(rideData);
+      // Handle location data - set to null if undefined/invalid
+      if (p.location && typeof p.location === 'object' && 
+          (p.location.lat || p.location.latitude) && 
+          (p.location.lng || p.location.longitude)) {
+        passenger.location = {
+          lat: p.location.lat || p.location.latitude,
+          lng: p.location.lng || p.location.longitude
+        };
+      } else {
+        passenger.location = null; // Set to null instead of undefined
+      }
+
+      return passenger;
+    });
+
+    console.log('🚗 Preparing ride data for verification:', {
+      destination,
+      driver: {
+        uid: user.uid,
+        displayName: user.displayName || user.email,
+        location: userLocation
+      },
+      passengers: validPassengers
+    });
+
+    const rideData = {
+      name: `Ride to ${destination.address || destination.name}`,
+      destination: {
+        location: {
+          lat: destination.lat,
+          lng: destination.lng
+        },
+        address: destination.address || destination.name
+      },
+      driver: {
+        uid: user.uid,
+        displayName: user.displayName || user.email,
+        location: userLocation,
+        photoURL: user.photoURL || ''
+      },
+      passengers: validPassengers,
+      startTime: '',
+      description: '',
+      carSeatsAvailable: userRole === 'driver' ? 4 : 0, // Set seats based on role
+      avoidTolls: userRole === 'driver' ? avoidTolls : false, // Include tolls preference
+      specialNotes: '',
+      createdAt: serverTimestamp(),
+      status: 'created',
+      userRole: userRole // Include the user's role
+    };
+
+    // Show verification modal instead of creating ride directly
+    setRideDataForVerification(rideData);
+    setShowVerificationModal(true);
+  };
+
+  const handleConfirmRide = async (verifiedRideData) => {
+    setIsLoading(true);
+    try {
+      const result = await createRide(verifiedRideData);
       if (result.success) {
-        toast.success('Ride created successfully!');
-        navigate(`/ride/${result.rideId}`);
+        setCreatedRideId(result.rideId);
+        setShowVerificationModal(false);
+        setShowSuccessModal(true);
       } else {
         throw new Error(result.error);
       }
@@ -1336,7 +1555,50 @@ function MobileRideCreator() {
     }
   };
 
+  const handleEditRide = () => {
+    setShowVerificationModal(false);
+    // The user can continue editing in the main form
+  };
 
+  const handleShareRide = async () => {
+    if (!createdRideId) {
+      toast.error('No ride to share');
+      return;
+    }
+
+    // Create the deep link for the live ride
+    const deepLink = `${window.location.origin}/rides/${createdRideId}`;
+    
+    // Create share data
+    const shareData = {
+      title: 'Join my ride!',
+      text: 'I created a ride and would like you to join. Click the link to view the live ride.',
+      url: deepLink
+    };
+
+    try {
+      // Check if Web Share API is supported
+      if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+        toast.success('Ride shared successfully!');
+      } else {
+        // Fallback: copy to clipboard
+        await navigator.clipboard.writeText(deepLink);
+        toast.success('Ride link copied to clipboard!');
+      }
+    } catch (error) {
+      console.error('Error sharing ride:', error);
+      
+      // Final fallback: copy to clipboard
+      try {
+        await navigator.clipboard.writeText(deepLink);
+        toast.success('Ride link copied to clipboard!');
+      } catch (clipboardError) {
+        console.error('Error copying to clipboard:', clipboardError);
+        toast.error('Failed to share ride link');
+      }
+    }
+  };
 
   if (isLoading) {
     return <SimpleLoading message="Creating your ride..." />;
@@ -1422,6 +1684,13 @@ function MobileRideCreator() {
           destinationSuggestions={searchResults}
           onSuggestionSelect={handleDestinationSelect}
           onMapClick={(event) => {
+            // Handle mobile Safari location permission request
+            if (isMobileSafari() && !locationPermissionGranted && !locationPermissionRequested) {
+              console.log('📍 Mobile Safari: Map tapped - requesting location permission');
+              handleLocationPermissionRequest();
+              return;
+            }
+            
             // Prevent auto-fit when clicking on map if there are POI markers visible
             // This allows marker clicks to work properly
             if (searchResults.length > 0) {
@@ -1432,7 +1701,128 @@ function MobileRideCreator() {
         />
       </Box>
 
+      {/* Mobile Safari Location Permission Indicator */}
+      {isMobileSafari() && !locationPermissionGranted && !locationPermissionRequested && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 1002,
+            background: 'rgba(0, 0, 0, 0.9)',
+            color: 'white',
+            padding: '16px 24px',
+            borderRadius: '12px',
+            textAlign: 'center',
+            maxWidth: '280px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}
+        >
+          <LocationIcon sx={{ fontSize: 32, mb: 1, color: '#4CAF50' }} />
+          <Typography variant="h6" sx={{ fontSize: '16px', fontWeight: 600, mb: 1 }}>
+            Enable Location
+          </Typography>
+          <Typography variant="body2" sx={{ fontSize: '14px', opacity: 0.9, lineHeight: 1.4 }}>
+            Tap anywhere on the map to enable location tracking and see your position
+          </Typography>
+        </Box>
+      )}
 
+      {/* Location Permission Requested Indicator */}
+      {isMobileSafari() && locationPermissionRequested && !locationPermissionGranted && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 1002,
+            background: 'rgba(0, 0, 0, 0.9)',
+            color: 'white',
+            padding: '16px 24px',
+            borderRadius: '12px',
+            textAlign: 'center',
+            maxWidth: '280px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}
+        >
+          <CircularProgress size={24} color="inherit" sx={{ mb: 1 }} />
+          <Typography variant="h6" sx={{ fontSize: '16px', fontWeight: 600, mb: 1 }}>
+            Requesting Location...
+          </Typography>
+          <Typography variant="body2" sx={{ fontSize: '14px', opacity: 0.9, lineHeight: 1.4 }}>
+            Please allow location access when prompted
+          </Typography>
+        </Box>
+      )}
+
+      {/* Location Permission Denied Indicator */}
+      {isMobileSafari() && locationPermissionRequested && !locationPermissionGranted && locationError && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 1002,
+            background: 'rgba(211, 47, 47, 0.95)',
+            color: 'white',
+            padding: '16px 24px',
+            borderRadius: '12px',
+            textAlign: 'center',
+            maxWidth: '320px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}
+        >
+          <CloseIcon sx={{ fontSize: 32, mb: 1, color: '#FFCDD2' }} />
+          <Typography variant="h6" sx={{ fontSize: '16px', fontWeight: 600, mb: 1 }}>
+            Safari Location Issue
+          </Typography>
+          <Typography variant="body2" sx={{ fontSize: '14px', opacity: 0.9, lineHeight: 1.4, mb: 2 }}>
+            Safari blocked location access. Try these quick fixes:
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 2 }}>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={openSafariHelpModal}
+              sx={{
+                background: 'rgba(255, 255, 255, 0.2)',
+                color: 'white',
+                fontSize: '12px',
+                '&:hover': {
+                  background: 'rgba(255, 255, 255, 0.3)'
+                }
+              }}
+            >
+              Fix Location
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={tryPrivateBrowsing}
+              sx={{
+                borderColor: 'rgba(255, 255, 255, 0.3)',
+                color: 'white',
+                fontSize: '12px',
+                '&:hover': {
+                  borderColor: 'rgba(255, 255, 255, 0.5)',
+                  background: 'rgba(255, 255, 255, 0.1)'
+                }
+              }}
+            >
+              Try Private Mode
+            </Button>
+          </Box>
+        </Box>
+      )}
 
       {/* Route Calculation Loading Indicator */}
       {isCalculatingRoute && (
@@ -1648,8 +2038,6 @@ function MobileRideCreator() {
                             variant="subtitle1" 
                             fontWeight={600} 
                             sx={{ 
-                              color: 'text.primary',
-                              fontSize: '14px',
                               lineHeight: 1.2,
                               flex: 1,
                               // Highlight exact matches
@@ -2008,6 +2396,85 @@ function MobileRideCreator() {
               <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 2 }}>
                 {participants.length + 1} participants • {((routeDetails.distance / 1609.34)).toFixed(1)} mi
               </Typography>
+              
+              {/* Role Selection */}
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 1 }}>
+                  Your Role
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant={userRole === 'driver' ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => setUserRole('driver')}
+                    startIcon={<CarIcon sx={{ fontSize: '14px' }} />}
+                    sx={{ 
+                      fontSize: '11px',
+                      flex: 1,
+                      py: 0.5,
+                      background: userRole === 'driver' ? '#1976d2' : 'transparent',
+                      color: userRole === 'driver' ? 'white' : '#1976d2',
+                      '&:hover': {
+                        background: userRole === 'driver' ? '#1565c0' : 'rgba(25, 118, 210, 0.04)'
+                      }
+                    }}
+                  >
+                    Driver
+                  </Button>
+                  <Button
+                    variant={userRole === 'passenger' ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => setUserRole('passenger')}
+                    startIcon={<PersonIcon sx={{ fontSize: '14px' }} />}
+                    sx={{ 
+                      fontSize: '11px',
+                      flex: 1,
+                      py: 0.5,
+                      background: userRole === 'passenger' ? '#1976d2' : 'transparent',
+                      color: userRole === 'passenger' ? 'white' : '#1976d2',
+                      '&:hover': {
+                        background: userRole === 'passenger' ? '#1565c0' : 'rgba(25, 118, 210, 0.04)'
+                      }
+                    }}
+                  >
+                    Passenger
+                  </Button>
+                </Box>
+              </Box>
+              
+              {/* Tolls Preference */}
+              {userRole === 'driver' && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 1 }}>
+                    Route Preferences
+                  </Typography>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    p: 1, 
+                    border: '1px solid #e0e0e0', 
+                    borderRadius: 1,
+                    backgroundColor: '#fafafa'
+                  }}>
+                    <input
+                      type="checkbox"
+                      id="avoidTolls"
+                      checked={avoidTolls}
+                      onChange={(e) => setAvoidTolls(e.target.checked)}
+                      style={{ marginRight: '8px' }}
+                    />
+                    <label htmlFor="avoidTolls" style={{ 
+                      margin: 0, 
+                      cursor: 'pointer', 
+                      fontSize: '12px',
+                      color: '#333'
+                    }}>
+                      Avoid tolls in route planning
+                    </label>
+                  </Box>
+                </Box>
+              )}
+              
               <Box sx={{ display: 'flex', gap: 1 }}>
                 <Button
                   variant="outlined"
@@ -2026,7 +2493,7 @@ function MobileRideCreator() {
                   startIcon={isLoading ? <CircularProgress size={16} /> : null}
                   sx={{ fontSize: '12px', flex: 1 }}
                 >
-                  {isLoading ? 'Creating...' : 'Create Ride'}
+                  {isLoading ? 'Creating...' : 'Review & Create'}
                 </Button>
               </Box>
             </Box>
@@ -2065,7 +2532,7 @@ function MobileRideCreator() {
           alignItems: 'center',
           justifyContent: 'space-between'
         }}>
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          <Typography variant="h6" component="span" sx={{ fontWeight: 600 }}>
             Select Friends for Ride
           </Typography>
           <IconButton 
@@ -2109,6 +2576,267 @@ function MobileRideCreator() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Ride Details Verification Modal */}
+      <RideDetailsVerificationModal
+        isOpen={showVerificationModal}
+        onClose={() => setShowVerificationModal(false)}
+        rideData={rideDataForVerification}
+        onConfirm={handleConfirmRide}
+        onEdit={handleEditRide}
+      />
+
+      {/* Success Modal */}
+      <Dialog 
+        open={showSuccessModal} 
+        onClose={() => {
+          setShowSuccessModal(false);
+          navigate('/dashboard');
+        }}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            margin: { xs: 2, sm: 'auto' },
+            maxWidth: { xs: 'calc(100% - 32px)', sm: '600px' },
+            width: { xs: '100%', sm: 'auto' },
+            maxHeight: { xs: 'calc(100% - 32px)', sm: '90vh' }
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          background: '#f9f6ef', 
+          color: '#4e342e', 
+          textAlign: 'center',
+          padding: { xs: 2, sm: 3 }
+        }}>
+          Ride Created Successfully!
+        </DialogTitle>
+        <DialogContent sx={{ 
+          background: '#fff', 
+          textAlign: 'center', 
+          py: { xs: 2, sm: 3 },
+          px: { xs: 2, sm: 3 }
+        }}>
+          <Avatar sx={{ 
+            width: { xs: 60, sm: 80 }, 
+            height: { xs: 60, sm: 80 }, 
+            mx: 'auto', 
+            mb: 2, 
+            background: '#4caf50' 
+          }}>
+            <CheckIcon sx={{ fontSize: { xs: 30, sm: 40 } }} />
+          </Avatar>
+          <Typography variant="h6" color="#4e342e" mb={1} sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
+            Your ride has been created!
+          </Typography>
+          <Typography variant="body2" color="#7c5e48" mb={2} sx={{ fontSize: { xs: '0.875rem', sm: '1rem' } }}>
+            Once participants provide their locations, you can optimize and start the ride.
+          </Typography>
+          <Paper sx={{ 
+            p: { xs: 1.5, sm: 2 }, 
+            background: '#f9f6ef', 
+            display: 'inline-block',
+            maxWidth: '100%',
+            overflow: 'hidden'
+          }}>
+            <Typography variant="caption" color="#b08968" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
+              Ride ID:
+            </Typography>
+            <Typography 
+              variant="body2" 
+              fontWeight={600} 
+              color="#4e342e" 
+              sx={{ 
+                fontSize: { xs: '0.875rem', sm: '1rem' },
+                wordBreak: 'break-all'
+              }}
+            >
+              {createdRideId}
+            </Typography>
+          </Paper>
+        </DialogContent>
+        <DialogActions sx={{ 
+          background: '#f9f6ef', 
+          justifyContent: 'center', 
+          pb: { xs: 2, sm: 3 },
+          px: { xs: 2, sm: 3 },
+          gap: 2,
+          flexDirection: { xs: 'column', sm: 'row' }
+        }}>
+          <Button 
+            variant="outlined"
+            startIcon={<ShareIcon />}
+            onClick={handleShareRide}
+            sx={{ 
+              borderColor: '#a47551', 
+              color: '#a47551', 
+              borderRadius: 2, 
+              px: { xs: 3, sm: 4 },
+              py: { xs: 1, sm: 1.5 },
+              fontSize: { xs: '0.875rem', sm: '1rem' },
+              minWidth: { xs: '120px', sm: 'auto' },
+              '&:hover': {
+                borderColor: '#8b6b47',
+                backgroundColor: 'rgba(164, 117, 81, 0.04)'
+              }
+            }}
+            fullWidth={false}
+          >
+            Share Ride
+          </Button>
+          <Button 
+            variant="contained"
+            onClick={() => {
+              setShowSuccessModal(false);
+              navigate('/dashboard');
+            }}
+            sx={{ 
+              background: '#a47551', 
+              color: '#fff', 
+              borderRadius: 2, 
+              px: { xs: 3, sm: 4 },
+              py: { xs: 1, sm: 1.5 },
+              fontSize: { xs: '0.875rem', sm: '1rem' },
+              minWidth: { xs: '120px', sm: 'auto' },
+              '&:hover': {
+                backgroundColor: '#8b6b47'
+              }
+            }}
+            fullWidth={false}
+          >
+            Go to Dashboard
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Safari Location Help Modal */}
+      <Dialog
+        open={showSafariHelpModal}
+        onClose={closeSafariHelpModal}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.15)'
+          }
+        }}
+      >
+        <DialogTitle sx={{ 
+          textAlign: 'center', 
+          color: '#2c3e50',
+          fontWeight: 600,
+          pb: 1
+        }}>
+          Fix Safari Location Access
+        </DialogTitle>
+        <DialogContent sx={{ px: 3, py: 2 }}>
+          <Box sx={{ mb: 3 }}>
+            <Typography variant="h6" sx={{ color: '#34495e', mb: 2, fontWeight: 600 }}>
+              Quick Solutions:
+            </Typography>
+            
+            {/* Solution 1 */}
+            <Box sx={{ mb: 2, p: 2, background: 'rgba(255,255,255,0.7)', borderRadius: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#2c3e50', mb: 1 }}>
+                1. Safari Website Settings
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d', mb: 1 }}>
+                • Tap the <strong>AA button</strong> in Safari's address bar
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d', mb: 1 }}>
+                • Tap <strong>"Website Settings"</strong>
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d', mb: 1 }}>
+                • Set <strong>Location</strong> to <strong>"Ask"</strong> or <strong>"Allow"</strong>
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d' }}>
+                • Refresh the page
+              </Typography>
+            </Box>
+
+            {/* Solution 2 */}
+            <Box sx={{ mb: 2, p: 2, background: 'rgba(255,255,255,0.7)', borderRadius: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#2c3e50', mb: 1 }}>
+                2. Try Private Browsing
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d' }}>
+                Private browsing often bypasses stored permission settings
+              </Typography>
+            </Box>
+
+            {/* Solution 3 */}
+            <Box sx={{ p: 2, background: 'rgba(255,255,255,0.7)', borderRadius: 2 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#2c3e50', mb: 1 }}>
+                3. iOS Settings (if needed)
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d', mb: 1 }}>
+                • Go to <strong>Settings</strong> → <strong>Privacy & Security</strong>
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d', mb: 1 }}>
+                • Tap <strong>Location Services</strong> → <strong>Safari</strong>
+              </Typography>
+              <Typography variant="body2" sx={{ color: '#5a6c7d' }}>
+                • Set to <strong>"Ask Next Time"</strong> or <strong>"While Using"</strong>
+              </Typography>
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ 
+          px: 3, 
+          pb: 3, 
+          gap: 1,
+          flexDirection: { xs: 'column', sm: 'row' }
+        }}>
+          <Button
+            variant="outlined"
+            onClick={copySafariInstructions}
+            sx={{
+              borderColor: '#3498db',
+              color: '#3498db',
+              '&:hover': {
+                borderColor: '#2980b9',
+                backgroundColor: 'rgba(52, 152, 219, 0.04)'
+              }
+            }}
+            fullWidth={false}
+          >
+            Copy Instructions
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={tryPrivateBrowsing}
+            sx={{
+              borderColor: '#e74c3c',
+              color: '#e74c3c',
+              '&:hover': {
+                borderColor: '#c0392b',
+                backgroundColor: 'rgba(231, 76, 60, 0.04)'
+              }
+            }}
+            fullWidth={false}
+          >
+            Open Private Tab
+          </Button>
+          <Button
+            variant="contained"
+            onClick={tryRefreshPage}
+            sx={{
+              background: '#27ae60',
+              '&:hover': {
+                backgroundColor: '#229954'
+              }
+            }}
+            fullWidth={false}
+          >
+            Refresh Page
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {renderDebugControls()}
     </Box>
   );
 }

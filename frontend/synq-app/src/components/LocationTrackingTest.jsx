@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { useLocation, locationTrackingService } from '../services/locationTrackingService';
+import React, { useState, useEffect } from 'react';
+import { locationTrackingService } from '../services/locationTrackingService';
 import { searchDestinations, getAddressFromCoords, getCurrentLocation } from '../services/locationService';
+import { isSafariMobile, isDesktopBrowser } from '../utils/browserDetection';
 
 const LocationTrackingTest = () => {
   const [testResults, setTestResults] = useState([]);
@@ -299,6 +300,79 @@ const LocationTrackingTest = () => {
     }
   };
 
+  const runMobileSafariTests = async () => {
+    setTestResults([]);
+    addTestResult('INFO', 'Starting mobile Safari tests...');
+
+    // Test 1: Browser detection
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isSafari = /safari/.test(userAgent) && !/chrome/.test(userAgent);
+    const isMobile = /iphone|ipad|ipod/.test(userAgent);
+    const isSafariMobileDevice = isSafariMobile();
+    
+    addTestResult('INFO', 'Browser detection', {
+      userAgent: navigator.userAgent,
+      isSafari,
+      isMobile,
+      isSafariMobileDevice
+    });
+
+    // Test 2: Geolocation support
+    if (!navigator.geolocation) {
+      addTestResult('ERROR', 'Geolocation not supported by browser');
+      return;
+    } else {
+      addTestResult('SUCCESS', 'Geolocation is supported');
+    }
+
+    // Test 3: Permission check
+    try {
+      const permissionResult = await locationTrackingService.checkLocationPermission();
+      addTestResult('INFO', 'Permission check result', permissionResult);
+    } catch (error) {
+      addTestResult('ERROR', 'Permission check failed', error.message);
+    }
+
+    // Test 4: Location request with mobile Safari settings
+    try {
+      addTestResult('INFO', 'Testing location request with mobile Safari settings...');
+      
+      const position = await new Promise((resolve, reject) => {
+        const options = {
+          enableHighAccuracy: isSafariMobileDevice ? true : false,
+          timeout: isSafariMobileDevice ? 20000 : 10000,
+          maximumAge: 60000
+        };
+        
+        addTestResult('INFO', 'Location request options', options);
+        
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            addTestResult('SUCCESS', 'Location request successful', {
+              coords: pos.coords,
+              accuracy: pos.coords.accuracy,
+              timestamp: new Date(pos.timestamp).toISOString()
+            });
+            resolve(pos);
+          },
+          (error) => {
+            addTestResult('ERROR', 'Location request failed', {
+              code: error.code,
+              message: error.message,
+              isSafariMobileDevice
+            });
+            reject(error);
+          },
+          options
+        );
+      });
+    } catch (error) {
+      addTestResult('ERROR', 'Location request test failed', error.message);
+    }
+
+    addTestResult('INFO', 'Mobile Safari tests completed');
+  };
+
   const clearResults = () => {
     setTestResults([]);
   };
@@ -368,6 +442,9 @@ const LocationTrackingTest = () => {
           </button>
           <button onClick={runIntegrationTests} style={{ padding: '10px', backgroundColor: '#9C27B0', color: 'white', border: 'none', borderRadius: '4px' }}>
             Test Integration
+          </button>
+          <button onClick={runMobileSafariTests} style={{ padding: '10px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px' }}>
+            Test Mobile Safari
           </button>
           <button onClick={clearResults} style={{ padding: '10px', backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: '4px' }}>
             Clear Results

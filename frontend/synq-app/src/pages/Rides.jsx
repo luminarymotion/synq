@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
-import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, getDoc, doc, updateDoc, arrayUnion, serverTimestamp } from 'firebase/firestore';
 import { Link, useSearchParams } from 'react-router-dom';
-import { updateRideParticipation } from '../services/firebaseOperations';
 import SimpleLoading from '../components/SimpleLoading';
 import '../styles/Rides.css';
 import { Box, Container, Card, CardContent, Typography, Button, Avatar, Stack, Divider, Alert, IconButton, Chip } from '@mui/material';
@@ -16,7 +15,7 @@ import HistoryIcon from '@mui/icons-material/History';
  * 
  * This page will serve as the central hub for all ride-related information:
  * - Active rides (moved from dashboard)
- * - Ride history
+ * - Ride invitations
  * - Ride statistics
  * - Ride preferences
  * - Group rides
@@ -43,58 +42,35 @@ function Rides() {
   const { user } = useUserAuth();
   const [searchParams] = useSearchParams();
   const [activeRides, setActiveRides] = useState([]);
+  const [rideInvitations, setRideInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [leavingRideId, setLeavingRideId] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
 
-  console.log('Rides component rendered:', {
-    user: user?.uid,
-    loading,
-    error,
-    activeRidesCount: activeRides.length,
-    searchParams: Object.fromEntries(searchParams.entries())
-  });
+
 
   // Handle scrolling to specific ride
   useEffect(() => {
-    console.log('Scroll effect triggered:', {
-      rideId: searchParams.get('rideId'),
-      loading,
-      activeRidesCount: activeRides.length
-    });
     const rideId = searchParams.get('rideId');
     if (rideId && !loading && activeRides.length > 0) {
       const rideElement = document.getElementById(`ride-${rideId}`);
       if (rideElement) {
-        console.log('Scrolling to ride element:', rideElement);
         rideElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
         rideElement.classList.add('highlight-ride');
         setTimeout(() => {
           rideElement.classList.remove('highlight-ride');
         }, 2000);
-      } else {
-        console.log('Ride element not found in DOM');
       }
     }
   }, [searchParams, loading, activeRides]);
 
   // Helper function to handle query errors
   const handleQueryError = (error) => {
-    console.log('Handling query error:', {
-      code: error.code,
-      message: error.message,
-      stack: error.stack
-    });
-
     if (error.code === 'failed-precondition') {
       // Extract index URL from error message if available
       const indexUrlMatch = error.message.match(/https:\/\/console\.firebase\.google\.com[^\s]+/);
       const indexUrl = indexUrlMatch ? indexUrlMatch[0] : null;
-      
-      console.log('Index building required:', {
-        indexUrl,
-        errorMessage: error.message
-      });
 
       if (indexUrl) {
         setError(
@@ -127,10 +103,8 @@ function Rides() {
       }
       setActiveRides([]);
     } else if (error.code === 'permission-denied') {
-      console.error('Permission denied:', error);
       setError('You do not have permission to view these rides. Please check your account status.');
     } else if (error.code === 'unavailable') {
-      console.error('Service unavailable:', error);
       setError(
         <div>
           <p>The database service is currently unavailable.</p>
@@ -138,7 +112,6 @@ function Rides() {
         </div>
       );
     } else {
-      console.error('Unexpected error:', error);
       setError(
         <div>
           <p>An unexpected error occurred while loading rides.</p>
@@ -149,65 +122,25 @@ function Rides() {
     setLoading(false);
   };
 
-  // Add a function to check index status
-  const checkIndexStatus = async (indexUrl) => {
-    if (!indexUrl) return;
-    
-    try {
-      console.log('Checking index status for:', indexUrl);
-      // Extract project ID and index ID from the URL
-      const projectIdMatch = indexUrl.match(/project\/([^/]+)/);
-      const indexIdMatch = indexUrl.match(/indexes\/([^?]+)/);
-      
-      if (projectIdMatch && indexIdMatch) {
-        const projectId = projectIdMatch[1];
-        const indexId = indexIdMatch[1];
-        console.log('Index details:', { projectId, indexId });
-        
-        // You could implement a backend endpoint to check index status
-        // For now, we'll just log that we would check it
-        console.log('Would check index status for:', { projectId, indexId });
-      }
-    } catch (error) {
-      console.error('Error checking index status:', error);
-    }
-  };
+
 
   useEffect(() => {
-    console.log('Main effect triggered:', {
-      user: user?.uid,
-      rideId: searchParams.get('rideId'),
-      timestamp: new Date().toISOString()
-    });
-
     if (!user) {
-      console.log('No user found, returning early');
       return;
     }
 
     const rideId = searchParams.get('rideId');
-    console.log('Looking for ride with ID:', rideId);
 
     // Calculate timestamp for 24 hours ago
     const twentyFourHoursAgo = new Date();
     twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
-    console.log('Timestamp for 24 hours ago:', twentyFourHoursAgo.toISOString());
 
     // If we have a specific rideId, query for that ride first
     if (rideId) {
-      console.log('Querying for specific ride:', rideId);
       const rideRef = doc(db, 'rides', rideId);
       const unsubscribeSpecific = onSnapshot(rideRef, 
         (doc) => {
-          console.log('Specific ride document:', {
-            exists: doc.exists(),
-            id: doc.id,
-            data: doc.data(),
-            timestamp: new Date().toISOString()
-          });
-          
           if (!doc.exists()) {
-          console.log('No ride found with ID:', rideId);
             setError('Ride not found');
             setActiveRides([]);
           setLoading(false);
@@ -218,25 +151,12 @@ function Rides() {
             id: doc.id,
             ...doc.data()
           };
-          console.log('Found specific ride:', {
-            ...specificRide,
-            timestamp: new Date().toISOString()
-          });
         
         // Check if user is either driver or passenger
         const isDriver = specificRide.driver?.uid === user.uid;
         const isPassenger = specificRide.passengerUids?.includes(user.uid);
-          
-          console.log('User authorization check:', {
-            isDriver,
-            isPassenger,
-            userId: user.uid,
-            driverId: specificRide.driver?.uid,
-            passengerUids: specificRide.passengerUids
-          });
         
         if (!isDriver && !isPassenger) {
-          console.log('User is not authorized to view this ride');
           setError('You are not authorized to view this ride');
           setActiveRides([]);
           setLoading(false);
@@ -248,25 +168,16 @@ function Rides() {
         setLoading(false);
         }, 
         (error) => {
-          console.error('Error fetching specific ride:', {
-            error,
-            timestamp: new Date().toISOString()
-          });
           handleQueryError(error);
         }
       );
 
       return () => {
-        console.log('Cleaning up specific ride subscription');
         unsubscribeSpecific();
       };
     }
 
     // If no specific rideId, get all active and recent rides for the user
-    console.log('Fetching all active and recent rides for user:', {
-      userId: user.uid,
-      timestamp: new Date().toISOString()
-    });
     
     // Query for active rides where user is driver
     const driverActiveQuery = query(
@@ -304,13 +215,20 @@ function Rides() {
       where(`invitations.${user.uid}.status`, '==', 'pending')
     );
 
-    console.log('Setting up ride listeners');
+    // Query for cancelled rides where user is driver
+    const driverCancelledQuery = query(
+      collection(db, 'rides'),
+      where('driver.uid', '==', user.uid),
+      where('status', '==', 'cancelled')
+    );
+
+    // Query for cancelled rides where user is passenger
+    const passengerCancelledQuery = query(
+      collection(db, 'rides'),
+      where('passengerUids', 'array-contains', user.uid),
+      where('status', '==', 'cancelled')
+    );
     const unsubscribeDriverActive = onSnapshot(driverActiveQuery, (snapshot) => {
-      console.log('Driver active rides snapshot:', {
-        empty: snapshot.empty,
-        docs: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
-        timestamp: new Date().toISOString()
-      });
       const driverActiveRides = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
@@ -318,7 +236,6 @@ function Rides() {
       }));
       
       const unsubscribePassengerActive = onSnapshot(passengerActiveQuery, (passengerSnapshot) => {
-        console.log('Passenger active rides snapshot:', passengerSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         const passengerActiveRides = passengerSnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
@@ -326,7 +243,6 @@ function Rides() {
         }));
 
         const unsubscribeDriverRecent = onSnapshot(driverRecentQuery, (recentSnapshot) => {
-          console.log('Driver recent rides snapshot:', recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
           const driverRecentRides = recentSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
@@ -334,7 +250,6 @@ function Rides() {
           }));
 
           const unsubscribePassengerRecent = onSnapshot(passengerRecentQuery, (finalSnapshot) => {
-            console.log('Passenger recent rides snapshot:', finalSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
             const passengerRecentRides = finalSnapshot.docs.map(doc => ({
               id: doc.id,
               ...doc.data(),
@@ -342,43 +257,68 @@ function Rides() {
             }));
 
             const unsubscribePendingInvitations = onSnapshot(pendingInvitationsQuery, (pendingSnapshot) => {
-              console.log('Pending invitations snapshot:', pendingSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
               const pendingInvitationRides = pendingSnapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data(),
                 type: 'invitation'
               }));
 
-              // Combine all rides
-              const allRides = [
+              const unsubscribeDriverCancelled = onSnapshot(driverCancelledQuery, (cancelledSnapshot) => {
+                const driverCancelledRides = cancelledSnapshot.docs.map(doc => ({
+                  id: doc.id,
+                  ...doc.data(),
+                  type: 'cancelled'
+                }));
+
+                const unsubscribePassengerCancelled = onSnapshot(passengerCancelledQuery, (finalCancelledSnapshot) => {
+                  const passengerCancelledRides = finalCancelledSnapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    type: 'cancelled'
+                  }));
+
+                  // Separate active rides from invitations
+                  const activeRidesList = [
                 ...driverActiveRides,
                 ...passengerActiveRides,
                 ...driverRecentRides,
                 ...passengerRecentRides,
-                ...pendingInvitationRides
-              ];
-
-              // Deduplicate and sort rides
-              const uniqueRides = Array.from(
-                new Map(allRides.map(ride => [ride.id, ride])).values()
-              ).filter(ride => {
+                    ...driverCancelledRides,
+                    ...passengerCancelledRides
+                  ].filter(ride => {
                 // Filter out rides where user has declined invitation
                 if (ride.invitations && ride.invitations[user.uid]) {
                   const userInvitation = ride.invitations[user.uid];
                   if (userInvitation.status === 'declined') {
-                    console.log('Filtering out declined ride:', ride.id);
+                        return false;
+                      }
+                      // Also filter out rides where user has a pending invitation
+                      if (userInvitation.status === 'pending') {
                     return false;
                   }
                 }
                 return true;
-              }).sort((a, b) => {
-                // First sort by type (active rides first, then invitations, then recent)
+                  });
+
+                  // Handle invitations separately - only include pending invitations
+                  const invitationsList = pendingInvitationRides.filter(ride => {
+                    // Only include rides where user has a pending invitation
+                    if (ride.invitations && ride.invitations[user.uid]) {
+                      const userInvitation = ride.invitations[user.uid];
+                      return userInvitation.status === 'pending';
+                    }
+                    return false;
+                  });
+
+                  // Sort active rides
+                  const sortedActiveRides = activeRidesList.sort((a, b) => {
+                    // First sort by type (active rides first, then recent, then cancelled)
                 if (a.type !== b.type) {
                   if (a.type === 'active') return -1;
                   if (b.type === 'active') return 1;
-                  if (a.type === 'invitation') return -1;
-                  if (b.type === 'invitation') return 1;
-                  return a.type === 'recent' ? -1 : 1;
+                      if (a.type === 'recent') return -1;
+                      if (b.type === 'recent') return 1;
+                      return a.type === 'cancelled' ? -1 : 1;
                 }
                 // Then sort by creation time
                 if (a.createdAt && b.createdAt) {
@@ -387,44 +327,53 @@ function Rides() {
                 return b.id.localeCompare(a.id);
               });
             
-              console.log('Final unique rides:', uniqueRides);
+                  // Sort invitations by creation time
+                  const sortedInvitations = invitationsList.sort((a, b) => {
+                    if (a.createdAt && b.createdAt) {
+                      return b.createdAt.toDate() - a.createdAt.toDate();
+                    }
+                    return b.id.localeCompare(a.id);
+                  });
+                
               setError(null);
-              setActiveRides(uniqueRides);
+                  setActiveRides(sortedActiveRides);
+                  setRideInvitations(sortedInvitations);
               setLoading(false);
             }, (error) => {
-              console.error('Error fetching pending invitations:', error);
+                  handleQueryError(error);
+                });
+
+                return () => unsubscribePassengerCancelled();
+              }, (error) => {
+                handleQueryError(error);
+              });
+
+              return () => unsubscribeDriverCancelled();
+            }, (error) => {
               handleQueryError(error);
             });
 
             return () => unsubscribePendingInvitations();
           }, (error) => {
-            console.error('Error fetching passenger recent rides:', error);
             handleQueryError(error);
           });
 
           return () => unsubscribePassengerRecent();
         }, (error) => {
-          console.error('Error fetching driver recent rides:', error);
           handleQueryError(error);
         });
 
         return () => unsubscribeDriverRecent();
       }, (error) => {
-        console.error('Error fetching passenger active rides:', error);
         handleQueryError(error);
       });
 
       return () => unsubscribePassengerActive();
     }, (error) => {
-      console.error('Error fetching driver active rides:', {
-        error,
-        timestamp: new Date().toISOString()
-      });
       handleQueryError(error);
     });
 
     return () => {
-      console.log('Cleaning up all ride subscriptions');
       unsubscribeDriverActive();
     };
   }, [user, searchParams]);
@@ -443,41 +392,131 @@ function Rides() {
     return `${duration} min ago`;
   };
 
+
+
   const handleLeaveRide = async (rideId) => {
     try {
+      // Add confirmation dialog
+      if (!window.confirm('Are you sure you want to leave this ride?')) {
+        return;
+      }
+      
       setLeavingRideId(rideId);
+      
       const rideDoc = await getDoc(doc(db, 'rides', rideId));
+      
       if (!rideDoc.exists()) {
         throw new Error('Ride not found');
       }
 
       const rideData = rideDoc.data();
-      const isDriver = rideData.driverId === user.uid;
+      const isDriver = rideData.driver?.uid === user.uid;
 
-      // Use updateRideParticipation instead of leaveRide
-      const result = await updateRideParticipation(rideId, user.uid, 'left');
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to leave ride');
+      // Handle driver leaving
+      if (isDriver) {
+        // For cancelled rides, just remove the driver reference
+        if (rideData.status === 'cancelled') {
+          await updateDoc(doc(db, 'rides', rideId), {
+            driver: null,
+            updatedAt: serverTimestamp(),
+            statusHistory: arrayUnion({
+              status: 'driver_removed',
+              timestamp: new Date().toISOString(),
+              updatedBy: user.uid,
+              reason: 'Driver left cancelled ride',
+              previousStatus: rideData.status
+            })
+          });
+        } else {
+          // For active/created rides, set status to cancelled
+          await updateDoc(doc(db, 'rides', rideId), {
+            driver: null,
+            status: 'cancelled',
+            updatedAt: serverTimestamp(),
+            statusHistory: arrayUnion({
+              status: 'cancelled',
+              timestamp: new Date().toISOString(),
+              updatedBy: user.uid,
+              reason: 'Driver left the ride',
+              previousStatus: rideData.status || 'active'
+            })
+          });
+        }
+      } else {
+        // Handle passenger leaving - remove from passengers array regardless of status
+        // For cancelled rides, we need to handle different data structures
+        let updateData = {
+          updatedAt: serverTimestamp(),
+          statusHistory: arrayUnion({
+            status: 'passenger_left',
+            timestamp: new Date().toISOString(),
+            updatedBy: user.uid,
+            reason: 'Passenger left the ride',
+            previousStatus: rideData.status || 'active'
+          })
+        };
+
+        // Handle passengers array if it exists
+        if (rideData.passengers && Array.isArray(rideData.passengers)) {
+          const updatedPassengers = rideData.passengers.filter(p => p.uid !== user.uid);
+          updateData.passengers = updatedPassengers;
+        }
+
+        // Handle passengerUids array if it exists
+        if (rideData.passengerUids && Array.isArray(rideData.passengerUids)) {
+          const updatedPassengerUids = rideData.passengerUids.filter(uid => uid !== user.uid);
+          updateData.passengerUids = updatedPassengerUids;
+        }
+
+        // Handle invitations if they exist
+        if (rideData.invitations && rideData.invitations[user.uid]) {
+          updateData[`invitations.${user.uid}.status`] = 'left';
+          updateData[`invitations.${user.uid}.leftAt`] = new Date().toISOString();
+        }
+
+        // Handle participants if they exist (alternative data structure)
+        if (rideData.participants && rideData.participants[user.uid]) {
+          updateData[`participants.${user.uid}.status`] = 'left';
+          updateData[`participants.${user.uid}.leftAt`] = new Date().toISOString();
+        }
+        
+        await updateDoc(doc(db, 'rides', rideId), updateData);
       }
 
-      // Update local state
-      setActiveRides(prevRides => prevRides.filter(ride => ride.id !== rideId));
+      // Update local state - remove the ride from the user's view
+      setActiveRides(prevRides => {
+        const filteredRides = prevRides.filter(ride => ride.id !== rideId);
+        return filteredRides;
+      });
+      
+      // Show success message
+      setError(null);
+      setSuccessMessage('You have successfully left the ride.');
+      setTimeout(() => setSuccessMessage(null), 3000); // Hide after 3 seconds
+      
     } catch (error) {
-      console.error('Error leaving ride:', error);
-      setError(error.message || 'Failed to leave ride');
+      // Handle specific Firestore errors
+      let errorMessage = 'Failed to leave ride';
+      
+      if (error.code === 'permission-denied') {
+        errorMessage = 'You do not have permission to leave this ride.';
+      } else if (error.code === 'not-found') {
+        errorMessage = 'Ride not found. It may have been deleted.';
+      } else if (error.code === 'unavailable') {
+        errorMessage = 'Service temporarily unavailable. Please try again.';
+      } else if (error.code === 'deadline-exceeded') {
+        errorMessage = 'Operation timed out. Please try again.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      setError(errorMessage);
     } finally {
       setLeavingRideId(null);
     }
   };
 
-  console.log('Before render:', {
-    loading,
-    error,
-    activeRidesCount: activeRides.length
-  });
-
   if (loading) {
-    console.log('Rendering loading state');
     return (
       <SimpleLoading 
         message="Loading your rides..."
@@ -487,10 +526,6 @@ function Rides() {
   }
 
   if (error) {
-    console.log('Rendering error state:', {
-      error,
-      timestamp: new Date().toISOString()
-    });
     return (
       <div className="rides-page-container">
         <div className="rides-content-wrapper">
@@ -501,17 +536,23 @@ function Rides() {
       </div>
     );
   }
-
-  console.log('Rendering main content');
   return (
     <Box sx={{ background: palette.bg, minHeight: '100vh', py: 5 }}>
       <Container maxWidth="md">
         <Typography variant="h4" fontWeight={700} color={palette.text} mb={3}>
           Your Rides
         </Typography>
+        
+
+        
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
+          </Alert>
+        )}
+        {successMessage && (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage(null)}>
+            {successMessage}
           </Alert>
         )}
         {/* Quick Actions Section - moved above Active Rides */}
@@ -540,13 +581,13 @@ function Rides() {
         <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
           <CardContent>
             <Typography variant="h6" color={palette.textSoft} mb={2}>
-              <DirectionsCarIcon sx={{ mr: 1, color: palette.accent2 }} /> Active Rides
+              <DirectionsCarIcon sx={{ mr: 1, color: palette.accent2 }} /> Your Rides
             </Typography>
             <Divider sx={{ mb: 2, background: palette.border }} />
             {activeRides.length === 0 ? (
               <Box textAlign="center" py={4}>
                 <DirectionsCarIcon sx={{ fontSize: 48, color: palette.accent2, mb: 2 }} />
-                <Typography color={palette.textSoft} mb={1}>No active rides</Typography>
+                <Typography color={palette.textSoft} mb={1}>No rides found</Typography>
                 <Typography color={palette.textSoft} variant="body2">Join or create a ride to get started!</Typography>
               </Box>
             ) : (
@@ -562,13 +603,70 @@ function Rides() {
                            typeof ride.destination === 'string' ? ride.destination : 
                            ride.destination.address || 'Unknown destination'}
                         </Typography>
-                        <Typography variant="caption" color={palette.accent2}>{ride.status || 'Active'}</Typography>
+                        <Box display="flex" alignItems="center" gap={1} mt={0.5}>
+                          <Chip 
+                            label={ride.status || 'Unknown'} 
+                            size="small"
+                            color={
+                              ride.status === 'active' ? 'success' :
+                              ride.status === 'created' ? 'primary' :
+                              ride.status === 'cancelled' ? 'error' :
+                              ride.status === 'invitation' ? 'warning' : 'default'
+                            }
+                            variant="outlined"
+                          />
+                          {ride.type && (
+                            <Chip 
+                              label={ride.type} 
+                              size="small"
+                              color="secondary"
+                              variant="outlined"
+                            />
+                          )}
+                        </Box>
                       </Box>
                     </Box>
-                    <Box>
-                      <Button variant="outlined" color="error" size="small" onClick={() => handleLeaveRide(ride.id)} disabled={leavingRideId === ride.id} sx={{ borderRadius: 2, fontWeight: 600, borderColor: palette.accent2, color: palette.accent2 }}>
-                        Leave
+                    <Box display="flex" gap={1}>
+                      <Button 
+                        component={Link}
+                        to={`/rides/${ride.id}`}
+                        variant="contained" 
+                        color="primary" 
+                        size="small"
+                        sx={{ 
+                          borderRadius: 2, 
+                          fontWeight: 600,
+                          minWidth: 80
+                        }}
+                      >
+                        View Ride
                       </Button>
+                      
+                      <Button 
+                        variant="outlined" 
+                        color="error" 
+                        size="small" 
+                        onClick={() => handleLeaveRide(ride.id)} 
+
+                        disabled={leavingRideId === ride.id} 
+                        sx={{ 
+                          borderRadius: 2, 
+                          fontWeight: 600, 
+                          borderColor: palette.accent2, 
+                          color: palette.accent2,
+                          '&:disabled': {
+                            opacity: 0.6,
+                            cursor: 'not-allowed'
+                          },
+                          '&:hover': {
+                            backgroundColor: 'rgba(164, 117, 81, 0.1)'
+                          }
+                        }}
+                      >
+                        {leavingRideId === ride.id ? 'Leaving...' : 'Leave'}
+                      </Button>
+                      
+
                     </Box>
                   </Box>
                 ))}
@@ -576,17 +674,76 @@ function Rides() {
             )}
           </CardContent>
         </Card>
-        {/* Ride History Section */}
+        {/* Ride Invitations Section */}
         <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
           <CardContent>
             <Typography variant="h6" color={palette.textSoft} mb={2}>
-              <HistoryIcon sx={{ mr: 1, color: palette.accent2 }} /> Ride History
+              <HistoryIcon sx={{ mr: 1, color: palette.accent2 }} /> Ride Invitations
             </Typography>
-            {/* Placeholder for ride history, replace with actual logic if needed */}
+            <Typography variant="body2" color={palette.textSoft} mb={2}>
+              You have pending invitations for these rides. Click "View Ride" to see details and respond to the invitation through the ride's RSVP system.
+            </Typography>
+            {rideInvitations.length === 0 ? (
             <Box textAlign="center" py={4}>
-              <Typography color={palette.textSoft} mb={1}>No ride history yet</Typography>
-              <Typography color={palette.textSoft} variant="body2">Your completed rides will appear here.</Typography>
+                <Typography color={palette.textSoft} mb={1}>No pending ride invitations</Typography>
+                <Typography color={palette.textSoft} variant="body2">New ride invitations will appear here. Click "View Ride" to respond through the ride's RSVP system.</Typography>
+              </Box>
+            ) : (
+              <Stack spacing={2}>
+                {rideInvitations.map(invitation => (
+                  <Box key={invitation.id} sx={{ background: palette.rideBg, borderRadius: 2, p: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Box display="flex" alignItems="center">
+                      <Avatar src={invitation.groupAvatar || '/default-avatar.png'} alt={invitation.groupName} sx={{ width: 48, height: 48, mr: 2, bgcolor: palette.accent3 }} />
+                      <Box>
+                        <Typography fontWeight={600} color={palette.text}>
+                          {invitation.name || invitation.groupName || 'Ride Invitation'}
+                        </Typography>
+                        <Typography variant="body2" color={palette.textSoft}>
+                          {!invitation.destination ? 'Destination' : 
+                           typeof invitation.destination === 'string' ? invitation.destination : 
+                           invitation.destination.address || 'Unknown destination'}
+                        </Typography>
+                        {invitation.createdAt && (
+                          <Typography variant="caption" color={palette.textSoft} display="block" mt={0.5}>
+                            Invited: {invitation.createdAt.toDate().toLocaleDateString()}
+                          </Typography>
+                        )}
+                        <Box display="flex" alignItems="center" gap={1} mt={0.5}>
+                          <Chip 
+                            label="Pending Response" 
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                          />
+                          <Chip 
+                            label="Click to Respond" 
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                          />
+                        </Box>
+                      </Box>
+                    </Box>
+                    <Box>
+                      <Button 
+                        component={Link}
+                        to={`/rides/${invitation.id}`}
+                        variant="contained" 
+                        color="primary" 
+                        size="small"
+                        sx={{ 
+                          borderRadius: 2, 
+                          fontWeight: 600,
+                          minWidth: 100
+                        }}
+                      >
+                        View Ride
+                      </Button>
+                    </Box>
             </Box>
+                ))}
+              </Stack>
+            )}
           </CardContent>
         </Card>
       </Container>

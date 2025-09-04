@@ -14,11 +14,7 @@ import {
   Info as InfoIcon,
   Settings as SettingsIcon
 } from '@mui/icons-material';
-import {
-  locationPermissionManager,
-  LOCATION_PERMISSIONS,
-  LOCATION_CONTEXTS
-} from '../services/locationTrackingService';
+// Simplified location toggle - removed dependency on locationTrackingService
 
 const LocationToggle = ({ 
   userId, 
@@ -29,10 +25,26 @@ const LocationToggle = ({
   onOpenSettings,
   compact = false 
 }) => {
-  const [permissionStatus, setPermissionStatus] = useState(null);
-  const [userPreferences, setUserPreferences] = useState(null);
+  // Simple constants for location permissions
+  const LOCATION_PERMISSIONS = {
+    NEVER: 'never',
+    WHILE_USING: 'while_using',
+    RIDE_ONLY: 'ride_only',
+    DRIVER_ONLY: 'driver_only',
+    ALWAYS: 'always'
+  };
+  
+  const LOCATION_CONTEXTS = {
+    DRIVER_MODE: 'driver_mode',
+    RIDE_ACTIVE: 'ride_active'
+  };
+  
+  const [permissionStatus, setPermissionStatus] = useState('granted');
+  const [userPreferences, setUserPreferences] = useState({
+    permissionLevel: LOCATION_PERMISSIONS.WHILE_USING
+  });
   const [rideOverride, setRideOverride] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   // Load current permission status and preferences
@@ -42,15 +54,7 @@ const LocationToggle = ({
         setLoading(true);
         setError(null);
 
-        const [status, prefs] = await Promise.all([
-          locationPermissionManager.getPermissionStatus(userId),
-          locationPermissionManager.getUserPreferences(userId)
-        ]);
-
-        setPermissionStatus(status);
-        setUserPreferences(prefs);
-
-        // Check if there's a ride-specific override
+        // Simplified - just check for ride-specific override
         const overrideKey = `ride_override_${rideId}_${userId}`;
         const storedOverride = localStorage.getItem(overrideKey);
         if (storedOverride) {

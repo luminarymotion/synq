@@ -10,18 +10,20 @@ export const RIDE_STATUS = {
   ACTIVE: 'active',
   COMPLETED: 'completed',
   CANCELLED: 'cancelled',
-  ENDED: 'ended'
+  ENDED: 'ended',
+  EXPIRED: 'expired'
 };
 
 // Define valid status transitions
 export const STATUS_TRANSITIONS = {
-  [RIDE_STATUS.CREATED]: [RIDE_STATUS.FORMING, RIDE_STATUS.CANCELLED],
-  [RIDE_STATUS.FORMING]: [RIDE_STATUS.READY, RIDE_STATUS.CANCELLED],
-  [RIDE_STATUS.READY]: [RIDE_STATUS.ACTIVE, RIDE_STATUS.CANCELLED],
-  [RIDE_STATUS.ACTIVE]: [RIDE_STATUS.COMPLETED, RIDE_STATUS.ENDED],
+  [RIDE_STATUS.CREATED]: [RIDE_STATUS.FORMING, RIDE_STATUS.CANCELLED, RIDE_STATUS.EXPIRED],
+  [RIDE_STATUS.FORMING]: [RIDE_STATUS.READY, RIDE_STATUS.CANCELLED, RIDE_STATUS.EXPIRED],
+  [RIDE_STATUS.READY]: [RIDE_STATUS.ACTIVE, RIDE_STATUS.CANCELLED, RIDE_STATUS.EXPIRED],
+  [RIDE_STATUS.ACTIVE]: [RIDE_STATUS.COMPLETED, RIDE_STATUS.ENDED, RIDE_STATUS.EXPIRED],
   [RIDE_STATUS.COMPLETED]: [],
   [RIDE_STATUS.CANCELLED]: [],
-  [RIDE_STATUS.ENDED]: []
+  [RIDE_STATUS.ENDED]: [],
+  [RIDE_STATUS.EXPIRED]: []
 };
 
 // Define status metadata
@@ -66,6 +68,12 @@ export const STATUS_METADATA = {
     label: 'Ended',
     description: 'Ride has ended',
     icon: 'fa-stop-circle',
+    color: 'warning'
+  },
+  [RIDE_STATUS.EXPIRED]: {
+    label: 'Expired',
+    description: 'Ride has expired after 24 hours',
+    icon: 'fa-clock',
     color: 'warning'
   }
 };

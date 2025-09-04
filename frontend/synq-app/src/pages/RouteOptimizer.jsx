@@ -5,6 +5,7 @@ import UserForm from '../components/UserForm';
 import MapView from '../components/MapView';
 import UserTable from '../components/UserTable';
 import UserSearch from '../components/UserSearch';
+import RideDetailsVerificationModal from '../components/RideDetailsVerificationModal';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
@@ -19,9 +20,10 @@ import {
   deleteRideInvitation
 } from '../services/firebaseOperations';
 // Location service imports
-import { searchDestinations, getDirections } from '../services/locationService';
+import { searchDestinations, getDirections, ROUTING_PROFILES, getCurrentLocation } from '../services/locationService';
 import '../styles/RouteOptimizer.css';
-import locationTrackingService, { useLocation as useLocationTracking } from '../services/locationTrackingService';
+import '../styles/RideDetailsVerificationModal.css';
+import locationTrackingService from '../services/locationTrackingService';
 import { toast } from 'react-hot-toast';
 
 import { FaMapMarkerAlt, FaUserPlus, FaRoute, FaTimes, FaChevronLeft, FaChevronRight, FaCheck, FaExclamationTriangle } from 'react-icons/fa';
@@ -39,11 +41,6 @@ import {
   Avatar, 
   IconButton,
   TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  Chip,
   Alert,
   Dialog,
   DialogTitle,
@@ -59,7 +56,8 @@ import {
   ListItemSecondaryAction,
   Autocomplete,
   Popper,
-  InputAdornment
+  InputAdornment,
+  CircularProgress
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -79,7 +77,8 @@ import {
   AccessTime as AccessTimeIcon,
   Straighten as StraightenIcon,
   Search as SearchIcon,
-  Clear as ClearIcon
+  Clear as ClearIcon,
+  Share as ShareIcon
 } from '@mui/icons-material';
 
 // COMMENTED OUT: Simplified location service - replacing with Search Box component
@@ -457,122 +456,61 @@ function RouteOptimizer({ mode = 'create' }) {
   // Add missing state variables - moved up to fix initialization order
   const [hasLocationError, setHasLocationError] = useState(false);
 
-  // Move useLocationTracking hook here after all state declarations
-  const {
-    location: trackingLocation,
-    isTracking,
-    status: locationStatus,
-    error: locationServiceError,
-    startTracking,
-    stopTracking,
-    setManualLocation
-  } = useLocationTracking({
-    preset: 'office', // Use office preset for better compatibility with restricted networks
-    updateFirebase: true,
-    onLocationUpdate: async (locationData) => {
-      console.log('Location update received in RouteOptimizer:', locationData);
+  // Simple location tracking using getCurrentLocation
+  const [isTracking, setIsTracking] = useState(false);
+  const [locationStatus, setLocationStatus] = useState('stopped');
+  
+  // Function to get current location once
+  const getCurrentLocationOnce = async () => {
+    try {
+      setIsTracking(true);
+      setLocationStatus('active');
+      setLocationError(null);
+      setHasLocationError(false);
       
-      // Check if locationData is valid
-      if (!locationData || !locationData.latitude || !locationData.longitude) {
-        console.warn('Invalid location data received:', locationData);
-        return;
-      }
+      const locationData = await getCurrentLocation();
+      console.log('Location received in RouteOptimizer:', locationData);
       
-      const { latitude: lat, longitude: lng, accuracy, address } = locationData;
-      
-      // Validate coordinates before updating state
-      if (typeof lat !== 'number' || typeof lng !== 'number' || 
-          isNaN(lat) || isNaN(lng) ||
-          lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        console.warn('Invalid coordinates received from location service:', { lat, lng });
-        return; // Don't update state with invalid coordinates
-      }
-      
-      // If we have valid coordinates, clear any errors and update state
-      if (lat && lng) {
-        setHasValidLocation(true);
-        setLocationError(null);
-        setHasLocationError(false); // Clear error flag when we get valid location
-        console.log('Cleared hasLocationError flag due to valid location');
+      if (locationData && locationData.lat && locationData.lng) {
+        const { lat, lng, accuracy } = locationData;
         
-        // Update status message
-          setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
-      }
-      
-      // Update user location state
-      const newLocation = { lat, lng, address, accuracy };
-      setUserLocation(newLocation);
-      
-      // Update form state
-        setForm(prev => ({
-          ...prev,
-          userLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`,
-          startingLocation: address || `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
-        }));
-      
-      // Update status message
-      setLocationStatusMessage(`Location tracking active (accuracy: ${Math.round(accuracy)}m)`);
-    },
-    onError: (errorMessage) => {
-      // Only log and handle actual errors, not null (which clears errors)
-      if (errorMessage !== null) {
-        console.error('Location tracking error:', errorMessage);
-        setHasLocationError(true); // Set error flag
-        
-        // Update error message to be more user-friendly
-        let userFriendlyError = errorMessage;
-        const errorMsg = errorMessage?.toString() || 'Unknown error';
-        
-        if (errorMsg.includes('blocked') || errorMsg.includes('timeout') || errorMsg.includes('network')) {
-          userFriendlyError = 'Location tracking failed. Please enter your location manually';
+        // Validate coordinates
+        if (typeof lat === 'number' && typeof lng === 'number' && 
+            !isNaN(lat) && !isNaN(lng) &&
+            lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+          
+          setHasValidLocation(true);
+          setLocationError(null);
+          setHasLocationError(false);
+          
+          // Update user location state
+          const newLocation = { lat, lng, accuracy };
+          setUserLocation(newLocation);
+          
+          // Update form state with coordinates (address will be fetched separately if needed)
+          setForm(prev => ({
+            ...prev,
+            userLocation: `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`,
+            startingLocation: `Location (${lat.toFixed(6)}, ${lng.toFixed(6)})`
+          }));
+          
+          setLocationStatusMessage(`Location obtained (accuracy: ${Math.round(accuracy)}m)`);
+        } else {
+          throw new Error('Invalid coordinates received');
         }
-        
-        setLocationError(userFriendlyError);
-        setLocationStatusMessage(userFriendlyError);
       } else {
-        // Clear error state when errorMessage is null
-        setLocationError(null);
-        setHasLocationError(false); // Clear error flag
+        throw new Error('No location data received');
       }
-    },
-    onStatusChange: (status) => {
-      console.log('Location status changed:', status);
-      switch (status) {
-        case 'active':
-          // Clear any existing errors when tracking becomes active
-          setLocationError(null);
-          setHasLocationError(false);
-          setLocationStatusMessage('Location tracking active');
-          break;
-        case 'manual':
-          // Handle manual mode for office networks
-          setLocationError(null);
-          setLocationStatusMessage('Location tracking in manual mode - set your location manually');
-          break;
-        case 'stopped':
-          // Show "stopped" message
-          setLocationStatusMessage('Location tracking stopped');
-          setUserLocation(null);
-          setHasValidLocation(false); // Reset valid location state
-          setHasLocationError(false);
-          break;
-        case 'error':
-          // Set error status and reset tracking state
-          setLocationStatusMessage('Location tracking failed. Please enter your location manually');
-          setHasLocationError(true); // Set error flag
-          break;
-        case 'offline':
-          setLocationStatusMessage('Location tracking paused - offline');
-          break;
-        case 'syncing':
-          setLocationStatusMessage('Syncing location data...');
-          break;
-        default:
-          console.log('Unknown location status:', status);
-          setLocationStatusMessage(`Location status: ${status}`);
-      }
+    } catch (error) {
+      console.error('Location error:', error);
+      setHasLocationError(true);
+      setLocationError(error.message);
+      setLocationStatusMessage('Location failed. Please enter manually.');
+    } finally {
+      setIsTracking(false);
+      setLocationStatus('stopped');
     }
-  });
+  };
 
   // Group all useState hooks together at the top
   const [error, setError] = useState(null);
@@ -594,6 +532,9 @@ function RouteOptimizer({ mode = 'create' }) {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [createdRideId, setCreatedRideId] = useState(null);
   const [creatorRole, setCreatorRole] = useState('driver');
+  const [avoidTolls, setAvoidTolls] = useState(false); // New state for tolls preference
+  const [carSeatsAvailable, setCarSeatsAvailable] = useState(4); // New state for car seats
+  const [showSeatsDropdown, setShowSeatsDropdown] = useState(false); // State for seats dropdown
   const [isLocationLoading, setIsLocationLoading] = useState(false);
   const [locationStatusMessage, setLocationStatusMessage] = useState(null);
   const [locationError, setLocationError] = useState(null);
@@ -606,6 +547,10 @@ function RouteOptimizer({ mode = 'create' }) {
     totalCount: 0,
     errors: []
   });
+
+  // Ride verification modal state
+  const [showRideVerificationModal, setShowRideVerificationModal] = useState(false);
+  const [rideDataForVerification, setRideDataForVerification] = useState(null);
 
   // Add back friends-related state
   const [friends, setFriends] = useState([]);
@@ -636,13 +581,11 @@ function RouteOptimizer({ mode = 'create' }) {
   const [isProcessingDestination, setIsProcessingDestination] = useState(false);
   const searchTimeoutRef = useRef(null);
   
-  // Search Box component state variables
+  // Search component state variables - simplified to match mobile
   const [searchBoxValue, setSearchBoxValue] = useState('');
-  const [isSearchBoxLoading, setIsSearchBoxLoading] = useState(false);
   const [categorySearchResults, setCategorySearchResults] = useState([]);
   const [isCategorySearching, setIsCategorySearching] = useState(false);
-  const [searchBoxSuggestions, setSearchBoxSuggestions] = useState([]);
-  const [hybridResults, setHybridResults] = useState([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
   
   // Remove duplicate hook usage - we already have the location tracking hook above
 
@@ -656,6 +599,20 @@ function RouteOptimizer({ mode = 'create' }) {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
   };
+
+  // Close seats dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showSeatsDropdown && !event.target.closest('[data-seats-dropdown]')) {
+        setShowSeatsDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showSeatsDropdown]);
 
   // Simplified destination search - REMOVED (using handleDestinationInputChange instead)
   // const searchDestinationsLocal = async (query) => {
@@ -724,24 +681,32 @@ function RouteOptimizer({ mode = 'create' }) {
       console.log('Calculating realistic route preview from user location to destination');
       
       try {
-        const directions = await getDirections(startLocation, endLocation);
+        const directions = await getDirections(startLocation, endLocation, {
+          profile: ROUTING_PROFILES.DRIVING_TRAFFIC,
+          alternatives: false,
+          annotations: ['distance', 'duration'],
+          avoidTolls: creatorRole === 'driver' ? avoidTolls : false
+        });
+        
+        // getDirections now returns an array of routes, take the first one
+        const firstRoute = directions[0];
         
         const route = {
           type: 'FeatureCollection',
           features: [{
             type: 'Feature',
-            geometry: directions.geometry,
+            geometry: firstRoute.geometry,
             properties: {
               name: 'Route Preview',
               summary: {
-                distance: directions.distance * 1609.34, // Convert miles to meters
-                duration: directions.duration * 60, // Convert minutes to seconds
+                distance: firstRoute.distance * 1609.34, // Convert miles to meters
+                duration: firstRoute.duration * 60, // Convert minutes to seconds
                 waypoints: waypoints
               }
             }
           }],
-          totalDistance: directions.distance * 1609.34,
-          totalDuration: directions.duration * 60
+          totalDistance: firstRoute.distance * 1609.34,
+          totalDuration: firstRoute.duration * 60
         };
         
         console.log('=== ROUTE CALCULATION COMPLETED ===');
@@ -955,7 +920,7 @@ function RouteOptimizer({ mode = 'create' }) {
         // Auto-start location tracking for laptop view
         try {
           console.log('📍 Auto-starting location tracking for RouteOptimizer...');
-          await startTracking();
+          await getCurrentLocationOnce();
         } catch (error) {
           console.warn('📍 Could not auto-start location tracking:', error.message);
           // Don't show error notification - let user continue without location
@@ -984,7 +949,7 @@ function RouteOptimizer({ mode = 'create' }) {
   // Clean up location tracking
   useEffect(() => {
     return () => {
-      locationTrackingService.stopTracking();
+      // No cleanup needed for simple location tracking
     };
   }, []);
 
@@ -1014,13 +979,39 @@ function RouteOptimizer({ mode = 'create' }) {
     };
   }, []);
 
+  // Click outside handler to close search results dropdown
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      // Check if click is outside the search container or dropdown
+      const searchContainer = document.querySelector('.search-container');
+      const searchDropdown = document.querySelector('.search-results-dropdown');
+      
+      if (searchContainer && !searchContainer.contains(event.target) && 
+          searchDropdown && !searchDropdown.contains(event.target)) {
+        console.log('🔍 Click outside detected, hiding search results');
+        setShowSearchResults(false);
+      }
+    };
+
+    // Add event listener
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    // Cleanup
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
   // Debug effect to monitor dropdown state
   useEffect(() => {
     console.log('🔍 [DEBUG] Dropdown state changed:', {
       isDropdownOpen,
       suggestionsCount: destinationSuggestions.length,
       isLoadingSuggestions,
-      hasSuggestions: destinationSuggestions.length > 0
+      hasSuggestions: destinationSuggestions.length > 0,
+      categorySearchResultsCount: categorySearchResults.length,
+      showSearchResults,
+      searchBoxValue
     });
     
     // Check for duplicate names or keys
@@ -1049,631 +1040,43 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   }, [isDropdownOpen, destinationSuggestions.length, isLoadingSuggestions]);
 
-  // Update userLocation when location changes
+  // Debug effect for search results
   useEffect(() => {
-    if (location && location.latitude && location.longitude) {
-      console.log('📍 Location tracking service provided location:', location);
-      setUserLocation({ lat: location.latitude, lng: location.longitude });
-    }
-  }, [location]);
+    console.log('🔍 [DEBUG] Search results state changed:', {
+      categorySearchResultsCount: categorySearchResults.length,
+      showSearchResults,
+      searchBoxValue,
+      isCategorySearching
+    });
+  }, [categorySearchResults.length, showSearchResults, searchBoxValue, isCategorySearching]);
+
+  // Update userLocation when location changes - removed as we now use getCurrentLocationOnce
   
   // Auto-start location tracking when user is driver (optional - don't block app if it fails)
   useEffect(() => {
     if (user && creatorRole === 'driver' && !isTracking) {
       console.log('🚗 Auto-starting location tracking for driver');
-      startTracking(user?.uid).catch(error => {
+      getCurrentLocationOnce().catch(error => {
         console.warn('⚠️ Location tracking failed to start, but app will continue:', error.message);
         // Don't block the app if location tracking fails
       });
     }
-  }, [user, creatorRole, isTracking, startTracking]);
+  }, [user, creatorRole, isTracking]);
 
   // Update status message based on actual tracking state
   useEffect(() => {
-    if (isTracking && location) {
-      const accuracy = location.accuracy ? Math.round(location.accuracy) : 'unknown';
+    if (isTracking && userLocation) {
+      const accuracy = userLocation.accuracy ? Math.round(userLocation.accuracy) : 'unknown';
       setLocationStatusMessage(`Location tracking active (accuracy: ${accuracy}m)`);
-    } else if (isTracking && !location) {
+    } else if (isTracking && !userLocation) {
       setLocationStatusMessage('Location tracking active - acquiring position...');
-    } else if (!isTracking && location) {
+    } else if (!isTracking && userLocation) {
       setLocationStatusMessage('Location available (tracking stopped)');
-    } else if (!isTracking && !location) {
+    } else if (!isTracking && !userLocation) {
       setLocationStatusMessage('Location tracking stopped');
     }
-  }, [isTracking, location]);
+  }, [isTracking, userLocation]);
 
-  // Test function to debug search issues
-  const testSearchAndMarkers = async () => {
-    console.log('🧪 ===== TESTING SEARCH AND MARKERS =====');
-    console.log('🧪 Current user location:', userLocation);
-    console.log('🧪 Current destination suggestions:', destinationSuggestions);
-    
-    try {
-      // Test search
-      const testResults = await MAPBOX_SERVICE.searchDestinations('food', {
-        limit: 5,
-        maxDistance: 50,
-        userLocation: userLocation
-      });
-      
-      console.log('🧪 Test search results:', testResults);
-      console.log('🧪 Results with coordinates:', testResults.filter(r => r.lat && r.lon).length);
-      
-      // Set test suggestions
-      setDestinationSuggestions(testResults);
-      
-      console.log('🧪 Test suggestions set, check map for markers');
-    } catch (error) {
-      console.error('🧪 Test search failed:', error);
-    }
-  };
-
-  // Debug function to check current state
-  const debugCurrentState = () => {
-    console.log('🔍 ===== DEBUG CURRENT STATE =====');
-    console.log('🔍 destinationSuggestions:', destinationSuggestions);
-    console.log('🔍 destinationSuggestions.length:', destinationSuggestions.length);
-    console.log('🔍 isLoadingSuggestions:', isLoadingSuggestions);
-    console.log('🔍 isDropdownOpen:', isDropdownOpen);
-    console.log('🔍 userLocation:', userLocation);
-    console.log('🔍 Sample suggestion:', destinationSuggestions[0]);
-    
-    if (destinationSuggestions.length > 0) {
-      console.log('🔍 All suggestions with coordinates:');
-      destinationSuggestions.forEach((suggestion, index) => {
-        console.log(`  ${index}:`, {
-          name: suggestion.display_name || suggestion.name,
-          lat: suggestion.lat,
-          lon: suggestion.lon,
-          hasCoords: !!(suggestion.lat && suggestion.lon),
-          distance: suggestion.distance
-        });
-      });
-    }
-  };
-
-  // Add test button to global scope for debugging
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.testSearchAndMarkers = testSearchAndMarkers;
-      window.debugCurrentState = debugCurrentState;
-      window.testCategorySearch = async (query = 'gas station') => {
-        console.log(`🧪 Testing enhanced category search for: "${query}"`);
-        const category = detectCategory(query);
-        console.log(`🧪 Detected category: ${category}`);
-        
-        if (category) {
-          const results = await searchDestinations(category, {
-            limit: 15,
-            userLocation: userLocation,
-            enableFallback: true
-          });
-          console.log(`🧪 Category search results:`, results);
-          
-          // Test hybrid results creation
-          if (results.length > 0 && searchBoxSuggestions.length > 0) {
-            const hybrid = createHybridResults(results, searchBoxSuggestions);
-            console.log(`🧪 Hybrid results:`, hybrid);
-          }
-          
-          return results;
-        } else {
-          console.log(`🧪 No category detected for: "${query}"`);
-          return [];
-        }
-      };
-      
-      window.testCategoryMapping = (query) => {
-        console.log(`🧪 Testing category mapping for: "${query}"`);
-        const category = detectCategory(query);
-        console.log(`🧪 Result: ${category}`);
-        return category;
-      };
-      
-      // Comprehensive test for gas station vs coffee shop issue
-      window.debugGasStationIssue = async () => {
-        console.log('🔍 ===== DEBUGGING GAS STATION vs COFFEE SHOP ISSUE =====');
-        
-        if (!userLocation) {
-          console.log('❌ No user location available');
-          return;
-        }
-        
-        const testQueries = [
-          'gas station',
-          'gas',
-          'gas station near me',
-          'coffee shop',
-          'coffee shop near',
-          'coffee'
-        ];
-        
-        for (const query of testQueries) {
-          console.log(`\n🔍 Testing: "${query}"`);
-          
-          // Test 1: Category detection
-          const category = detectCategory(query);
-          console.log(`  Category detected: ${category}`);
-          
-          if (category) {
-            // Test 2: Raw API call
-            try {
-              const results = await searchDestinations(category, {
-                limit: 20,
-                userLocation: userLocation,
-                enableFallback: true
-              });
-              console.log(`  Raw API results: ${results.length}`);
-              
-              // Test 3: Distance analysis
-              const nearby = results.filter(r => r.distance && r.distance <= 10);
-              const far = results.filter(r => r.distance && r.distance > 10);
-              const noDistance = results.filter(r => !r.distance);
-              
-              console.log(`  Distance breakdown:`);
-              console.log(`    Nearby (≤10mi): ${nearby.length}`);
-              console.log(`    Far (>10mi): ${far.length}`);
-              console.log(`    No distance: ${noDistance.length}`);
-              
-              if (nearby.length > 0) {
-                console.log(`  Nearby examples:`);
-                nearby.slice(0, 3).forEach((r, i) => {
-                  console.log(`    ${i+1}. ${r.name} (${r.distance?.toFixed(1)} mi) - ${r.address}`);
-                });
-              }
-              
-              if (far.length > 0) {
-                console.log(`  Far examples:`);
-                far.slice(0, 2).forEach((r, i) => {
-                  console.log(`    ${i+1}. ${r.name} (${r.distance?.toFixed(1)} mi) - ${r.address}`);
-                });
-              }
-              
-            } catch (error) {
-              console.error(`  API call failed:`, error);
-            }
-          }
-        }
-        
-        console.log('\n🔍 ===== END DEBUGGING =====');
-      };
-      
-      // Test the full searchCategoryPOI function
-      window.testFullCategorySearch = async (query = 'gas station') => {
-        console.log(`🔍 Testing full category search for: "${query}"`);
-        
-        if (!userLocation) {
-          console.log('❌ No user location available');
-          return;
-        }
-        
-        const category = detectCategory(query);
-        console.log(`🔍 Detected category: ${category}`);
-        
-        if (category) {
-          try {
-            const results = await searchDestinations(category, {
-              limit: 20,
-              userLocation: userLocation,
-              enableFallback: true
-            });
-            console.log(`🔍 Full category search results:`, results);
-            return results;
-          } catch (error) {
-            console.error(`🔍 Full category search failed:`, error);
-            return [];
-          }
-        } else {
-          console.log(`🔍 No category detected for: "${query}"`);
-          return [];
-        }
-      };
-      
-      // Test Search Box override issue
-      window.testSearchBoxOverride = async () => {
-        console.log('🔍 ===== TESTING SEARCH BOX OVERRIDE ISSUE =====');
-        
-        if (!userLocation) {
-          console.log('❌ No user location available');
-          return;
-        }
-        
-        console.log('🔍 Step 1: Test category search directly');
-        const categoryResults = await window.testFullCategorySearch('gas station');
-        
-        console.log('\n🔍 Step 2: Simulate Search Box suggestions (distant results)');
-        const mockSearchBoxSuggestions = [
-          {
-            name: 'Conoco Gas Station',
-            address: '1610 Utica Avenue, Brooklyn, New York',
-            distance: 2188, // Very far
-            lat: 40.6189,
-            lng: -73.9235
-          },
-          {
-            name: 'Costco Gas Station', 
-            address: '4849 NE 138th Ave, Portland, Oregon',
-            distance: 2594, // Very far
-            lat: 45.5152,
-            lng: -122.6784
-          }
-        ];
-        
-        console.log('🔍 Mock Search Box suggestions:', mockSearchBoxSuggestions);
-        
-        console.log('\n🔍 Step 3: Test if category results take priority');
-        if (categoryResults.length > 0) {
-          console.log('✅ Category results should take priority over Search Box suggestions');
-          console.log('✅ You should see Kroger Fuel Center, Exxon, RaceTrac (nearby)');
-          console.log('❌ NOT Conoco Brooklyn, Costco Portland (distant)');
-        }
-        
-        console.log('\n🔍 ===== END TEST =====');
-      };
-      
-      // Test raw API response without filtering
-      window.testRawCategoryAPI = async (category = 'gas_station') => {
-        console.log(`🔍 Testing raw category API for: ${category}`);
-        
-        if (!userLocation) {
-          console.log('❌ No user location available');
-          return;
-        }
-        
-        try {
-          const proximityLng = userLocation.lng;
-          const proximityLat = userLocation.lat;
-          
-          const params = new URLSearchParams({
-            proximity: `${proximityLng},${proximityLat}`,
-            limit: '20',
-            country: 'US',
-            language: 'en',
-            access_token: import.meta.env.VITE_MAPBOX_API_KEY,
-          });
-          
-          const url = `https://api.mapbox.com/search/searchbox/v1/category/${category}?${params}`;
-          console.log(`🔍 API URL:`, url.replace(import.meta.env.VITE_MAPBOX_API_KEY, '***'));
-          
-          const response = await fetch(url);
-          const data = await response.json();
-          
-          console.log(`🔍 Raw API response:`, data);
-          console.log(`🔍 Features count:`, data.features?.length || 0);
-          
-          if (data.features && data.features.length > 0) {
-            console.log(`🔍 First 3 features:`);
-            data.features.slice(0, 3).forEach((feature, i) => {
-              console.log(`  ${i+1}. Name: ${feature.properties?.name || 'Unknown'}`);
-              console.log(`     Address: ${feature.place_name || 'No address'}`);
-              console.log(`     Coordinates: ${feature.geometry?.coordinates?.join(', ') || 'No coords'}`);
-              console.log(`     Type: ${feature.feature_type || 'Unknown'}`);
-              console.log(`     Category: ${feature.poi_category || 'Unknown'}`);
-            });
-            
-            // Test distance calculation
-            console.log(`🔍 Distance calculation test:`);
-            data.features.slice(0, 3).forEach((feature, i) => {
-              const lat = feature.geometry?.coordinates?.[1];
-              const lng = feature.geometry?.coordinates?.[0];
-              
-              if (lat && lng) {
-                const R = 3959; // Earth's radius in miles
-                const dLat = (lat - userLocation.lat) * Math.PI / 180;
-                const dLng = (lng - userLocation.lng) * Math.PI / 180;
-                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                          Math.cos(userLocation.lat * Math.PI / 180) * Math.cos(lat * Math.PI / 180) *
-                          Math.sin(dLng/2) * Math.sin(dLng/2);
-                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-                const distance = R * c;
-                
-                console.log(`  ${i+1}. ${feature.properties?.name}: ${distance.toFixed(2)} miles`);
-              }
-            });
-          }
-          
-        } catch (error) {
-          console.error(`🔍 Raw API test failed:`, error);
-        }
-      };
-      console.log('🧪 Test functions available:');
-      console.log('  - window.testSearchAndMarkers()');
-      console.log('  - window.debugCurrentState()');
-      console.log('  - window.testCategorySearch("gas stations")');
-      console.log('  - window.debugGasStationIssue()');
-      console.log('  - window.testRawCategoryAPI("gas_station")');
-      console.log('  - window.testRawCategoryAPI("coffee")');
-      console.log('  - window.testFullCategorySearch("gas station")');
-      console.log('  - window.testSearchBoxOverride()');
-    }
-  }, [userLocation, destinationSuggestions]);
-
-  // Debug function to test specific searches
-  const testSpecificSearch = async (query) => {
-    console.log('=== TESTING SPECIFIC SEARCH ===');
-    console.log('Query:', query);
-    console.log('User Location:', userLocation);
-    
-    try {
-      const results = await MAPBOX_SERVICE.searchDestinations(query, {
-        userLocation: userLocation,
-        limit: 5
-      });
-      
-      console.log('Search results:', results);
-      
-      if (results && results.length > 0) {
-        const realResults = results.filter(result => !result.isError);
-        console.log('Real results:', realResults);
-        
-        if (realResults.length > 0) {
-          const bestResult = realResults[0];
-          console.log('Best result:', {
-            display_name: bestResult.display_name,
-            lat: bestResult.lat,
-            lon: bestResult.lon,
-            distance: bestResult.distance,
-            quality: bestResult.quality,
-            type: bestResult.type
-          });
-        }
-      }
-    } catch (error) {
-      console.error('Test failed:', error);
-    }
-  };
-
-  // Add a simple test function to manually set suggestions
-  const testSetSuggestions = () => {
-    console.log('🧪 Manually setting test suggestions...');
-    const testSuggestions = [
-      {
-        display_name: 'Test Walmart',
-        name: 'Walmart',
-        lat: 33.1087872,
-        lon: -96.7606272,
-        distance: 2.5,
-        address: '123 Test St, Plano, TX'
-      },
-      {
-        display_name: 'Test Target',
-        name: 'Target',
-        lat: 33.1100000,
-        lon: -96.7650000,
-        distance: 3.1,
-        address: '456 Test Ave, Plano, TX'
-      }
-    ];
-    
-    console.log('🧪 Setting test suggestions:', testSuggestions);
-    setDestinationSuggestions(testSuggestions);
-    console.log('🧪 Test suggestions set, check map for red markers');
-  };
-
-  // Add test function to global scope
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.testSetSuggestions = testSetSuggestions;
-      window.setDefaultLocation = () => {
-        console.log('🧪 Setting default test location...');
-        const defaultLocation = {
-          lat: 33.1087872,
-          lng: -96.7606272,
-          address: 'Plano, TX, USA'
-        };
-        setManualLocation(defaultLocation.lat, defaultLocation.lng, defaultLocation.address);
-        setUserLocation(defaultLocation);
-        setHasValidLocation(true);
-        setHasLocationError(false);
-        setLocationError(null);
-        setLocationStatusMessage('Default test location set');
-        showLocalNotification('Default test location set successfully', 'success');
-      };
-      window.testWalmartSearchRaw = async () => {
-        console.log('🧪 [RAW DIAGNOSTIC] Testing raw Walmart search without grouping...');
-        try {
-          // Test 1: Direct API call to see raw response
-          console.log('🧪 [RAW DIAGNOSTIC] Test 1: Direct API call...');
-          const response = await fetch(`https://api.mapbox.com/search/searchbox/v1/suggest?access_token=${MAPBOX_CONFIG.apiKey}&session_token=${MAPBOX_SERVICE.generateSessionToken()}&q=walmart&limit=25&language=en&types=poi%2Caddress&country=us&proximity=${userLocation.lng}%2C${userLocation.lat}`);
-          
-          const data = await response.json();
-          console.log('🧪 [RAW DIAGNOSTIC] Raw API response:', data);
-          console.log('🧪 [RAW DIAGNOSTIC] Total suggestions from API:', data.suggestions?.length || 0);
-          
-          // Test 6: Compare grouped vs ungrouped results
-          console.log('🧪 [RAW DIAGNOSTIC] Test 6: Comparing grouped vs ungrouped results...');
-          const groupedResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
-            limit: 25,
-            userLocation,
-            enableAdaptiveRadius: true,
-            bypassGrouping: false
-          });
-          
-          const ungroupedResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
-            limit: 25,
-            userLocation,
-            enableAdaptiveRadius: true,
-            bypassGrouping: true
-          });
-          
-          console.log('🧪 [RAW DIAGNOSTIC] Grouped results count:', groupedResults.length);
-          console.log('🧪 [RAW DIAGNOSTIC] Ungrouped results count:', ungroupedResults.length);
-          console.log('🧪 [RAW DIAGNOSTIC] Grouping reduction:', groupedResults.length - ungroupedResults.length, 'results');
-          
-          // Set ungrouped results for display
-          setDestinationSuggestions(ungroupedResults);
-          showLocalNotification(`Found ${ungroupedResults.length} individual Walmart services (vs ${groupedResults.length} grouped)`, 'success');
-          
-          // Test 2: Process each result to see coordinate extraction
-          console.log('🧪 [RAW DIAGNOSTIC] Test 2: Coordinate extraction analysis...');
-          const processedResults = [];
-          for (const suggestion of data.suggestions || []) {
-            const result = {
-              name: suggestion.name,
-              address: suggestion.full_address,
-              mapboxId: suggestion.mapbox_id,
-              coordinates: suggestion.coordinates,
-              distance: suggestion.distance,
-              relevance: suggestion.relevance
-            };
-            
-            // Try to extract coordinates
-            try {
-              const coords = await MAPBOX_SERVICE.CoordinateUtils.extractCoordinates(suggestion, 'raw_diagnostic');
-              result.extractedCoords = coords;
-              result.hasValidCoords = !!(coords.lat && coords.lon);
-            } catch (error) {
-              result.extractionError = error.message;
-              result.hasValidCoords = false;
-            }
-            
-            processedResults.push(result);
-          }
-          
-          console.log('🧪 [RAW DIAGNOSTIC] Processed results:', processedResults);
-          console.log('🧪 [RAW DIAGNOSTIC] Results with valid coordinates:', processedResults.filter(r => r.hasValidCoords).length);
-          console.log('🧪 [RAW DIAGNOSTIC] Results without coordinates:', processedResults.filter(r => !r.hasValidCoords).length);
-          
-          // Test 3: Use searchByText function
-          console.log('🧪 [RAW DIAGNOSTIC] Test 3: Using searchByText function...');
-          const searchByTextResults = await MAPBOX_SERVICE.searchByText('walmart', userLocation, 25);
-          console.log('🧪 [RAW DIAGNOSTIC] searchByText results:', searchByTextResults.map(r => ({
-            name: r.name,
-            address: r.address,
-            lat: r.lat,
-            lon: r.lon,
-            distance: r.distance
-          })));
-          
-          // Test 4: Use full searchDestinations function
-          console.log('🧪 [RAW DIAGNOSTIC] Test 4: Using full searchDestinations function...');
-          const fullResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
-            limit: 25,
-            userLocation,
-            enableAdaptiveRadius: true
-          });
-          console.log('🧪 [RAW DIAGNOSTIC] Full searchDestinations results:', fullResults);
-          
-          // Test 5: Use searchDestinations with bypass grouping
-          console.log('🧪 [RAW DIAGNOSTIC] Test 5: Using searchDestinations with bypass grouping...');
-          const bypassResults = await MAPBOX_SERVICE.searchDestinations('walmart', {
-            limit: 25,
-            userLocation,
-            enableAdaptiveRadius: true,
-            bypassGrouping: true
-          });
-          console.log('🧪 [RAW DIAGNOSTIC] Bypass grouping results:', bypassResults);
-          
-          // Set raw results without grouping for display
-          setDestinationSuggestions(searchByTextResults);
-          showLocalNotification(`Found ${searchByTextResults.length} raw Walmart locations`, 'success');
-          
-          return { processedResults, searchByTextResults, fullResults };
-        } catch (error) {
-          console.error('🧪 [RAW DIAGNOSTIC] Error:', error);
-          showLocalNotification('Raw search failed', 'error');
-          return null;
-        }
-      };
-      
-      // Toggle between grouped and ungrouped Walmart results
-      window.toggleWalmartGrouping = async () => {
-        console.log('🧪 [TOGGLE] Switching Walmart grouping mode...');
-        try {
-          const currentSuggestions = destinationSuggestions;
-          
-          // Better detection of current mode - check if we have grouped services or if results look grouped
-          const hasGroupedServices = currentSuggestions.some(s => s.groupedServices && s.groupedServices.count > 0);
-          const hasMultipleServicesAtSameLocation = currentSuggestions.some(s => 
-            s.name && s.name.includes('Walmart') && 
-            currentSuggestions.filter(other => 
-              other.lat === s.lat && other.lon === s.lon && other !== s
-            ).length > 0
-          );
-          
-          const isCurrentlyGrouped = hasGroupedServices || !hasMultipleServicesAtSameLocation;
-          const newMode = !isCurrentlyGrouped;
-          
-          console.log('🧪 [TOGGLE] Current suggestions count:', currentSuggestions.length);
-          console.log('🧪 [TOGGLE] Has grouped services:', hasGroupedServices);
-          console.log('🧪 [TOGGLE] Has multiple services at same location:', hasMultipleServicesAtSameLocation);
-          console.log('🧪 [TOGGLE] Current mode:', isCurrentlyGrouped ? 'grouped' : 'ungrouped');
-          console.log('🧪 [TOGGLE] Switching to:', newMode ? 'grouped' : 'ungrouped');
-          
-          const results = await MAPBOX_SERVICE.searchDestinations('walmart', {
-            limit: 25,
-            userLocation,
-            enableAdaptiveRadius: true,
-            bypassGrouping: !newMode // Invert the logic - bypassGrouping: false = grouped, bypassGrouping: true = ungrouped
-          });
-          
-          setDestinationSuggestions(results);
-          showLocalNotification(`Switched to ${newMode ? 'grouped' : 'ungrouped'} view: ${results.length} results`, 'success');
-          
-        } catch (error) {
-          console.error('🧪 [TOGGLE] Error:', error);
-          showLocalNotification('Toggle failed', 'error');
-        }
-      };
-      
-      // Comprehensive search validation test
-      window.testComprehensiveSearch = async (query = 'walmart') => {
-        console.log('🧪 [COMPREHENSIVE] Starting comprehensive search validation...');
-        try {
-          await MAPBOX_SERVICE.testComprehensiveSearch(query, userLocation);
-        } catch (error) {
-          console.error('🧪 [COMPREHENSIVE] Error:', error);
-        }
-      };
-      
-      // Show current Walmart results analysis
-      window.analyzeWalmartResults = () => {
-        console.log('🔍 [ANALYSIS] Current Walmart results analysis:');
-        console.log('🔍 [ANALYSIS] Total suggestions:', destinationSuggestions.length);
-        
-        if (destinationSuggestions.length === 0) {
-          console.log('🔍 [ANALYSIS] No suggestions to analyze');
-          return;
-        }
-        
-        // Group by location
-        const locationGroups = new Map();
-        destinationSuggestions.forEach(suggestion => {
-          if (suggestion.lat && suggestion.lon) {
-            const key = `${suggestion.lat.toFixed(4)}_${suggestion.lon.toFixed(4)}`;
-            if (!locationGroups.has(key)) {
-              locationGroups.set(key, {
-                location: { lat: suggestion.lat, lon: suggestion.lon },
-                address: suggestion.address,
-                services: []
-              });
-            }
-            locationGroups.get(key).services.push(suggestion.name);
-          }
-        });
-        
-        console.log('🔍 [ANALYSIS] Unique locations:', locationGroups.size);
-        locationGroups.forEach((group, key) => {
-          console.log(`🔍 [ANALYSIS] Location ${key}:`);
-          console.log(`  Address: ${group.address}`);
-          console.log(`  Services (${group.services.length}): ${group.services.join(', ')}`);
-        });
-        
-        // Check for grouped services
-        const hasGroupedServices = destinationSuggestions.some(s => s.groupedServices && s.groupedServices.count > 0);
-        console.log('🔍 [ANALYSIS] Has grouped services:', hasGroupedServices);
-        
-        if (hasGroupedServices) {
-          destinationSuggestions.forEach(s => {
-            if (s.groupedServices) {
-              console.log(`🔍 [ANALYSIS] Grouped services for "${s.name}":`, s.groupedServices);
-            }
-          });
-        }
-      };
-              console.log('🧪 Test functions available: window.testSetSuggestions(), window.setDefaultLocation(), window.testWalmartSearchRaw(), window.toggleWalmartGrouping(), window.analyzeWalmartResults(), and window.testComprehensiveSearch()');
-    }
-  }, [userLocation]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -1691,7 +1094,8 @@ function RouteOptimizer({ mode = 'create' }) {
         
         // If changing from driver to passenger, stop location tracking
         if (creatorRole === 'driver' && value === 'passenger') {
-          stopTracking();
+          setIsTracking(false);
+          setLocationStatus('stopped');
           setUserLocation(null);
         }
       }
@@ -1715,409 +1119,10 @@ function RouteOptimizer({ mode = 'create' }) {
     lastRouteCalculationRef.current = null;
     console.log('🧹 Route calculation cache cleared');
   };
-  
-  // Test Mapbox integration
-  const testMapboxIntegration = async () => {
-    console.log('🧪 Testing Mapbox integration...');
-    
-    try {
-      // Test geocoding
-      console.log('🧪 Testing geocoding...');
-      const geocodeResult = await MAPBOX_SERVICE.getCoordsFromAddress('Starbucks, Plano, TX');
-      console.log('🧪 Geocoding result:', geocodeResult);
-      
-      // Test search
-      console.log('🧪 Testing search...');
-      const searchResult = await MAPBOX_SERVICE.searchDestinations('walmart', {
-        limit: 3,
-        userLocation: userLocation
-      });
-      console.log('🧪 Search result:', searchResult);
-      
-      // Test reverse geocoding
-      if (userLocation) {
-        console.log('🧪 Testing reverse geocoding...');
-        const reverseResult = await MAPBOX_SERVICE.getAddressFromCoords(userLocation.lat, userLocation.lng);
-        console.log('🧪 Reverse geocoding result:', reverseResult);
-      }
-      
-    } catch (error) {
-      console.error('🧪 Mapbox integration test failed:', error);
-    }
-  };
-
-  // Test search with different strategies
-  const testSearchStrategies = async () => {
-    console.log('🧪 Testing Mapbox Search Box API...');
-    const query = 'kroger';
-    const userLocation = { lat: 33.1087872, lng: -96.7606272 };
-    
-    try {
-      // Test 1: Full Search Box API search
-      console.log('🧪 Test 1: Full Search Box API search');
-      const searchResults = await MAPBOX_SERVICE.searchDestinations(query, {
-        limit: 10,
-        maxDistance: 100,
-        userLocation
-      });
-      console.log('🧪 Search Box API results:', searchResults);
-      
-      // Test 2: Direct Search Box API calls
-      console.log('🧪 Test 2: Direct Search Box API calls');
-      
-      // Test suggest endpoint
-      const suggestUrl = `https://api.mapbox.com/search/searchbox/v1/suggest?access_token=${MAPBOX_CONFIG.apiKey}&q=${encodeURIComponent(query)}&limit=10&country=US&types=poi&proximity=${userLocation.lng},${userLocation.lat}`;
-      console.log('🧪 Suggest URL:', suggestUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
-      
-      const suggestResponse = await fetch(suggestUrl);
-      const suggestData = await suggestResponse.json();
-      console.log('🧪 Suggest results:', suggestData);
-      
-      // Test forward endpoint
-      const forwardUrl = `https://api.mapbox.com/search/searchbox/v1/forward?access_token=${MAPBOX_CONFIG.apiKey}&q=${encodeURIComponent(query)}&limit=10&country=US&types=poi&proximity=${userLocation.lng},${userLocation.lat}`;
-      console.log('🧪 Forward URL:', forwardUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
-      
-      const forwardResponse = await fetch(forwardUrl);
-      const forwardData = await forwardResponse.json();
-      console.log('🧪 Forward results:', forwardData);
-      
-      // Test 3: Test retrieve endpoint if we have suggestions
-      if (suggestData.suggestions && suggestData.suggestions.length > 0) {
-        console.log('🧪 Test 3: Testing retrieve endpoint');
-        const firstSuggestion = suggestData.suggestions[0];
-        const retrieveUrl = `https://api.mapbox.com/search/searchbox/v1/retrieve?access_token=${MAPBOX_CONFIG.apiKey}&id=${firstSuggestion.id}`;
-        console.log('🧪 Retrieve URL:', retrieveUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
-        
-        const retrieveResponse = await fetch(retrieveUrl);
-        const retrieveData = await retrieveResponse.json();
-        console.log('🧪 Retrieve results:', retrieveData);
-      }
-      
-      // Test 4: Compare with Geocoding API
-      console.log('🧪 Test 4: Compare with Geocoding API');
-      const geocodingUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAPBOX_CONFIG.apiKey}&types=poi&limit=10&country=US&proximity=${userLocation.lng},${userLocation.lat}&autocomplete=true`;
-      console.log('🧪 Geocoding URL:', geocodingUrl.replace(MAPBOX_CONFIG.apiKey, '***'));
-      
-      const geocodingResponse = await fetch(geocodingUrl);
-      const geocodingData = await geocodingResponse.json();
-      console.log('🧪 Geocoding results:', geocodingData.features?.length || 0, 'features');
-      
-      showLocalNotification('Search Box API test completed', 'success');
-    } catch (error) {
-      console.error('🧪 Search test failed:', error);
-      showLocalNotification('Search strategy test failed', 'error');
-    }
-  };
-
-  // Test functions commented out - Mapbox integration pending
-  /*
-  const testSearchAPIv2 = async () => {
-    console.log('🧪 Testing Search API v2 directly...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    console.log('🧪 User location for test:', userLocation);
-    
-    // Test different parameter combinations
-    const testCases = [
-      {
-        name: 'Original parameters',
-        params: {
-          maxMatches: '5',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Alternative parameters (center instead of shapePoints)',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '5',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic search without location',
-        params: {
-          maxMatches: '5',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response:`, data);
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-  
-  // Test different business types to see what's available
-  const testBusinessTypes = async () => {
-    console.log('🧪 Testing different business types...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const businessTypes = ['starbucks', 'mcdonalds', 'walmart', 'target', 'kroger', 'restaurant', 'gas', 'bank'];
-    
-    for (const businessType of businessTypes) {
-      try {
-        console.log(`🧪 Testing business type: ${businessType}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        searchUrl.searchParams.append('maxMatches', '3');
-        searchUrl.searchParams.append('shapePoints', `${userLocation.lat},${userLocation.lng}`);
-        searchUrl.searchParams.append('radius', '80');
-        searchUrl.searchParams.append('units', 'k');
-        searchUrl.searchParams.append('hostedData', 'mqap.ntpois');
-        searchUrl.searchParams.append('search', businessType);
-        
-        console.log(`🧪 ${businessType} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        
-        if (!response.ok) {
-          console.log(`🧪 ${businessType} failed with status:`, response.status);
-          continue;
-        }
-        
-        const data = await response.json();
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${businessType} found ${data.searchResults.length} results:`);
-          data.searchResults.forEach((result, index) => {
-            console.log(`  ${index + 1}. ${result.name} (${result.distance}km away)`);
-          });
-      } else {
-          console.log(`🧪 ${businessType} returned no results`);
-        }
-      } catch (error) {
-        console.error(`🧪 ${businessType} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-  };
-
-  // Test the actual search function used in the app
-  const testAppSearch = async (query = 'starbucks') => {
-    console.log('🧪 Testing app search function with query:', query);
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    try {
-      const searchOptions = {
-        limit: 5,
-        maxDistance: 50,
-        userLocation: userLocation
-      };
-      
-              console.log('🧪 Calling MAPBOX_SERVICE.searchDestinations with:', searchOptions);
-        const results = await MAPBOX_SERVICE.searchDestinations(query, searchOptions);
-      
-      console.log('🧪 App search results:', results);
-      
-      if (results && results.length > 0) {
-        console.log('🧪 Found', results.length, 'results:');
-        results.forEach((result, index) => {
-          console.log(`  ${index + 1}. ${result.display_name} (${result.distance}km away)`);
-        });
-      } else {
-        console.log('🧪 No results found');
-      }
-    } catch (error) {
-      console.error('🧪 App search failed:', error);
-    }
-  };
-
-  // Test API parameters systematically
-  const testAPIParameters = async () => {
-    console.log('🧪 Testing API parameters systematically...');
-    
-    if (!userLocation) {
-      console.log('❌ No user location available for test');
-      return;
-    }
-    
-    const testCases = [
-      {
-        name: 'Basic shapePoints with search',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'Basic center with search',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          search: 'starbucks'
-        }
-      },
-      {
-        name: 'shapePoints with q parameter',
-        params: {
-          maxMatches: '3',
-          shapePoints: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'center with q parameter',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          hostedData: 'mqap.ntpois',
-          q: 'starbucks'
-        }
-      },
-      {
-        name: 'Without hostedData',
-        params: {
-          maxMatches: '3',
-          center: `${userLocation.lat},${userLocation.lng}`,
-          radius: '80',
-          units: 'k',
-          search: 'starbucks'
-        }
-      }
-    ];
-    
-    for (const testCase of testCases) {
-      try {
-        console.log(`🧪 Testing: ${testCase.name}`);
-        
-        const searchUrl = new URL('https://www.mapquestapi.com/search/v2/search');
-        searchUrl.searchParams.append('key', import.meta.env.VITE_MAPQUEST_API_KEY || 'rbGFNBHwHoNH00Ev02kfYtTCw2PZHcNU');
-        
-        // Add all parameters for this test case
-        Object.entries(testCase.params).forEach(([key, value]) => {
-          searchUrl.searchParams.append(key, value);
-        });
-        
-        console.log(`🧪 ${testCase.name} URL:`, searchUrl.toString().replace(searchUrl.searchParams.get('key'), '***'));
-        
-        const response = await fetch(searchUrl.toString());
-        console.log(`🧪 ${testCase.name} response status:`, response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`🧪 ${testCase.name} HTTP error:`, errorText);
-          continue;
-        }
-        
-        const data = await response.json();
-        console.log(`🧪 ${testCase.name} response keys:`, Object.keys(data));
-        
-        if (data.searchResults && data.searchResults.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.searchResults.length} results`);
-          console.log(`🧪 ${testCase.name} first result:`, data.searchResults[0]);
-        } else if (data.results && data.results.length > 0) {
-          console.log(`🧪 ${testCase.name} found ${data.results.length} results (alternative structure)`);
-          console.log(`🧪 ${testCase.name} first result:`, data.results[0]);
-        } else {
-          console.log(`🧪 ${testCase.name} returned no results`);
-          if (data.info) {
-            console.log(`🧪 ${testCase.name} info:`, data.info);
-          }
-        }
-      } catch (error) {
-        console.error(`🧪 ${testCase.name} failed:`, error);
-      }
-      
-      // Wait a bit between tests to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  };
-
-  // Add debug functions to global scope for testing
-  if (typeof window !== 'undefined') {
-    window.testGeolocation = testGeolocation;
-    window.testSpecificSearch = testSpecificSearch;
-    window.clearRouteCache = clearRouteCalculationCache;
-    window.testMapbox = testMapboxIntegration;
-    window.testSearchStrategies = testSearchStrategies;
-    window.userLocation = userLocation;
-    window.trackedLocation = location;
-  }
-  */
 
   // Handle destination selection
   const handleDestinationSelect = async (selectedOption) => {
+    console.log('🎯 handleDestinationSelect called with:', selectedOption);
     if (!selectedOption) return;
     
     try {
@@ -2153,6 +1158,16 @@ function RouteOptimizer({ mode = 'create' }) {
         // Add destination name to coords for the route preview modal
         coords.name = selectedOption.name || selectedOption.display_name || 'Selected Destination';
         
+        // Zoom map to the selected location (mobile-like behavior)
+        if (mapRef.current && coords.lat && coords.lng) {
+          console.log('🗺️ Zooming to selected destination:', coords);
+          mapRef.current.flyTo({
+            center: [coords.lng, coords.lat],
+            zoom: 16,
+            duration: 1500
+          });
+        }
+        
         // Set destination
         await handleDestinationChange(coords);
         setForm(prev => ({ ...prev, destination: coords.address }));
@@ -2161,8 +1176,8 @@ function RouteOptimizer({ mode = 'create' }) {
         setTimeout(() => {
           setDestinationSuggestions([]);
           setCategorySearchResults([]); // Clear category search results
-          setSearchBoxSuggestions([]); // Clear search box suggestions
-          setHybridResults([]); // Clear hybrid results
+          setShowSearchResults(false); // Hide the dropdown
+          setSearchBoxValue(''); // Clear the search input
         }, 100);
         
         // Automatically calculate route if user is driver and has location
@@ -2251,71 +1266,27 @@ function RouteOptimizer({ mode = 'create' }) {
   };
   */
   
-  // Function to create hybrid results from category and Search Box suggestions
-  const createHybridResults = (categoryResults, searchBoxResults) => {
-    if (!categoryResults.length && !searchBoxResults.length) {
+
+
+  // Simple search function that matches mobile view implementation
+  const performSearch = async (query) => {
+    if (!query || query.trim().length < 2) {
+      console.log('🔍 Query too short or empty, clearing results');
+      setCategorySearchResults([]);
+      setIsCategorySearching(false);
       return [];
     }
     
-    const hybrid = [];
-    
-    // Add top category results first (up to 5)
-    if (categoryResults.length > 0) {
-      hybrid.push(...categoryResults.slice(0, 5).map(result => ({
-        ...result,
-        source: 'category',
-        priority: 1
-      })));
-    }
-    
-    // Add top Search Box results (up to 3) if we have space
-    if (searchBoxResults.length > 0 && hybrid.length < 8) {
-      const remainingSlots = 8 - hybrid.length;
-      const searchBoxSlice = searchBoxResults.slice(0, remainingSlots);
-      
-      hybrid.push(...searchBoxSlice.map(result => ({
-        ...result,
-        source: 'searchbox',
-        priority: 2
-      })));
-    }
-    
-    // Sort by priority first, then by distance
-    hybrid.sort((a, b) => {
-      if (a.priority !== b.priority) {
-        return a.priority - b.priority;
-      }
-      if (a.distance === null && b.distance === null) return 0;
-      if (a.distance === null) return 1;
-      if (b.distance === null) return -1;
-      return a.distance - b.distance;
-    });
-    
-    return hybrid;
-  };
-
-  // Enhanced search function that prioritizes category search over Search Box
-  const handleEnhancedSearch = async (query) => {
-    if (!query || query.trim().length < 2) {
-      setCategorySearchResults([]);
-      setSearchBoxSuggestions([]);
-      setHybridResults([]);
-      setIsCategorySearching(false);
-      return;
-    }
-
     const trimmedQuery = query.trim().toLowerCase();
-    console.log(`🔍 RouteOptimizer search for: "${trimmedQuery}"`);
+    console.log(`🔍 Desktop search for: "${trimmedQuery}"`);
     console.log(`🔍 Current userLocation:`, userLocation);
     console.log(`🔍 userLocation type:`, typeof userLocation);
     console.log(`🔍 userLocation keys:`, userLocation ? Object.keys(userLocation) : 'null');
-
+    
     // Set loading state
-      setIsCategorySearching(true);
-      setCategorySearchResults([]); // Clear previous results
-      setSearchBoxSuggestions([]); // Clear Search Box suggestions to prevent conflicts
-      setHybridResults([]); // Clear hybrid results
-      
+    setIsCategorySearching(true);
+    setCategorySearchResults([]); // Clear previous results
+    
     // Use the same simple approach as MobileRideCreator
     try {
       const results = await searchDestinations(trimmedQuery, {
@@ -2324,66 +1295,82 @@ function RouteOptimizer({ mode = 'create' }) {
         enableFallback: true
       });
       
-      console.log(`🔍 RouteOptimizer search results: ${results.length} found`);
+      console.log(`🔍 Desktop search results: ${results.length} found`);
       console.log(`🔍 Search results:`, results);
       
       // Update state with results (no filtering - same as mobile)
-        setCategorySearchResults(results);
+      console.log('🔍 Setting search results:', results);
+      setCategorySearchResults(results);
+      const shouldShowResults = results.length > 0;
+      console.log('🔍 Setting showSearchResults to:', shouldShowResults);
+      setShowSearchResults(shouldShowResults);
+      console.log('🔍 showSearchResults set to:', shouldShowResults);
+      
+      if (results.length > 0) {
+        showLocalNotification(`Found ${results.length} locations for "${trimmedQuery}"`, 'success');
         
-        if (results.length > 0) {
-          showLocalNotification(`Found ${results.length} locations for "${trimmedQuery}"`, 'success');
-          
-        console.log(`🔍 RouteOptimizer search successful for "${trimmedQuery}":`, {
-            totalResults: results.length,
-            firstResult: results[0] ? {
-              name: results[0].name,
-              distance: results[0].distance?.toFixed(1) + ' mi',
-              address: results[0].address
-            } : null,
-            allResults: results.map(r => ({
-              name: r.name,
-              distance: r.distance?.toFixed(1) + ' mi',
-              address: r.address
-            }))
-          });
-        } else {
-          showLocalNotification(`No locations found for "${trimmedQuery}"`, 'info');
-        }
-      } catch (error) {
-      console.error('🔍 RouteOptimizer search failed:', error);
+        console.log(`🔍 Desktop search successful for "${trimmedQuery}":`, {
+          totalResults: results.length,
+          firstResult: results[0] ? {
+            name: results[0].name,
+            distance: results[0].distance?.toFixed(1) + ' mi',
+            address: results[0].address
+          } : null,
+          allResults: results.map(r => ({
+            name: r.name,
+            distance: r.distance?.toFixed(1) + ' mi',
+            address: r.address
+          }))
+        });
+      } else {
+        showLocalNotification(`No locations found for "${trimmedQuery}"`, 'info');
+      }
+      
+      return results;
+    } catch (error) {
+      console.error('🔍 Desktop search failed:', error);
       showLocalNotification('Search failed', 'error');
-        setCategorySearchResults([]);
-      } finally {
-        setIsCategorySearching(false);
+      setCategorySearchResults([]);
+      setShowSearchResults(false);
+      return [];
+    } finally {
+      setIsCategorySearching(false);
     }
   };
 
-  // Enhanced destination input change handler
+  // Enhanced destination input change handler - matches mobile implementation
   const handleDestinationInputChange = (event) => {
-    const query = event.target.value.trim();
+    const query = event.target.value;
+    console.log('🔍 Search input changed:', query);
+    console.log('🔍 Current showSearchResults:', showSearchResults);
+    console.log('🔍 Current categorySearchResults length:', categorySearchResults.length);
     setSearchBoxValue(query);
     
-    // Clear any existing timeout
+    // Clear previous timeout
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
     
     // If query is empty, clear results
     if (!query || query.length === 0) {
+      console.log('🔍 Query empty, clearing results');
       setCategorySearchResults([]);
+      setShowSearchResults(false);
       setIsCategorySearching(false);
       return;
     }
     
     // Don't search for very short queries
-    if (query.length < 2) {
+    if (query.length < 3) {
+      console.log('🔍 Query too short, not searching');
       return;
     }
     
-    // Debounce the search (same as mobile - 500ms)
+    // Trigger search after delay
     searchTimeoutRef.current = setTimeout(() => {
-      handleEnhancedSearch(query);
-    }, 500);
+      console.log('🔍 Debounced search triggered for:', query);
+      performSearch(query);
+    }, 300); // Reduced delay for better responsiveness
   };
 
   const handleDelete = async (userId) => {
@@ -2565,16 +1552,6 @@ function RouteOptimizer({ mode = 'create' }) {
     }
   };
 
-  const handleRoleChange = (tempId, newRole) => {
-    setUsers(prevUsers => 
-      prevUsers.map(user => 
-        user.tempId === tempId 
-          ? { ...user, role: newRole }
-          : user
-      )
-    );
-  };
-
   const handleCreateGroup = async () => {
     console.log('handleCreateGroup called with state:', {
       destination,
@@ -2613,9 +1590,46 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
+    // Show ride verification modal instead of directly creating the ride
+    const rideData = {
+      title: `Ride to ${destination.address || 'Destination'}`,
+      startTime: new Date().toISOString().slice(0, 16), // Current date/time
+      destination: destination.address || `Location (${destination.lat.toFixed(6)}, ${destination.lng.toFixed(6)})`,
+      description: `Ride with ${users.length} participant${users.length !== 1 ? 's' : ''}`,
+        carSeatsAvailable: carSeatsAvailable,
+        avoidTolls: creatorRole === 'driver' ? avoidTolls : false, // Include tolls preference
+      specialNotes: '',
+      users: users,
+      creatorRole: creatorRole
+    };
+
+    setRideDataForVerification(rideData);
+    setShowRideVerificationModal(true);
+  };
+
+  // Handle ride verification modal actions
+  const handleConfirmRide = async (finalRideData) => {
+    console.log('Confirming ride with data:', finalRideData);
+    
+    // Close the modal
+    setShowRideVerificationModal(false);
+    
+    // Extract the original ride data
+    const originalRideData = rideDataForVerification;
+    
+    // Use the creator role from the verification modal (this is the updated value)
+    const updatedCreatorRole = finalRideData.creatorRole || originalRideData.creatorRole || 'driver';
+    
+    console.log('🔍 Creator role analysis:', {
+      originalCreatorRole: originalRideData.creatorRole,
+      finalCreatorRole: finalRideData.creatorRole,
+      updatedCreatorRole,
+      finalRideDataKeys: Object.keys(finalRideData)
+    });
+    
     // Modified driver check to include creator if they are a driver
     const driver = users.find(u => u.role === 'driver') || 
-                  (creatorRole === 'driver' ? {
+                  (updatedCreatorRole === 'driver' ? {
                     id: user.uid,
                     name: user.displayName || 'You',
                     role: 'driver',
@@ -2623,33 +1637,14 @@ function RouteOptimizer({ mode = 'create' }) {
                     userLocationCoords: userLocation
                   } : null);
 
-    console.log('Driver check details:', {
-      driverFound: !!driver,
-      creatorRole,
-      driverDetails: driver ? {
-        id: driver.id,
-        name: driver.name,
-        isCreator: driver.isCreator,
-        role: driver.role,
-        hasLocation: !!driver.userLocationCoords
-      } : null,
-      userLocation: userLocation
-    });
-
-    if (!driver) {
+    // Only require a driver if creator is not a driver (creator as passenger means no initial driver)
+    if (!driver && updatedCreatorRole === 'driver') {
       console.log('Group creation blocked: No driver assigned', {
-        creatorRole,
+        updatedCreatorRole,
         usersWithRoles: users.map(u => ({ name: u.name, role: u.role }))
       });
       showLocalNotification('Please assign a driver for the ride', 'error');
       return;
-    }
-
-    // Validate driver location - but don't block if not available
-    if (!driver.userLocationCoords || !driver.userLocationCoords.lat || !driver.userLocationCoords.lng) {
-      console.warn('Driver location not available, proceeding with manual location entry');
-      showLocalNotification('Location not available. You can set your location manually on the map.', 'info');
-      // Don't return - let the user continue and set location manually
     }
 
     try {
@@ -2683,35 +1678,66 @@ function RouteOptimizer({ mode = 'create' }) {
 
       // Clean and validate the data before creating the group
       const cleanGroupData = {
-        driver: {
-          uid: driver.isCreator ? user.uid : driver.id,
-          name: driver.name || 'Unknown Driver',
-          location: driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng ? {
-            lat: driver.userLocationCoords.lat,
-            lng: driver.userLocationCoords.lng
-          } : null,
-          address: driverAddress || 'Location pending',
-          isCreator: driver.isCreator || false,
-          status: 'confirmed',
-          joinedAt: new Date().toISOString()
-        },
-        passengers: users
-          .filter(u => u.role === 'passenger')
-          .map(passenger => ({
-            name: passenger.name || 'Unknown Passenger',
-            location: passenger.userLocationCoords ? {
-              lat: passenger.userLocationCoords.lat,
-              lng: passenger.userLocationCoords.lng
+        // Include title and description from the verification modal
+        title: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        description: finalRideData.description || `Ride with ${users.length} participant${users.length !== 1 ? 's' : ''}`,
+        groupName: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        name: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        startTime: finalRideData.startTime || new Date().toISOString(),
+        carSeatsAvailable: finalRideData.carSeatsAvailable || carSeatsAvailable,
+        avoidTolls: finalRideData.avoidTolls || (updatedCreatorRole === 'driver' ? avoidTolls : false), // Include tolls preference
+        specialNotes: finalRideData.specialNotes || '',
+        // Only include driver if creator is a driver
+        ...(updatedCreatorRole === 'driver' ? {
+          driver: {
+            uid: driver.isCreator ? user.uid : driver.id,
+            name: driver.name || 'Unknown Driver',
+            location: driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng ? {
+              lat: driver.userLocationCoords.lat,
+              lng: driver.userLocationCoords.lng
             } : null,
-            address: passenger.userLocation || 'Location pending',
-          status: 'pending',
-            tempId: passenger.tempId || null,
-            isCreator: passenger.isCreator || false,
-            uid: passenger.id || null,
-            invitationStatus: 'pending',
-            invitedAt: new Date().toISOString(),
+            address: driverAddress || 'Location pending',
+            isCreator: driver.isCreator || false,
+            status: 'confirmed',
+            joinedAt: new Date().toISOString(),
+            avoidTolls: updatedCreatorRole === 'driver' ? avoidTolls : false // Include driver's tolls preference
+          }
+        } : {}),
+        passengers: [
+          // Include creator if they are a passenger
+          ...(updatedCreatorRole === 'passenger' ? [{
+            name: user.displayName || 'You',
+            location: userLocation ? {
+              lat: userLocation.lat,
+              lng: userLocation.lng
+            } : null,
+            address: userLocation ? 'Current Location' : 'Location pending',
+            status: 'confirmed',
+            isCreator: true,
+            uid: user.uid,
+            invitationStatus: 'accepted',
+            joinedAt: new Date().toISOString(),
             lastUpdated: new Date().toISOString()
-        })),
+          }] : []),
+          // Include other passengers
+          ...users
+            .filter(u => u.role === 'passenger')
+            .map(passenger => ({
+              name: passenger.name || 'Unknown Passenger',
+              location: passenger.userLocationCoords ? {
+                lat: passenger.userLocationCoords.lat,
+                lng: passenger.userLocationCoords.lng
+              } : null,
+              address: passenger.userLocation || 'Location pending',
+              status: 'pending',
+              tempId: passenger.tempId || null,
+              isCreator: passenger.isCreator || false,
+              uid: passenger.id || null,
+              invitationStatus: 'pending',
+              invitedAt: new Date().toISOString(),
+              lastUpdated: new Date().toISOString()
+            }))
+        ],
         destination: {
           location: {
             lat: destination.lat,
@@ -2719,6 +1745,7 @@ function RouteOptimizer({ mode = 'create' }) {
           },
           address: destinationAddress || 'Destination not found'
         },
+        creatorRole: updatedCreatorRole, // Save the updated creator role
         status: 'forming',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -2868,7 +1895,7 @@ function RouteOptimizer({ mode = 'create' }) {
 
         if (errors.length > 0) {
           showLocalNotification(`${sentCount}/${totalCount} invitations sent. ${errors.length} failed.`, 'warning');
-      } else {
+        } else {
           showLocalNotification(`Successfully sent ${sentCount} invitations`, 'success');
         }
       } else {
@@ -2879,7 +1906,7 @@ function RouteOptimizer({ mode = 'create' }) {
         throw new Error(result.error?.message || 'Failed to create group');
       }
     } catch (error) {
-      console.error('Error in handleCreateGroup:', {
+      console.error('Error in handleConfirmRide:', {
         error,
         stack: error.stack,
         timestamp: new Date().toISOString()
@@ -2889,6 +1916,52 @@ function RouteOptimizer({ mode = 'create' }) {
       console.log('Cleaning up group creation state');
       setIsCreatingGroup(false);
       setInvitationStatus(prev => ({ ...prev, isSending: false }));
+    }
+  };
+
+  const handleEditRide = () => {
+    console.log('Going back to edit mode');
+    setShowRideVerificationModal(false);
+    // The user stays on the current page to continue editing
+  };
+
+  const handleShareRide = async () => {
+    if (!createdRideId) {
+      showLocalNotification('No ride to share', 'error');
+      return;
+    }
+
+    // Create the deep link for the live ride
+    const deepLink = `${window.location.origin}/rides/${createdRideId}`;
+    
+    // Create share data
+    const shareData = {
+      title: 'Join my ride!',
+      text: 'I created a ride and would like you to join. Click the link to view the live ride.',
+      url: deepLink
+    };
+
+    try {
+      // Check if Web Share API is supported
+      if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+        showLocalNotification('Ride shared successfully!', 'success');
+      } else {
+        // Fallback: copy to clipboard
+        await navigator.clipboard.writeText(deepLink);
+        showLocalNotification('Ride link copied to clipboard!', 'success');
+      }
+    } catch (error) {
+      console.error('Error sharing ride:', error);
+      
+      // Final fallback: copy to clipboard
+      try {
+        await navigator.clipboard.writeText(deepLink);
+        showLocalNotification('Ride link copied to clipboard!', 'success');
+      } catch (clipboardError) {
+        console.error('Error copying to clipboard:', clipboardError);
+        showLocalNotification('Failed to share ride link', 'error');
+      }
     }
   };
 
@@ -2998,20 +2071,12 @@ function RouteOptimizer({ mode = 'create' }) {
           throw new Error(diagnosticError);
         }
 
-        // Start tracking with user ID
-        console.log('About to call startTracking...');
-        const success = await startTracking(user.uid);
-        console.log('startTracking returned:', success);
+        // Get current location once
+        console.log('About to get current location...');
+        await getCurrentLocationOnce();
+        console.log('Location obtained successfully');
         
-        if (!success) {
-          throw new Error('Location tracking service failed to start');
-        }
-
-        console.log('Location tracking started successfully');
-        
-        // Don't throw an error if startTracking returns true
-        // The location tracking is working as evidenced by the logs
-        // The error handling should be done by the location service callbacks
+        console.log('Location tracking completed successfully');
       } catch (error) {
         console.error('Location service error:', {
           error: error.message,
@@ -3045,8 +2110,9 @@ function RouteOptimizer({ mode = 'create' }) {
         setLocationError(errorMessage);
         setLocationStatusMessage(errorMessage);
         
-        // Force stop tracking to reset the button state
-        stopTracking();
+        // Reset tracking state
+        setIsTracking(false);
+        setLocationStatus('stopped');
         
         // Show a helpful notification to the user
         showLocalNotification('Location tracking failed. You can still use the app by setting your location manually.', 'warning');
@@ -3101,8 +2167,9 @@ function RouteOptimizer({ mode = 'create' }) {
         // Get address for the clicked location
         const address = await getAddressFromCoords(lat, lng);
         
-        // Set manual location using the location tracking service
-        setManualLocation(lat, lng, address);
+        // Set manual location directly
+        const newLocation = { lat, lng, accuracy: 0 };
+        setUserLocation(newLocation);
         
         // Clear error state
         setHasValidLocation(true);
@@ -3212,7 +2279,7 @@ function RouteOptimizer({ mode = 'create' }) {
         id: userData.id || `temp-${Date.now()}`,
         name: userData.name || userData.profile?.displayName || userData.displayName || 'Unknown User',
         displayName: userData.profile?.displayName || userData.displayName || userData.name || 'Unknown User',
-        role: userData.role || 'passenger',
+        role: userData.role || 'passenger', // Default to passenger, invitee will choose their role
         destination: destinationCoords?.address || destinationCoords || null,
         destinationCoords,
         color,
@@ -3314,680 +2381,6 @@ function RouteOptimizer({ mode = 'create' }) {
               <CloseIcon fontSize="small" />
             </IconButton>
           </Box>
-
-          {/* Location Tracking Section */}
-          <Card sx={{ 
-            borderRadius: 3, 
-            boxShadow: '0 4px 20px rgba(176, 137, 104, 0.1)', 
-            background: 'linear-gradient(135deg, #fff 0%, #f9f6ef 100%)',
-            border: '1px solid #e0c9b3'
-          }}>
-            <CardContent sx={{ p: 2 }}>
-              <Box display="flex" alignItems="center" mb={1.5}>
-                <Avatar sx={{ 
-                  width: 32, 
-                  height: 32, 
-                  background: '#b08968',
-                  mr: 1.5
-                }}>
-                  <LocationIcon fontSize="small" />
-                </Avatar>
-                <Box>
-                  <Typography variant="subtitle1" fontWeight={600} color="#4e342e">
-                    Your Location
-                  </Typography>
-                  <Typography variant="caption" color="#7c5e48">
-                    {isTracking ? 'Tracking active' : 'Location not set'}
-                  </Typography>
-                </Box>
-              </Box>
-
-              {userLocation ? (
-                <Box>
-                  <Chip 
-                    label={userLocation.address || `Location (${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)})`}
-                    color="primary" 
-                    variant="outlined"
-                    size="small"
-                    sx={{ 
-                      mb: 1.5, 
-                      background: '#fff', 
-                      borderColor: '#4caf50', 
-                      color: '#4caf50',
-                      fontWeight: 500
-                    }}
-                    icon={<CheckIcon fontSize="small" />}
-                  />
-                  <Stack direction="row" spacing={1}>
-                    <Button 
-                      variant="outlined" 
-                      size="small"
-                      onClick={() => {
-                        stopTracking();
-                        setUserLocation(null);
-                      }}
-                      sx={{ 
-                        color: '#f44336', 
-                        borderColor: '#ffcdd2',
-                        borderRadius: 1.5,
-                        px: 1.5,
-                        py: 0.5
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  </Stack>
-                </Box>
-              ) : (
-                <Box>
-                  <Typography variant="body2" color="#7c5e48" mb={1.5}>
-                    Set your location to start planning your ride
-                  </Typography>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    name="userLocation"
-                    placeholder="Enter your location or click on map"
-                    value={form.userLocation || ''}
-                    onChange={handleChange}
-                    onBlur={async (e) => {
-                      if (e.target.value.trim()) {
-                        await handleUserLocationChange(e.target.value);
-                      }
-                    }}
-                    sx={{ 
-                      mb: 1.5,
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 1.5,
-                        background: '#fff',
-                        '& fieldset': {
-                          borderColor: '#e0c9b3'
-                        },
-                        '&:hover fieldset': {
-                          borderColor: '#b08968'
-                        },
-                        '&.Mui-focused fieldset': {
-                          borderColor: '#b08968'
-                        }
-                      }
-                    }}
-                  />
-                  <Button 
-                    variant="contained"
-                    size="small"
-                    startIcon={<LocationIcon fontSize="small" />}
-                    onClick={handleStartTracking}
-                    disabled={isLocationLoading}
-                    fullWidth
-                    sx={{ 
-                      background: '#b08968', 
-                      color: '#fff', 
-                      borderRadius: 1.5,
-                      py: 0.75,
-                      '&:hover': {
-                        background: '#a47551'
-                      }
-                    }}
-                  >
-                    {isLocationLoading ? 'Starting...' : 'Auto Detect'}
-                  </Button>
-                  
-                  {/* Manual Location Option - Show when tracking fails or for office networks */}
-                  {(hasLocationError || locationStatusMessage?.includes('blocked') || locationStatusMessage?.includes('failed')) && (
-                    <Box mt={1.5}>
-                      <Typography variant="caption" color="#7c5e48" display="block" mb={1}>
-                        Or set location manually:
-                      </Typography>
-                      <Stack direction="row" spacing={1}>
-                        <Button 
-                          variant="outlined"
-                          size="small"
-                          startIcon={<MapIcon fontSize="small" />}
-                          onClick={handleSetManualLocationFromMap}
-                          sx={{ 
-                            flex: 1,
-                            color: '#b08968', 
-                            borderColor: '#b08968',
-                            borderRadius: 1.5,
-                            py: 0.5,
-                            '&:hover': {
-                              borderColor: '#a47551',
-                              background: '#f9f6ef'
-                            }
-                          }}
-                        >
-                          Click on Map
-                        </Button>
-                        <Button 
-                          variant="outlined"
-                          size="small"
-                          startIcon={<EditIcon fontSize="small" />}
-                          onClick={() => {
-                            // Focus on the location input field
-                            const input = document.querySelector('input[name="userLocation"]');
-                            if (input) {
-                              input.focus();
-                              input.select();
-                            }
-                          }}
-                          sx={{ 
-                            flex: 1,
-                            color: '#b08968', 
-                            borderColor: '#b08968',
-                            borderRadius: 1.5,
-                            py: 0.5,
-                            '&:hover': {
-                              borderColor: '#a47551',
-                              background: '#f9f6ef'
-                            }
-                          }}
-                        >
-                          Type Address
-                        </Button>
-                      </Stack>
-                    </Box>
-                  )}
-                </Box>
-              )}
-
-              {locationStatusMessage && (
-                <Alert 
-                  severity={hasLocationError ? 'error' : 'info'} 
-                  size="small"
-                  sx={{ 
-                    mt: 1.5,
-                    background: hasLocationError ? '#ffebee' : '#e3f2fd',
-                    color: hasLocationError ? '#c62828' : '#1565c0',
-                    borderRadius: 1.5,
-                    py: 0.5
-                  }}
-                >
-                  <Typography variant="caption">
-                    {locationStatusMessage}
-                  </Typography>
-                </Alert>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Destination Section */}
-          <Card sx={{ 
-            borderRadius: 3, 
-            boxShadow: '0 4px 20px rgba(176, 137, 104, 0.1)', 
-            background: 'linear-gradient(135deg, #fff 0%, #f9f6ef 100%)',
-            border: '1px solid #e0c9b3'
-          }}>
-            <CardContent sx={{ p: 2 }}>
-              <Box display="flex" alignItems="center" mb={1.5}>
-                <Avatar sx={{ 
-                  width: 32, 
-                  height: 32, 
-                  background: '#b08968',
-                  mr: 1.5
-                }}>
-                  <RouteIcon fontSize="small" />
-                </Avatar>
-                <Box>
-                  <Typography variant="subtitle1" fontWeight={600} color="#4e342e">
-                    Destination
-                  </Typography>
-                  <Typography variant="caption" color="#7c5e48">
-                    Where are you heading?
-                  </Typography>
-                </Box>
-              </Box>
-              
-              {destination ? (
-                <Box>
-                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={1.5}>
-                    <Box display="flex" alignItems="center">
-                      <Avatar sx={{ 
-                        width: 32, 
-                        height: 32, 
-                        background: isProcessingDestination ? '#ff9800' : '#4caf50',
-                        mr: 1.5
-                      }}>
-                        {isProcessingDestination ? (
-                          <SimpleLoading size="small" sx={{ color: '#fff' }} />
-                        ) : (
-                        <LocationIcon fontSize="small" sx={{ color: '#fff' }} />
-                        )}
-                      </Avatar>
-                      <Box>
-                        <Typography variant="subtitle1" fontWeight={600} color="#4e342e">
-                          {isProcessingDestination ? 'Setting Destination...' : 'Destination Set'}
-                        </Typography>
-                        <Typography variant="caption" color="#7c5e48">
-                          {isProcessingDestination ? 'Please wait while we set your destination' : 'Click to change location'}
-                        </Typography>
-                      </Box>
-                    </Box>
-                    {!isProcessingDestination && (
-                    <IconButton 
-                      size="small"
-                      onClick={() => {
-                        setDestination(null);
-                        setForm(prev => ({ ...prev, destination: '' }));
-                        setShowRoutePreview(false);
-                        setRoutePreviewData(null);
-                      }}
-                      sx={{ 
-                        color: '#b08968',
-                        '&:hover': {
-                          background: '#ffebee',
-                          color: '#f44336'
-                        }
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                    )}
-                  </Box>
-                  
-                  <Paper sx={{ 
-                    p: 1.5, 
-                    background: '#f1f8e9', 
-                    border: '1px solid #c8e6c9',
-                    borderRadius: 2,
-                    mb: 1.5
-                  }}>
-                    <Typography variant="body2" color="#2e7d32" fontWeight={500} sx={{ mb: 0.5 }}>
-                      📍 {destination.address}
-                    </Typography>
-                    <Typography variant="caption" color="#388e3c">
-                      Lat: {destination.lat.toFixed(6)}, Lng: {destination.lng.toFixed(6)}
-                    </Typography>
-                  </Paper>
-                  
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={<LocationIcon fontSize="small" />}
-                    onClick={() => {
-                      // Focus on destination on map
-                      if (mapRef.current) {
-                        // This would need to be implemented in MapView
-                        console.log('Focus on destination');
-                      }
-                    }}
-                    sx={{ 
-                      color: '#4caf50', 
-                      borderColor: '#c8e6c9', 
-                      borderRadius: 1.5,
-                      width: '100%',
-                      '&:hover': {
-                        background: '#f1f8e9'
-                      }
-                    }}
-                  >
-                    View on Map
-                  </Button>
-                </Box>
-              ) : (
-                <Box>
-                  <Typography variant="body2" color="#7c5e48" mb={1.5}>
-                    Set your destination to start planning
-                  </Typography>
-                  
-                  {/* Test buttons removed - Mapbox integration pending */}
-                  
-                  {/* Destination setting options */}
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={<MapIcon fontSize="small" />}
-                    onClick={handleSetDestinationFromMap}
-                    sx={{ 
-                      width: '100%',
-                      color: '#b08968', 
-                      borderColor: '#b08968',
-                      borderRadius: 1.5,
-                      py: 0.5,
-                      mb: 1.5,
-                      '&:hover': {
-                        borderColor: '#a47551',
-                        background: '#f9f6ef'
-                      }
-                    }}
-                  >
-                    Click on Map to Set Destination
-                  </Button>
-                  
-                  {/* Custom Search Input with Category Detection */}
-                  <TextField
-                    fullWidth
-                    size="small"
-                    placeholder="Search destination, place, or POI (try: gas stations, coffee, restaurants)"
-                    value={searchBoxValue}
-                    onChange={(event) => {
-                      const query = event.target.value;
-                      setSearchBoxValue(query);
-                      
-                      // Trigger enhanced search for category detection
-                      if (query.trim().length >= 2) {
-                        handleEnhancedSearch(query);
-                      } else {
-                        setCategorySearchResults([]);
-                        setSearchBoxSuggestions([]);
-                        setHybridResults([]);
-                      }
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        // Handle Enter key - could trigger a search or select first result
-                        console.log('📍 Enter pressed, current search value:', searchBoxValue);
-                      }
-                    }}
-                    sx={{ 
-                      mb: 1.5,
-                      '& .MuiOutlinedInput-root': {
-                        borderRadius: 1.5,
-                        background: '#fff',
-                        '& fieldset': {
-                          borderColor: '#e0c9b3'
-                        },
-                        '&:hover fieldset': {
-                          borderColor: '#b08968'
-                        },
-                        '&.Mui-focused fieldset': {
-                          borderColor: '#b08968'
-                        }
-                      }
-                    }}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <SearchIcon sx={{ color: '#b08968' }} />
-                        </InputAdornment>
-                      ),
-                      endAdornment: searchBoxValue && (
-                        <InputAdornment position="end">
-                          <IconButton
-                            size="small"
-                            onClick={() => {
-                              setSearchBoxValue('');
-                              setCategorySearchResults([]);
-                              setSearchBoxSuggestions([]);
-                              setHybridResults([]);
-                            }}
-                            sx={{ color: '#b08968' }}
-                          >
-                            <ClearIcon fontSize="small" />
-                          </IconButton>
-                        </InputAdornment>
-                      )
-                    }}
-                  />
-                  
-                  {/* Category Search Results Display */}
-                  {categorySearchResults.length > 0 && (
-                    <Box mt={1.5} mb={1.5}>
-                      <Box sx={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        mb: 1,
-                        p: 1,
-                        backgroundColor: '#f9f6ef',
-                        borderRadius: 1,
-                        border: '1px solid #b08968'
-                      }}>
-                        <Typography variant="subtitle2" color="#4e342e" sx={{ fontWeight: 600 }}>
-                          🎯 Category Search Results ({categorySearchResults.length})
-                        </Typography>
-                        <Typography variant="caption" color="#b08968" sx={{ ml: 1 }}>
-                          • Click to select destination
-                        </Typography>
-                      </Box>
-                      <Box sx={{ maxHeight: '250px', overflowY: 'auto' }}>
-                        {categorySearchResults.map((result, index) => (
-                          <Box
-                            key={`${result.name}-${result.lat}-${result.lng}-${index}`}
-                            sx={{
-                              p: 1.5,
-                              mb: 0.5,
-                              border: '1px solid #e0c9b3',
-                              borderRadius: 1,
-                              cursor: 'pointer',
-                              backgroundColor: '#fff',
-                              transition: 'all 0.2s ease',
-                              '&:hover': {
-                                backgroundColor: '#f9f6ef',
-                                borderColor: '#b08968',
-                                transform: 'translateY(-1px)',
-                                boxShadow: '0 2px 8px rgba(176, 137, 104, 0.15)'
-                              }
-                            }}
-                            onClick={() => {
-                              if (result.lat && result.lng) {
-                                // Use the same handler as map markers for consistency
-                                handleDestinationSelect(result);
-                                showLocalNotification('Destination set from category search!', 'success');
-                              }
-                            }}
-                          >
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                              <Box sx={{ flex: 1 }}>
-                                <Typography variant="body2" color="#4e342e" fontWeight={500} sx={{ mb: 0.5 }}>
-                                  {result.name || result.display_name}
-                                </Typography>
-                                <Typography variant="caption" color="#b08968" sx={{ display: 'block' }}>
-                                  {result.address || result.fullAddress}
-                                </Typography>
-                                {result.brand && result.brand.length > 0 && (
-                                  <Typography variant="caption" color="#4caf50" sx={{ display: 'block', mt: 0.5 }}>
-                                    Brand: {result.brand.join(', ')}
-                                  </Typography>
-                                )}
-                              </Box>
-                              {result.distance && (
-                                <Typography variant="caption" color="#b08968" sx={{ 
-                                  fontWeight: 600,
-                                  backgroundColor: '#f0f0f0',
-                                  px: 1,
-                                  py: 0.5,
-                                  borderRadius: 0.5,
-                                  ml: 1
-                                }}>
-                                  {result.distance.toFixed(1)} mi
-                                </Typography>
-                              )}
-                            </Box>
-                          </Box>
-                        ))}
-                      </Box>
-                    </Box>
-                  )}
-                  
-                  {/* Hybrid Results Display */}
-                  {hybridResults.length > 0 && (
-                    <Box mt={1.5} mb={1.5}>
-                      <Box sx={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        mb: 1,
-                        p: 1,
-                        backgroundColor: '#e8f5e8',
-                        borderRadius: 1,
-                        border: '1px solid #4caf50'
-                      }}>
-                        <Typography variant="subtitle2" color="#2e7d32" sx={{ fontWeight: 600 }}>
-                          🔄 Hybrid Results ({hybridResults.length})
-                        </Typography>
-                        <Typography variant="caption" color="#4caf50" sx={{ ml: 1 }}>
-                          • Category + Search Box suggestions
-                        </Typography>
-                      </Box>
-                      <Box sx={{ maxHeight: '300px', overflowY: 'auto' }}>
-                        {hybridResults.map((result, index) => (
-                          <Box
-                            key={`hybrid-${result.name}-${result.lat}-${result.lng}-${index}`}
-                            sx={{
-                              p: 1.5,
-                              mb: 0.5,
-                              border: `1px solid ${result.source === 'category' ? '#b08968' : '#4caf50'}`,
-                              borderRadius: 1,
-                              cursor: 'pointer',
-                              backgroundColor: result.source === 'category' ? '#f9f6ef' : '#f1f8e9',
-                              transition: 'all 0.2s ease',
-                              '&:hover': {
-                                backgroundColor: result.source === 'category' ? '#f0e6d9' : '#e8f5e8',
-                                borderColor: result.source === 'category' ? '#a47551' : '#388e3c',
-                                transform: 'translateY(-1px)',
-                                boxShadow: `0 2px 8px rgba(${result.source === 'category' ? '176, 137, 104' : '76, 175, 80'}, 0.15)`
-                              }
-                            }}
-                            onClick={() => {
-                              if (result.lat && result.lng) {
-                                // Use the same handler as map markers for consistency
-                                handleDestinationSelect(result);
-                                showLocalNotification(`Destination set from ${result.source} search!`, 'success');
-                              }
-                            }}
-                          >
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                              <Box sx={{ flex: 1 }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
-                                  <Typography variant="body2" color="#2e7d32" fontWeight={500}>
-                                    {result.name || result.display_name}
-                                  </Typography>
-                                  <Typography variant="caption" sx={{ 
-                                    ml: 1, 
-                                    px: 0.5, 
-                                    py: 0.25, 
-                                    borderRadius: 0.5,
-                                    backgroundColor: result.source === 'category' ? '#b08968' : '#4caf50',
-                                    color: '#fff',
-                                    fontSize: '0.7rem'
-                                  }}>
-                                    {result.source}
-                                  </Typography>
-                                </Box>
-                                <Typography variant="caption" color="#666" sx={{ display: 'block' }}>
-                                  {result.address || result.fullAddress}
-                                </Typography>
-                                {result.brand && result.brand.length > 0 && (
-                                  <Typography variant="caption" color="#4caf50" sx={{ display: 'block', mt: 0.5 }}>
-                                    Brand: {result.brand.join(', ')}
-                                  </Typography>
-                                )}
-                              </Box>
-                              {result.distance && (
-                                <Typography variant="caption" color="#666" sx={{ 
-                                  fontWeight: 600,
-                                  backgroundColor: '#f0f0f0',
-                                  px: 1,
-                                  py: 0.5,
-                                  borderRadius: 0.5,
-                                  ml: 1
-                                }}>
-                                  {result.distance.toFixed(1)} mi
-                                </Typography>
-                              )}
-                            </Box>
-                          </Box>
-                        ))}
-                      </Box>
-                    </Box>
-                  )}
-                  
-                  {/* Category Search Loading */}
-                  {isCategorySearching && (
-                    <Box mt={1.5} sx={{ display: 'flex', alignItems: 'center', color: '#b08968' }}>
-                      <SimpleLoading size="small" />
-                      <Typography variant="body2" sx={{ ml: 1 }}>
-                        Searching category...
-                      </Typography>
-                    </Box>
-                  )}
-                  
-                  {/* Route Status Display */}
-                  {destination && userLocation && creatorRole === 'driver' && (
-                    <Box mt={1.5}>
-                      {isCalculatingRoute ? (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          color: '#b08968',
-                          fontSize: '0.875rem'
-                        }}>
-                          <SimpleLoading size="small" />
-                          <span style={{ marginLeft: '8px' }}>Calculating route...</span>
-                        </Box>
-                      ) : calculatedRoute ? (
-                        <Box sx={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          justifyContent: 'space-between',
-                          color: '#4caf50',
-                          fontSize: '0.875rem'
-                        }}>
-                          <span>✅ Route calculated</span>
-                          <Button
-                            variant="text"
-                            size="small"
-                            onClick={() => {
-                              console.log('🧹 Clearing route');
-                              setCalculatedRoute(null);
-                              setRouteDetails(null);
-                              setShowRoutePreview(false);
-                              setRoutePreviewData(null);
-                            }}
-                            sx={{ 
-                              color: '#b08968', 
-                              fontSize: '0.75rem',
-                              '&:hover': {
-                                background: '#f9f6ef'
-                              }
-                            }}
-                          >
-                            Clear Route
-                          </Button>
-                        </Box>
-                      ) : null}
-                    </Box>
-                  )}
-                  
-                  {/* Debug Button */}
-                  <Box mt={1}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      onClick={testSearchAndMarkers}
-                      sx={{ 
-                        color: '#b08968', 
-                        borderColor: '#e0c9b3',
-                        fontSize: '0.75rem',
-                        '&:hover': {
-                          background: '#f9f6ef'
-                        }
-                      }}
-                    >
-                      🧪 Test Search & Markers
-                    </Button>
-                  </Box>
-                  
-                  {/* Additional Debug Button */}
-                  <Box mt={1}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      onClick={testSetSuggestions}
-                      sx={{ 
-                        color: '#b08968', 
-                        borderColor: '#e0c9b3',
-                        fontSize: '0.75rem',
-                        '&:hover': {
-                          background: '#f9f6ef'
-                        }
-                      }}
-                    >
-                      🧪 Test Set Suggestions
-                    </Button>
-                  </Box>
-                </Box>
-              )}
-            </CardContent>
-          </Card>
 
           {/* Participants Section */}
           <Card sx={{ 
@@ -4097,34 +2490,6 @@ function RouteOptimizer({ mode = 'create' }) {
                           </Typography>
                         }
                       />
-                      <Box sx={{ mt: 0.5 }}>
-                        <FormControl size="small" sx={{ minWidth: 100 }}>
-                            <Select
-                              value={user.role}
-                              onChange={(e) => handleRoleChange(user.tempId, e.target.value)}
-                              sx={{ 
-                                background: '#fff',
-                                borderRadius: 1.5,
-                                height: 32,
-                                '& .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#e0c9b3'
-                                },
-                                '&:hover .MuiOutlinedInput-notchedOutline': {
-                                  borderColor: '#b08968'
-                                }
-                              }}
-                            >
-                              <MenuItem value="driver">
-                                <CarIcon sx={{ mr: 1, fontSize: 14 }} />
-                                Driver
-                              </MenuItem>
-                              <MenuItem value="passenger">
-                                <PersonIcon sx={{ mr: 1, fontSize: 14 }} />
-                                Passenger
-                              </MenuItem>
-                            </Select>
-                          </FormControl>
-                      </Box>
                       <ListItemSecondaryAction>
                         <IconButton 
                           edge="end" 
@@ -4285,6 +2650,265 @@ function RouteOptimizer({ mode = 'create' }) {
         </Box>
 
         <Box sx={{ height: '100vh', width: '100%', position: 'relative' }}>
+          {/* Destination Search Bar - Top of Map */}
+          <Box sx={{ 
+            position: 'absolute', 
+            top: 20, 
+            left: '50%', 
+            transform: 'translateX(-50%)',
+            zIndex: 1000,
+            width: '90%',
+            maxWidth: 500
+          }}>
+            <Paper sx={{ 
+              p: 2, 
+              background: 'rgba(255, 255, 255, 0.95)',
+              backdropFilter: 'blur(10px)',
+              borderRadius: 3,
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+              border: '1px solid rgba(255, 255, 255, 0.2)'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1.5 }}>
+                <Avatar sx={{ 
+                  width: 32, 
+                  height: 32, 
+                  background: destination ? '#4caf50' : '#b08968',
+                  mr: 1.5
+                }}>
+                  {destination ? <LocationIcon fontSize="small" sx={{ color: '#fff' }} /> : <RouteIcon fontSize="small" sx={{ color: '#fff' }} />}
+                </Avatar>
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle1" fontWeight={600} color="#4e342e">
+                    {destination ? 'Destination Set' : 'Set Destination'}
+                  </Typography>
+                  <Typography variant="caption" color="#7c5e48">
+                    {destination ? destination.address : 'Where are you heading?'}
+                  </Typography>
+                </Box>
+                {destination && (
+                  <IconButton 
+                    size="small"
+                    onClick={() => {
+                      setDestination(null);
+                      setForm(prev => ({ ...prev, destination: '' }));
+                      setShowRoutePreview(false);
+                      setRoutePreviewData(null);
+                    }}
+                    sx={{ 
+                      color: '#b08968',
+                      '&:hover': {
+                        background: '#ffebee',
+                        color: '#f44336'
+                      }
+                    }}
+                  >
+                    <CloseIcon fontSize="small" />
+                  </IconButton>
+                )}
+              </Box>
+              
+              {!destination ? (
+                <Box sx={{ position: 'relative' }} className="search-container">
+                  <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="Search for destination..."
+                    value={searchBoxValue}
+                    onChange={handleDestinationInputChange}
+                    onFocus={() => {
+                      console.log('🔍 Search input focused, current results:', categorySearchResults.length);
+                      if (categorySearchResults.length > 0) {
+                        setShowSearchResults(true);
+                        console.log('🔍 Showing search results on focus');
+                      }
+                    }}
+                    sx={{ 
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 2,
+                        background: '#fff',
+                        '& fieldset': {
+                          borderColor: '#e0c9b3'
+                        },
+                        '&:hover fieldset': {
+                          borderColor: '#b08968'
+                        },
+                        '&.Mui-focused fieldset': {
+                          borderColor: '#b08968'
+                        }
+                      }
+                    }}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ color: '#b08968' }} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: searchBoxValue && (
+                        <IconButton
+                          size="small"
+                          onClick={() => {
+                            console.log('🔍 Clearing search input');
+                            setSearchBoxValue('');
+                            setCategorySearchResults([]);
+                            setShowSearchResults(false);
+                          }}
+                          sx={{ color: '#b08968' }}
+                        >
+                          <ClearIcon fontSize="small" />
+                        </IconButton>
+                      )
+                    }}
+                  />
+                  
+                  {/* Search Results Dropdown */}
+                  {(showSearchResults && categorySearchResults.length > 0) && (
+                    <Box 
+                      className="search-results-dropdown"
+                      sx={{
+                        position: 'absolute',
+                        top: '100%',
+                        left: 0,
+                        right: 0,
+                        mt: 1,
+                        background: 'rgba(255, 255, 255, 0.98)',
+                        backdropFilter: 'blur(20px)',
+                        borderRadius: 2,
+                        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.15)',
+                        border: '1px solid rgba(255, 255, 255, 0.3)',
+                        zIndex: 9999,
+                        maxHeight: '300px',
+                        overflow: 'hidden'
+                      }}
+                    >
+                      {/* Loading State */}
+                      {isCategorySearching && (
+                        <Box sx={{ 
+                          p: 2, 
+                          textAlign: 'center',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 1.5
+                        }}>
+                          <CircularProgress size={16} sx={{ color: 'primary.main' }} />
+                          <Typography variant="body2" color="text.secondary" sx={{ fontSize: '13px' }}>
+                            Searching...
+                          </Typography>
+                        </Box>
+                      )}
+                      
+                      {/* Results List */}
+                      <Box sx={{ maxHeight: '250px', overflow: 'auto' }}>
+                        {categorySearchResults.map((result, index) => (
+                          <Box
+                            key={`${result.name}-${result.lat}-${result.lng}-${index}`}
+                            sx={{
+                              p: 1.5,
+                              cursor: 'pointer',
+                              borderBottom: '1px solid rgba(0,0,0,0.05)',
+                              transition: 'background-color 0.2s ease',
+                              '&:hover': {
+                                backgroundColor: 'rgba(0,0,0,0.05)'
+                              },
+                              '&:last-child': {
+                                borderBottom: 'none'
+                              }
+                            }}
+                                    onClick={() => {
+          console.log('🎯 Dropdown item clicked:', result);
+          // Handle both lng and lon properties for longitude
+          const hasValidCoordinates = result.lat && (result.lng || result.lon);
+          if (hasValidCoordinates) {
+            console.log('🎯 Calling handleDestinationSelect with valid coordinates');
+            // Normalize the result object to use lng consistently
+            const normalizedResult = {
+              ...result,
+              lng: result.lng || result.lon
+            };
+            handleDestinationSelect(normalizedResult);
+            setShowSearchResults(false);
+          } else {
+            console.log('❌ Result missing coordinates:', { 
+              lat: result.lat, 
+              lng: result.lng, 
+              lon: result.lon 
+            });
+          }
+        }}
+                          >
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <Box sx={{ flex: 1 }}>
+                                <Typography variant="body2" color="#4e342e" fontWeight={500} sx={{ mb: 0.5 }}>
+                                  {result.name || result.display_name}
+                                </Typography>
+                                <Typography variant="caption" color="#b08968" sx={{ display: 'block' }}>
+                                  {result.address || result.fullAddress}
+                                </Typography>
+                              </Box>
+                              {result.distance && (
+                                <Typography variant="caption" color="#b08968" sx={{ 
+                                  fontWeight: 600,
+                                  backgroundColor: '#f0f0f0',
+                                  px: 1,
+                                  py: 0.5,
+                                  borderRadius: 0.5,
+                                  ml: 1
+                                }}>
+                                  {result.distance.toFixed(1)} mi
+                                </Typography>
+                              )}
+                            </Box>
+                          </Box>
+                        ))}
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
+              ) : (
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<LocationIcon fontSize="small" />}
+                    onClick={() => {
+                      if (mapRef.current) {
+                        console.log('Focus on destination');
+                      }
+                    }}
+                    sx={{ 
+                      color: '#4caf50', 
+                      borderColor: '#c8e6c9', 
+                      borderRadius: 2,
+                      flex: 1,
+                      '&:hover': {
+                        background: '#f1f8e9'
+                      }
+                    }}
+                  >
+                    View on Map
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<MapIcon fontSize="small" />}
+                    onClick={handleSetDestinationFromMap}
+                    sx={{ 
+                      color: '#b08968', 
+                      borderColor: '#b08968',
+                      borderRadius: 2,
+                      '&:hover': {
+                        borderColor: '#a47551',
+                        background: '#f9f6ef'
+                      }
+                    }}
+                  >
+                    Change
+                  </Button>
+                </Box>
+              )}
+            </Paper>
+          </Box>
+          
           <MapView 
             ref={mapRef}
             users={users} 
@@ -4301,6 +2925,8 @@ function RouteOptimizer({ mode = 'create' }) {
             onMapClick={handleMapClick}
             mapClickMode={mapClickMode}
           />
+          
+
           
           {/* Map Click Mode Indicator */}
           {mapClickMode && (
@@ -4419,117 +3045,226 @@ function RouteOptimizer({ mode = 'create' }) {
         }}
         maxWidth="sm"
         fullWidth
+        PaperProps={{
+          sx: {
+            margin: { xs: 2, sm: 'auto' },
+            maxWidth: { xs: 'calc(100% - 32px)', sm: '600px' },
+            width: { xs: '100%', sm: 'auto' },
+            maxHeight: { xs: 'calc(100% - 32px)', sm: '90vh' }
+          }
+        }}
       >
-        <DialogTitle sx={{ background: '#f9f6ef', color: '#4e342e', textAlign: 'center' }}>
+        <DialogTitle sx={{ 
+          background: '#f9f6ef', 
+          color: '#4e342e', 
+          textAlign: 'center',
+          padding: { xs: 2, sm: 3 }
+        }}>
           Ride Created Successfully!
         </DialogTitle>
-        <DialogContent sx={{ background: '#fff', textAlign: 'center', py: 3 }}>
-          <Avatar sx={{ width: 80, height: 80, mx: 'auto', mb: 2, background: '#4caf50' }}>
-            <CheckIcon sx={{ fontSize: 40 }} />
+        <DialogContent sx={{ 
+          background: '#fff', 
+          textAlign: 'center', 
+          py: { xs: 2, sm: 3 },
+          px: { xs: 2, sm: 3 }
+        }}>
+          <Avatar sx={{ 
+            width: { xs: 60, sm: 80 }, 
+            height: { xs: 60, sm: 80 }, 
+            mx: 'auto', 
+            mb: 2, 
+            background: '#4caf50' 
+          }}>
+            <CheckIcon sx={{ fontSize: { xs: 30, sm: 40 } }} />
           </Avatar>
-          <Typography variant="h6" color="#4e342e" mb={1}>
+          <Typography variant="h6" color="#4e342e" mb={1} sx={{ fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
             Your ride has been created!
           </Typography>
-          <Typography variant="body2" color="#7c5e48" mb={2}>
+          <Typography variant="body2" color="#7c5e48" mb={2} sx={{ fontSize: { xs: '0.875rem', sm: '1rem' } }}>
             Once participants provide their locations, you can optimize and start the ride.
           </Typography>
-          <Paper sx={{ p: 2, background: '#f9f6ef', display: 'inline-block' }}>
-            <Typography variant="caption" color="#b08968">Ride ID:</Typography>
-            <Typography variant="body2" fontWeight={600} color="#4e342e">{createdRideId}</Typography>
+          <Paper sx={{ 
+            p: { xs: 1.5, sm: 2 }, 
+            background: '#f9f6ef', 
+            display: 'inline-block',
+            maxWidth: '100%',
+            overflow: 'hidden'
+          }}>
+            <Typography variant="caption" color="#b08968" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
+              Ride ID:
+            </Typography>
+            <Typography 
+              variant="body2" 
+              fontWeight={600} 
+              color="#4e342e" 
+              sx={{ 
+                fontSize: { xs: '0.875rem', sm: '1rem' },
+                wordBreak: 'break-all'
+              }}
+            >
+              {createdRideId}
+            </Typography>
           </Paper>
         </DialogContent>
-        <DialogActions sx={{ background: '#f9f6ef', justifyContent: 'center', pb: 3 }}>
+        <DialogActions sx={{ 
+          background: '#f9f6ef', 
+          justifyContent: 'center', 
+          pb: { xs: 2, sm: 3 },
+          px: { xs: 2, sm: 3 },
+          gap: 2,
+          flexDirection: { xs: 'column', sm: 'row' }
+        }}>
+          <Button 
+            variant="outlined"
+            startIcon={<ShareIcon />}
+            onClick={handleShareRide}
+            sx={{ 
+              borderColor: '#a47551', 
+              color: '#a47551', 
+              borderRadius: 2, 
+              px: { xs: 3, sm: 4 },
+              py: { xs: 1, sm: 1.5 },
+              fontSize: { xs: '0.875rem', sm: '1rem' },
+              minWidth: { xs: '120px', sm: 'auto' },
+              '&:hover': {
+                borderColor: '#8b6b47',
+                backgroundColor: 'rgba(164, 117, 81, 0.04)'
+              }
+            }}
+            fullWidth={false}
+          >
+            Share Ride
+          </Button>
           <Button 
             variant="contained"
             onClick={() => {
               setShowSuccessModal(false);
               navigate('/dashboard');
             }}
-            sx={{ background: '#a47551', color: '#fff', borderRadius: 2, px: 4 }}
+            sx={{ 
+              background: '#a47551', 
+              color: '#fff', 
+              borderRadius: 2, 
+              px: { xs: 3, sm: 4 },
+              py: { xs: 1, sm: 1.5 },
+              fontSize: { xs: '0.875rem', sm: '1rem' },
+              minWidth: { xs: '120px', sm: 'auto' },
+              '&:hover': {
+                backgroundColor: '#8b6b47'
+              }
+            }}
+            fullWidth={false}
           >
             Go to Dashboard
           </Button>
         </DialogActions>
       </Dialog>
 
+      {/* Ride Details Verification Modal */}
+      <RideDetailsVerificationModal
+        isOpen={showRideVerificationModal}
+        onClose={() => setShowRideVerificationModal(false)}
+        rideData={rideDataForVerification}
+        onConfirm={handleConfirmRide}
+        onEdit={handleEditRide}
+      />
+
       {/* Sleek Compact Route Preview Modal */}
       {showRoutePreview && routePreviewData && (
         <Box
           sx={{
             position: 'fixed',
-            bottom: 20,
-            left: isSidebarOpen ? 'calc(50% + 200px)' : '50%', // Center over map area
+            bottom: 24,
+            left: isSidebarOpen ? 'calc(50% + 200px)' : '50%',
             transform: 'translateX(-50%)',
             zIndex: 2000,
-            background: 'rgba(255, 255, 255, 0.94)',
+            background: 'rgba(255, 255, 255, 0.98)',
             backdropFilter: 'blur(20px)',
-            borderRadius: '12px',
-            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.08)',
-            border: '1px solid rgba(255, 255, 255, 0.5)',
+            borderRadius: '16px',
+            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.15), 0 8px 32px rgba(0, 0, 0, 0.1)',
+            border: '1px solid rgba(255, 255, 255, 0.8)',
             width: '420px',
-            maxWidth: 'calc(100vw - 40px)',
-            overflow: 'hidden',
-            animation: 'slideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            maxWidth: 'calc(100vw - 48px)',
+            overflow: 'visible',
+            animation: 'slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
             '@keyframes slideUp': {
               '0%': {
                 opacity: 0,
-                transform: 'translateX(-50%) translateY(12px)',
+                transform: 'translateX(-50%) translateY(20px) scale(0.95)',
               },
               '100%': {
                 opacity: 1,
-                transform: 'translateX(-50%) translateY(0)',
+                transform: 'translateX(-50%) translateY(0) scale(1)',
               }
             }
           }}
         >
-          {/* Ultra Compact Header */}
+          {/* Modern Header */}
           <Box
             sx={{
-              background: 'linear-gradient(135deg, rgba(76, 175, 80, 0.9), rgba(69, 160, 73, 0.9))',
-              backdropFilter: 'blur(10px)',
+              background: 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)',
               color: 'white',
-              padding: '8px 16px',
+              padding: '12px 16px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.15)'
+              position: 'relative',
+              '&::after': {
+                content: '""',
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: '1px',
+                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)'
+              }
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Box sx={{
+                width: 28,
+                height: 28,
+                borderRadius: '6px',
+                background: 'rgba(255, 255, 255, 0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backdropFilter: 'blur(10px)'
+              }}>
               <DirectionsCarIcon sx={{ fontSize: 16, color: 'white' }} />
-              <Typography variant="body2" fontWeight={600} sx={{ fontSize: '0.9rem' }}>
+              </Box>
+              <Box>
+                <Typography variant="body1" fontWeight={600} sx={{ fontSize: '0.9rem', lineHeight: 1.2 }}>
                 {routePreviewData.destination}
               </Typography>
+                <Typography variant="caption" sx={{ 
+                  opacity: 0.9, 
+                  fontSize: '0.7rem',
+                  fontWeight: 400
+                }}>
+                  Route Summary
+                </Typography>
+              </Box>
             </Box>
             <IconButton
               onClick={() => {
-                // Clear the route preview modal
                 setShowRoutePreview(false);
                 setRoutePreviewData(null);
-                
-                // Clear the destination and route data
                 setDestination(null);
                 setCalculatedRoute(null);
                 setRouteDetails(null);
-                
-                // Clear any destination suggestions
                 setDestinationSuggestions([]);
-                
-                // Clear the destination input field
-                setForm(prev => ({
-                  ...prev,
-                  destination: ''
-                }));
-                
+                setForm(prev => ({ ...prev, destination: '' }));
                 console.log('Route preview modal closed - destination and route cleared');
               }}
               size="small"
               sx={{ 
                 color: 'white', 
-                background: 'rgba(255,255,255,0.1)',
-                padding: '4px',
+                background: 'rgba(255,255,255,0.15)',
+                padding: '6px',
+                borderRadius: '6px',
                 '&:hover': { 
-                  background: 'rgba(255,255,255,0.2)',
+                  background: 'rgba(255,255,255,0.25)',
                   transform: 'scale(1.05)'
                 },
                 transition: 'all 0.2s ease'
@@ -4539,77 +3274,354 @@ function RouteOptimizer({ mode = 'create' }) {
             </IconButton>
           </Box>
 
-          {/* Ultra Compact Horizontal Layout */}
+          {/* Content Area */}
           <Box sx={{ 
-            padding: '12px 16px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 2.5
+            padding: '12px',
+            background: 'linear-gradient(135deg, #fafafa 0%, #f5f5f5 100%)',
+            overflow: 'visible'
           }}>
-            {/* Seats Available Placeholder */}
+            {/* All Options in One Row */}
             <Box sx={{ 
-              flex: 1,
-              minHeight: '48px',
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr 1fr',
+              gap: 1,
+              overflow: 'visible'
+            }}>
+              {/* Seats Card */}
+              <Box 
+                data-seats-dropdown
+                sx={{ 
+                  padding: '8px 6px',
+                  background: showSeatsDropdown ? 'rgba(34, 197, 94, 0.05)' : 'white',
+                  borderRadius: '10px',
+                  boxShadow: showSeatsDropdown ? '0 4px 16px rgba(34, 197, 94, 0.2)' : '0 2px 8px rgba(0, 0, 0, 0.06)',
+                  border: showSeatsDropdown ? '2px solid #22C55E' : '1px solid rgba(0, 0, 0, 0.08)',
+                  textAlign: 'center',
+                  position: 'relative',
+                  overflow: 'visible',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  '&:hover': {
+                    transform: 'translateY(-1px)',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
+                    border: '1px solid #22C55E'
+                  },
+                  '&::before': {
+                    content: '""',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: '2px',
+                    background: 'linear-gradient(90deg, #22C55E, #16A34A)'
+                  }
+                }}
+                onClick={() => {
+                  console.log('Seats card clicked, current showSeatsDropdown:', showSeatsDropdown);
+                  setShowSeatsDropdown(!showSeatsDropdown);
+                  setTimeout(() => {
+                    console.log('showSeatsDropdown after state update:', !showSeatsDropdown);
+                  }, 0);
+                }}
+              >
+                <Box sx={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '6px',
+                  background: 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)',
               display: 'flex',
               alignItems: 'center',
-              padding: '8px 12px',
-              background: 'rgba(255, 193, 7, 0.08)',
+                  justifyContent: 'center',
+                  margin: '0 auto 4px'
+                }}>
+                  <PersonIcon sx={{ fontSize: 12, color: 'white' }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ 
+                  color: '#1f2937',
+                  fontSize: '1rem',
+                  lineHeight: 1.2,
+                  mb: 0.25,
+                  cursor: 'pointer',
+                  userSelect: 'none'
+                }}>
+                  {carSeatsAvailable}
+                </Typography>
+                <Typography variant="caption" sx={{ 
+                  color: '#6b7280',
+                  fontSize: '0.6rem',
+                  fontWeight: 500,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.3px',
+                  display: 'block',
+                  lineHeight: 1.2,
+                  minHeight: '14px',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
+                  seats
+                </Typography>
+                
+                {/* Dropdown indicator */}
+                <Box sx={{
+                  position: 'absolute',
+                  bottom: '4px',
+                  right: '4px',
+                  width: 0,
+                  height: 0,
+                  borderLeft: '4px solid transparent',
+                  borderRight: '4px solid transparent',
+                  borderTop: '4px solid #22C55E',
+                  opacity: 0.6
+                }} />
+                
+                {/* Seats Dropdown */}
+                {showSeatsDropdown && (
+                  <Box sx={{
+                    position: 'absolute',
+                    top: '-100px', // Position slightly above the seats box
+                    left: 0, // Align with the left edge of the seats box
+                    background: 'white',
               borderRadius: '8px',
-              border: '1px dashed rgba(255, 193, 7, 0.3)'
-            }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <PersonIcon sx={{ fontSize: 14, color: 'rgba(255, 193, 7, 0.7)' }} />
-                <Typography 
-                  variant="caption" 
-                  color="rgba(255, 193, 7, 0.7)" 
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                    border: '1px solid rgba(0, 0, 0, 0.1)',
+                    zIndex: 3000,
+                    width: '100%', // Same width as the seats box
+                    maxHeight: '180px', // Increased height to show more entries
+                    overflowY: 'auto',
+                    minHeight: '180px', // Increased minimum height
+                    marginTop: '4px' // Small gap between box and dropdown
+                  }}>
+                    {console.log('Rendering seats dropdown with options:', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])}
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((seat) => (
+                      <Box
+                        key={seat}
+                        onClick={() => {
+                          setCarSeatsAvailable(seat);
+                          setShowSeatsDropdown(false);
+                        }}
                   sx={{ 
-                    fontSize: '0.65rem',
-                    lineHeight: 1.3,
-                    fontStyle: 'italic'
-                  }}
-                >
-                  Seats: 4 available
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          borderBottom: seat < 9 ? '1px solid rgba(0, 0, 0, 0.05)' : 'none',
+                          '&:hover': {
+                            background: 'rgba(34, 197, 94, 0.1)'
+                          },
+                          '&:last-child': {
+                            borderBottom: 'none'
+                          }
+                        }}
+                      >
+                        <Typography sx={{
+                          fontSize: '0.875rem',
+                          fontWeight: seat === carSeatsAvailable ? 600 : 400,
+                          color: seat === carSeatsAvailable ? '#22C55E' : '#374151',
+                          textAlign: 'center'
+                        }}>
+                          {seat}
                 </Typography>
               </Box>
+                    ))}
+                  </Box>
+                )}
             </Box>
 
-            {/* Distance Display */}
+              {/* Tolls Card */}
             <Box sx={{ 
+                padding: '8px 6px',
+                background: avoidTolls ? 'rgba(255, 193, 7, 0.1)' : 'white',
+                borderRadius: '10px',
+                boxShadow: avoidTolls ? '0 4px 16px rgba(255, 193, 7, 0.2)' : '0 2px 8px rgba(0, 0, 0, 0.06)',
+                border: avoidTolls ? '2px solid #FFC107' : '1px solid rgba(0, 0, 0, 0.08)',
               textAlign: 'center',
-              minWidth: '70px',
-              padding: '6px 10px',
-              background: 'rgba(255, 255, 255, 0.95)',
-              borderRadius: '8px',
-              boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
-              border: '1px solid rgba(76, 175, 80, 0.08)'
-            }}>
-              <Typography variant="h6" fontWeight={700} color="#2c3e50" sx={{ lineHeight: 1, fontSize: '1.1rem' }}>
+                position: 'relative',
+                overflow: 'hidden',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  transform: 'translateY(-1px)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)'
+                },
+                '&::before': {
+                  content: '""',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: '2px',
+                  background: avoidTolls ? 'linear-gradient(90deg, #FFC107, #FF8F00)' : 'linear-gradient(90deg, #d1d5db, #9ca3af)'
+                }
+              }}
+              onClick={() => setAvoidTolls(!avoidTolls)}
+              >
+                <Box sx={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '6px',
+                  background: avoidTolls ? 'linear-gradient(135deg, #FFC107 0%, #FF8F00 100%)' : 'linear-gradient(135deg, #d1d5db 0%, #9ca3af 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 4px',
+                  transition: 'all 0.2s ease'
+                }}>
+                  <DirectionsCarIcon sx={{ 
+                    fontSize: 12, 
+                    color: 'white',
+                    filter: avoidTolls ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))' : 'none',
+                    transition: 'all 0.2s ease'
+                  }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ 
+                  color: avoidTolls ? '#1f2937' : '#9ca3af',
+                  fontSize: '1rem',
+                  lineHeight: 1.2,
+                  mb: 0.25,
+                  transition: 'all 0.2s ease',
+                  minHeight: '1.2rem'
+                }}>
+                  {avoidTolls ? 'ON' : 'OFF'}
+                </Typography>
+                <Typography variant="caption" sx={{ 
+                  color: avoidTolls ? '#FF8F00' : '#6b7280',
+                  fontSize: '0.6rem',
+                  fontWeight: 500,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.3px',
+                  display: 'block',
+                  lineHeight: 1.2,
+                  minHeight: '14px',
+                  transition: 'all 0.2s ease',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
+                  avoid tolls
+                </Typography>
+                
+                {/* Toggle indicator */}
+                <Box sx={{
+                  position: 'absolute',
+                  bottom: '4px',
+                  right: '4px',
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: avoidTolls ? '#FFC107' : '#d1d5db',
+                  opacity: 0.6
+                }} />
+              </Box>
+
+              {/* Distance Card */}
+              <Box sx={{ 
+                padding: '8px 6px',
+                background: 'white',
+                borderRadius: '10px',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
+                textAlign: 'center',
+                position: 'relative',
+                overflow: 'hidden',
+                '&::before': {
+                  content: '""',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: '2px',
+                  background: 'linear-gradient(90deg, #22C55E, #16A34A)'
+                }
+              }}>
+                <Box sx={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '6px',
+                  background: 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 4px'
+                }}>
+                  <StraightenIcon sx={{ fontSize: 12, color: 'white' }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ 
+                  color: '#1f2937',
+                  fontSize: '1rem',
+                  lineHeight: 1.2,
+                  mb: 0.25
+                }}>
                 {routePreviewData.distance}
               </Typography>
-              <Typography variant="caption" color="#7f8c8d" fontWeight={500} sx={{ fontSize: '0.65rem' }}>
+                <Typography variant="caption" sx={{ 
+                  color: '#6b7280',
+                  fontSize: '0.6rem',
+                  fontWeight: 500,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.3px',
+                  display: 'block',
+                  lineHeight: 1.2,
+                  minHeight: '14px',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
                 miles
               </Typography>
             </Box>
 
-            {/* Time Display */}
+              {/* Time Card */}
             <Box sx={{ 
+                padding: '8px 6px',
+                background: 'white',
+                borderRadius: '10px',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
               textAlign: 'center',
-              minWidth: '70px',
-              padding: '6px 10px',
-              background: 'rgba(255, 255, 255, 0.95)',
-              borderRadius: '8px',
-              boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
-              border: '1px solid rgba(76, 175, 80, 0.08)'
-            }}>
-              <Typography variant="h6" fontWeight={700} color="#2c3e50" sx={{ lineHeight: 1, fontSize: '1.1rem' }}>
+                position: 'relative',
+                overflow: 'hidden',
+                '&::before': {
+                  content: '""',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: '2px',
+                  background: 'linear-gradient(90deg, #22C55E, #16A34A)'
+                }
+              }}>
+                <Box sx={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: '6px',
+                  background: 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 4px'
+                }}>
+                  <AccessTimeIcon sx={{ fontSize: 12, color: 'white' }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ 
+                  color: '#1f2937',
+                  fontSize: '1rem',
+                  lineHeight: 1.2,
+                  mb: 0.25
+                }}>
                 {routePreviewData.duration}
               </Typography>
-              <Typography variant="caption" color="#7f8c8d" fontWeight={500} sx={{ fontSize: '0.65rem' }}>
+                <Typography variant="caption" sx={{ 
+                  color: '#6b7280',
+                  fontSize: '0.6rem',
+                  fontWeight: 500,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.3px',
+                  display: 'block',
+                  lineHeight: 1.2,
+                  minHeight: '14px',
+                  textAlign: 'center',
+                  width: '100%'
+                }}>
                 min
               </Typography>
             </Box>
-
-
+            </Box>
           </Box>
         </Box>
       )}

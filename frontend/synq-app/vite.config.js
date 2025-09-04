@@ -14,5 +14,12 @@ export default defineConfig({
       include: [/node_modules/],
       transformMixedEsModules: true
     }
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+    // Enable CORS for mobile testing
+    cors: true
   }
 })

@@ -1196,4 +1196,49 @@
 .poi-action-btn.error {
   background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%);
   color: white;
+}
+
+/* Enhanced z-index for popups to ensure visibility */
+.poi-popup-container .mapboxgl-popup {
+  z-index: 10000 !important;
+  position: absolute !important;
+}
+
+.poi-popup-container .mapboxgl-popup-content {
+  z-index: 10001 !important;
+  position: relative !important;
+}
+
+/* Ensure popup is above all other map elements */
+.mapboxgl-popup {
+  z-index: 10000 !important;
+}
+
+.mapboxgl-popup-content {
+  z-index: 10001 !important;
+}
+
+/* Fix dropdown positioning for search results */
+.search-results-dropdown {
+  position: absolute !important;
+  z-index: 9999 !important;
+  top: 100% !important;
+  left: 0 !important;
+  right: 0 !important;
+}
+
+/* Dropdown animation */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.search-results-dropdown {
+  animation: slideDown 0.2s ease-out;
 } 

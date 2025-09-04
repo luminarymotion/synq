@@ -21,6 +21,7 @@ import { db } from './firebase';
 import { auth } from './firebase';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
+import { createRideInvitationNotification, createRideUpdateNotification } from './notificationService';
 
 // User Operations
 const createUserProfile = async (userId, userData) => {
@@ -1310,79 +1311,83 @@ const subscribeToFriendsList = (userId, callback) => {
                   };
                 }
 
-                const relationship = snapshot.docs.find(doc => 
-                  doc.data().users.includes(friendId)
-                );
-
-                if (!relationship) {
-                  console.error('Relationship not found for friend:', friendId);
-                  return null;
-                }
-
-                const relationshipData = relationship.data();
-                // Validate relationship metadata
-                if (!relationshipData.metadata || 
-                    !relationshipData.metadata.createdAt || 
-                    !relationshipData.metadata.lastInteraction) {
-                  console.error('Invalid relationship metadata:', relationship.id);
-                  return null;
-                }
-
                 return {
                   id: friendId,
-                  profile: userData.profile || {
-                    displayName: 'Unknown User',
-                    email: null,
-                    photoURL: null
-                  },
+                  profile: userData.profile,
                   relationship: {
-                    id: relationship.id,
-                    communityId: relationshipData.metadata.communityId || null,
-                    communityRole: relationshipData.metadata.communityRole || null,
-                    addedAt: relationshipData.metadata.createdAt,
-                    lastInteraction: relationshipData.metadata.lastInteraction
+                    id: snapshot.docs.find(doc => 
+                      doc.data().users.includes(friendId)
+                    )?.id || 'unknown',
+                    communityId: userData.communityId || null,
+                    communityRole: userData.communityRole || null,
+                    addedAt: userData.addedAt || new Date().toISOString(),
+                    lastInteraction: userData.lastInteraction || new Date().toISOString()
                   },
                   isOnline: userData.isOnline || false,
                   lastSeen: userData.lastSeen || null
                 };
               } catch (error) {
                 console.error('Error fetching friend profile:', friendId, error);
-                return null;
+                // Return a placeholder for failed profile fetches
+                return {
+                  id: friendId,
+                  profile: {
+                    displayName: 'Unknown User',
+                    email: null,
+                    photoURL: null
+                  },
+                  relationship: {
+                    id: snapshot.docs.find(doc => 
+                      doc.data().users.includes(friendId)
+                    )?.id || 'unknown',
+                    communityId: null,
+                    communityRole: null,
+                    addedAt: new Date().toISOString(),
+                    lastInteraction: new Date().toISOString()
+                  },
+                  isOnline: false,
+                  lastSeen: null,
+                  isError: true // Flag to identify failed profile fetches
+                };
               }
             })
           );
 
-          // Filter out any null profiles (invalid relationships)
-          const validFriends = friendProfiles.filter(profile => profile !== null);
+          // Filter out any null values and return the friends list
+          const validFriends = friendProfiles.filter(Boolean);
           console.log('Friends list processed:', {
-            total: friendIds.length,
-            valid: validFriends.length,
-            orphaned: validFriends.filter(f => f.isOrphaned).length,
-            incomplete: validFriends.filter(f => f.isIncomplete).length
+            totalFriends: validFriends.length,
+            orphanedCount: validFriends.filter(f => f.isOrphaned).length,
+            incompleteCount: validFriends.filter(f => f.isIncomplete).length,
+            errorCount: validFriends.filter(f => f.isError).length
           });
+
           callback({ success: true, friends: validFriends });
         } catch (error) {
-          console.error('Error processing friends list:', error);
-          callback({ 
-            success: false, 
-            error: error.message || 'Failed to process friends list'
-          });
+          console.error('Error processing friends list snapshot:', error);
+          callback({ success: false, error: error.message });
         }
       },
       (error) => {
         console.error('Error in friends list subscription:', error);
-        callback({ 
-          success: false, 
-          error: error.message || 'Failed to subscribe to friends list'
-        });
+        
+        // Handle different types of Firebase errors
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied for friends list - user may not have access to relationships');
+          // Don't treat permission denied as an error for friends list - just return empty list
+          callback({ success: true, friends: [] });
+        } else if (error.code === 'unavailable') {
+          console.error('Database service unavailable for friends list');
+          callback({ success: false, error: 'Database service is temporarily unavailable' });
+        } else {
+          console.error('Unexpected error in friends list subscription:', error);
+          callback({ success: false, error: error.message });
+        }
       }
     );
   } catch (error) {
     console.error('Error setting up friends list subscription:', error);
-    callback({ 
-      success: false, 
-      error: error.message || 'Failed to set up friends list subscription'
-    });
+    callback({ success: false, error: error.message });
     return () => {}; // Return empty unsubscribe function
   }
 };
@@ -1408,12 +1413,30 @@ const subscribeToUserStatus = (userId, callback) => {
       },
       (error) => {
         console.error('Error in user status subscription:', error);
-        callback({ success: false, error });
+        
+        // Handle different types of Firebase errors
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied for user status - user may not have access to their own profile');
+          // Don't treat permission denied as an error for user status - just return default status
+          callback({ 
+            success: true, 
+            status: {
+              isOnline: false,
+              lastSeen: null
+            }
+          });
+        } else if (error.code === 'unavailable') {
+          console.error('Database service unavailable for user status');
+          callback({ success: false, error: 'Database service is temporarily unavailable' });
+        } else {
+          console.error('Unexpected error in user status subscription:', error);
+          callback({ success: false, error: error.message });
+        }
       }
     );
   } catch (error) {
     console.error('Error setting up user status subscription:', error);
-    callback({ success: false, error });
+    callback({ success: false, error: error.message });
     return () => {}; // Return empty unsubscribe function
   }
 };
@@ -1938,24 +1961,27 @@ const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
       updatedAt: serverTimestamp()
     });
     
-    // Create notification for invitee
+    // Create notification for invitee using our new notification service
     const inviterName = inviterData.profile?.displayName || inviterData.displayName || 'Unknown User';
-    const inviterPhotoURL = inviterData.profile?.photoURL || inviterData.photoURL || '';
     
-    await createNotification({
-      userId: inviteeId,
-      type: 'ride-invitation',
-      title: 'Ride Invitation',
-      message: `${inviterName} invited you to join their ride`,
-      metadata: {
-        rideId: rideId,
-        inviterId: inviterId,
-        inviterName: inviterName,
-        inviterPhotoURL: inviterPhotoURL,
-        destination: rideData.destination?.address || 'Unknown destination'
+    console.log('🎯 About to create ride invitation notification:', {
+      inviteeId,
+      rideData: {
+        id: rideId, // Use the rideId parameter, not rideData.id
+        destination: rideData.destination,
+        createdBy: rideData.createdBy || rideData.creatorId
       },
-      actionUrl: `/rides/${rideId}`
+      inviterName
     });
+    
+    await createRideInvitationNotification(
+      inviteeId,
+      {
+        ...rideData,
+        id: rideId // Ensure the ride ID is set correctly
+      },
+      inviterName
+    );
     
     console.log('Ride invitation sent successfully');
     return { 
@@ -2034,25 +2060,17 @@ const respondToRideInvitation = async (rideId, inviteeId, response, details = {}
     
     await updateDoc(rideRef, updateData);
     
-    // Create notification for inviter
+    // Create notification for inviter using our new notification service
     const inviteeDoc = await getDoc(doc(db, 'users', inviteeId));
     const inviteeData = inviteeDoc.exists() ? inviteeDoc.data() : {};
     const inviteeName = inviteeData.profile?.displayName || inviteeData.displayName || 'Someone';
     
-    await createNotification({
-      userId: invitation.inviter.uid,
-      type: 'ride-invitation-response',
-      title: 'Ride Invitation Response',
-      message: `${inviteeName} ${response} your ride invitation`,
-      metadata: {
-        rideId: rideId,
-        inviteeId: inviteeId,
-        inviteeName: inviteeName,
-        response: response,
-        destination: rideData.destination?.address || 'Unknown destination'
-      },
-      actionUrl: `/rides/${rideId}`
-    });
+    await createRideUpdateNotification(
+      invitation.inviter.uid,
+      rideData,
+      'invitation_response',
+      inviteeName
+    );
     
     console.log('Ride invitation response processed successfully');
     return { success: true, message: `Invitation ${response} successfully` };
