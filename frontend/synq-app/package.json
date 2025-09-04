@@ -5,10 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:mobile": "echo \"Starting development server for mobile testing...\" && echo \"Your local IP address:\" && ipconfig | findstr \"IPv4\" && echo \"Use the IP address above with port 5173 (e.g., https://192.168.1.100:5173)\" && vite --host 0.0.0.0",
-    "dev:mobile:https": "node generate-ssl.js && echo \"Starting HTTPS development server for mobile testing...\" && echo \"Your local IP address:\" && ipconfig | findstr \"IPv4\" && echo \"Use the IP address above with port 5173 (e.g., https://192.168.1.100:5173)\" && vite --host 0.0.0.0",
-    "dev:mobile:ngrok": "echo \"Starting development server with ngrok tunnel...\" && echo \"1. Start the dev server: npm run dev\" && echo \"2. In another terminal, run: npx ngrok http 5173\" && echo \"3. Use the HTTPS URL from ngrok on your mobile device\" && vite --host 0.0.0.0",
-    "generate-ssl": "node generate-ssl.js",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
@@ -29,7 +25,6 @@
     "firebase-admin": "^11.11.0",
     "framer-motion": "^12.10.4",
     "libphonenumber-js": "^1.12.8",
-    "lucide-react": "^0.542.0",
     "mapbox-gl": "^3.13.0",
     "postcss": "^8.5.3",
     "react": "^19.0.0",

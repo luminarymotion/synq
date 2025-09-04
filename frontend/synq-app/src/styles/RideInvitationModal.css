@@ -49,16 +49,20 @@
 
 /* Details Section */
 .details-section {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   background: white;
   display: flex;
   flex-direction: column;
-  height: 100%;
-  width: 100%;
+  transform: translateX(100%);
+  transition: transform 0.4s ease-in-out;
 }
 
 .details-section.slide-in {
-  /* No longer needed with Material-UI Dialog */
+  transform: translateX(0);
 }
 
 .modal-step {

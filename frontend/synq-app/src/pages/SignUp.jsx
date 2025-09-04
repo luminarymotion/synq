@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../services/firebase';
@@ -16,11 +16,6 @@ function SignUp() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
-  
-  // Get redirect path from URL parameters
-  const searchParams = new URLSearchParams(location.search);
-  const redirectPath = searchParams.get('redirect') || '/settings';
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -65,7 +60,7 @@ function SignUp() {
       }
 
       console.log('User created:', userCredential.user);
-      navigate(redirectPath);
+      navigate('/settings');
     } catch (error) {
       console.error('Error creating user:', error);
       setError(error.message);
