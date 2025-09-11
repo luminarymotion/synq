@@ -2613,6 +2613,56 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
+<<<<<<< HEAD
+=======
+    // Show ride verification modal instead of directly creating the ride
+    const rideData = {
+      title: `Ride to ${destination.address || 'Destination'}`,
+      startTime: new Date().toISOString().slice(0, 16), // Current date/time
+      destination: destination.address || `Location (${destination.lat.toFixed(6)}, ${destination.lng.toFixed(6)})`,
+      description: `Ride with ${users.length} participant${users.length !== 1 ? 's' : ''}`,
+        carSeatsAvailable: carSeatsAvailable,
+        avoidTolls: creatorRole === 'driver' ? avoidTolls : false, // Include tolls preference
+      specialNotes: '',
+      users: users,
+      creatorRole: creatorRole
+    };
+
+    setRideDataForVerification(rideData);
+    setShowRideVerificationModal(true);
+  };
+
+  // Handle ride verification modal actions
+  const handleConfirmRide = async (finalRideData) => {
+    console.log('Confirming ride with data:', finalRideData);
+    
+    // Close the modal
+    setShowRideVerificationModal(false);
+    
+    // Extract the original ride data
+    const originalRideData = rideDataForVerification;
+    
+    // Use the creator role from the verification modal (this is the updated value)
+    const updatedCreatorRole = finalRideData.creatorRole || originalRideData.creatorRole || 'driver';
+    
+    console.log('🔍 Creator role analysis:', {
+      originalCreatorRole: originalRideData.creatorRole,
+      finalCreatorRole: finalRideData.creatorRole,
+      updatedCreatorRole,
+      finalRideDataKeys: Object.keys(finalRideData)
+    });
+    
+    // Debug seat capacity
+    console.log('🔢 Seat capacity debug in RouteOptimizer:', {
+      finalRideDataCarSeatsAvailable: finalRideData.carSeatsAvailable,
+      finalRideDataSeatCapacity: finalRideData.seatCapacity,
+      localCarSeatsAvailable: carSeatsAvailable,
+      finalCarSeatsAvailable: finalRideData.seatCapacity !== undefined ? finalRideData.seatCapacity : (finalRideData.carSeatsAvailable !== undefined ? finalRideData.carSeatsAvailable : carSeatsAvailable),
+      priority: 'seatCapacity > carSeatsAvailable > localCarSeatsAvailable',
+      finalRideDataKeys: Object.keys(finalRideData)
+    });
+    
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
     // Modified driver check to include creator if they are a driver
     const driver = users.find(u => u.role === 'driver') || 
                   (creatorRole === 'driver' ? {
@@ -2620,9 +2670,10 @@ function RouteOptimizer({ mode = 'create' }) {
                     name: user.displayName || 'You',
                     role: 'driver',
                     isCreator: true,
-                    userLocationCoords: userLocation
+                    userLocationCoords: userLocation || null
                   } : null);
 
+<<<<<<< HEAD
     console.log('Driver check details:', {
       driverFound: !!driver,
       creatorRole,
@@ -2637,6 +2688,18 @@ function RouteOptimizer({ mode = 'create' }) {
     });
 
     if (!driver) {
+=======
+    console.log('🔍 Driver analysis:', {
+      updatedCreatorRole,
+      driverFound: !!driver,
+      driverLocation: driver?.userLocationCoords,
+      userLocation,
+      hasValidLocation
+    });
+
+    // Only require a driver if creator is not a driver (creator as passenger means no initial driver)
+    if (!driver && updatedCreatorRole === 'driver') {
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
       console.log('Group creation blocked: No driver assigned', {
         creatorRole,
         usersWithRoles: users.map(u => ({ name: u.name, role: u.role }))
@@ -2645,11 +2708,23 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
+<<<<<<< HEAD
     // Validate driver location - but don't block if not available
     if (!driver.userLocationCoords || !driver.userLocationCoords.lat || !driver.userLocationCoords.lng) {
       console.warn('Driver location not available, proceeding with manual location entry');
       showLocalNotification('Location not available. You can set your location manually on the map.', 'info');
       // Don't return - let the user continue and set location manually
+=======
+    // Validate that driver has location if creator is a driver
+    if (updatedCreatorRole === 'driver' && (!userLocation || !userLocation.lat || !userLocation.lng)) {
+      console.log('Group creation blocked: Driver location not available', {
+        updatedCreatorRole,
+        userLocation,
+        hasValidLocation
+      });
+      showLocalNotification('Please set your location before creating a ride as a driver', 'error');
+      return;
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
     }
 
     try {
@@ -2664,13 +2739,14 @@ function RouteOptimizer({ mode = 'create' }) {
       
       // Get full addresses for all locations
       console.log('Fetching addresses for locations:', {
-        driverLocation: driver.userLocationCoords,
-        destination: destination
+        driverLocation: driver?.userLocationCoords,
+        destination: destination,
+        userLocation: userLocation
       });
 
       // Handle missing driver location gracefully
       let driverAddress = 'Location pending';
-      if (driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng) {
+      if (driver && driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng) {
         try {
           driverAddress = await getAddressFromCoords(driver.userLocationCoords.lat, driver.userLocationCoords.lng);
         } catch (error) {
@@ -2683,6 +2759,20 @@ function RouteOptimizer({ mode = 'create' }) {
 
       // Clean and validate the data before creating the group
       const cleanGroupData = {
+<<<<<<< HEAD
+=======
+        // Include title and description from the verification modal
+        title: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        description: finalRideData.description || `Ride with ${users.length} participant${users.length !== 1 ? 's' : ''}`,
+        groupName: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        name: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
+        startTime: finalRideData.startTime || new Date().toISOString(),
+        carSeatsAvailable: finalRideData.seatCapacity !== undefined ? finalRideData.seatCapacity : (finalRideData.carSeatsAvailable !== undefined ? finalRideData.carSeatsAvailable : carSeatsAvailable),
+        avoidTolls: finalRideData.avoidTolls || (updatedCreatorRole === 'driver' ? avoidTolls : false), // Include tolls preference
+        specialNotes: finalRideData.specialNotes || '',
+        // Only include driver if creator is a driver
+        ...(updatedCreatorRole === 'driver' && driver ? {
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
         driver: {
           uid: driver.isCreator ? user.uid : driver.id,
           name: driver.name || 'Unknown Driver',
@@ -2693,6 +2783,7 @@ function RouteOptimizer({ mode = 'create' }) {
           address: driverAddress || 'Location pending',
           isCreator: driver.isCreator || false,
           status: 'confirmed',
+<<<<<<< HEAD
           joinedAt: new Date().toISOString()
         },
         passengers: users
@@ -2712,6 +2803,47 @@ function RouteOptimizer({ mode = 'create' }) {
             invitedAt: new Date().toISOString(),
             lastUpdated: new Date().toISOString()
         })),
+=======
+          joinedAt: new Date().toISOString(),
+            avoidTolls: updatedCreatorRole === 'driver' ? avoidTolls : false // Include driver's tolls preference
+          }
+        } : {}),
+        passengers: [
+          // Include creator if they are a passenger
+          ...(updatedCreatorRole === 'passenger' ? [{
+            name: user.displayName || 'You',
+            location: userLocation ? {
+              lat: userLocation.lat,
+              lng: userLocation.lng
+            } : null,
+            address: userLocation ? 'Current Location' : 'Location pending',
+            status: 'confirmed',
+            isCreator: true,
+            uid: user.uid,
+            invitationStatus: 'accepted',
+            joinedAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+          }] : []),
+          // Include other passengers
+          ...users
+          .filter(u => u.role === 'passenger')
+          .map(passenger => ({
+            name: passenger.name || 'Unknown Passenger',
+            location: passenger.userLocationCoords ? {
+              lat: passenger.userLocationCoords.lat,
+              lng: passenger.userLocationCoords.lng
+            } : null,
+            address: passenger.userLocation || 'Location pending',
+            status: 'pending',
+            tempId: passenger.tempId || null,
+            isCreator: passenger.isCreator || false,
+            uid: passenger.id || null,
+            invitationStatus: 'pending',
+            invitedAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+            }))
+        ],
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
         destination: {
           location: {
             lat: destination.lat,
@@ -2722,23 +2854,7 @@ function RouteOptimizer({ mode = 'create' }) {
         status: 'forming',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        createdBy: user.uid,
-        metadata: {
-          isOptimized: false,
-          optimizationAttempts: 0,
-          lastOptimizationAttempt: null,
-          optimizationStatus: 'pending',
-          optimizationError: null,
-          groupStatus: 'forming',
-          invitationStatus: {
-            total: users.length,
-            pending: users.filter(u => !u.invitationStatus || u.invitationStatus === 'pending').length,
-            accepted: users.filter(u => u.invitationStatus === 'accepted').length,
-            declined: users.filter(u => u.invitationStatus === 'declined').length,
-            maybe: users.filter(u => u.invitationStatus === 'maybe').length,
-            lastUpdated: new Date().toISOString()
-          }
-        }
+        createdBy: user.uid
       };
 
       // Log the cleaned data

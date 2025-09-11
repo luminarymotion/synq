@@ -443,7 +443,57 @@ function MobileRideCreator() {
     }
   });
 
+<<<<<<< HEAD
   // Auto-start location tracking when component mounts
+=======
+  // Mobile Safari location permission handling
+  const [locationPermissionRequested, setLocationPermissionRequested] = useState(false);
+  const [locationPermissionGranted, setLocationPermissionGranted] = useState(false);
+
+  // Check if we're on mobile Safari
+  const isMobileSafari = () => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    return /safari/.test(userAgent) && !/chrome/.test(userAgent) && /iphone|ipad|ipod/.test(userAgent);
+  };
+
+  // Handle location permission request for mobile Safari
+  const handleLocationPermissionRequest = async () => {
+    if (locationPermissionRequested) return;
+    
+    setLocationPermissionRequested(true);
+    errorLogger.logLocationPermission(false, 'user_initiated');
+    
+    try {
+      console.log('📍 Requesting location permission for mobile Safari...');
+      await getCurrentLocationOnce();
+      setLocationPermissionGranted(true);
+      errorLogger.logLocationPermission(true, 'user_initiated');
+      console.log('📍 Location permission granted');
+      
+      // Clear any existing error messages
+      setLocationError(null);
+      setHasLocationError(false);
+      setLocationStatusMessage('Location obtained');
+    } catch (error) {
+      console.warn('📍 Location permission denied:', error.message);
+      errorLogger.logLocationError(error, { context: 'permission_denied' });
+      setLocationPermissionGranted(false);
+      
+      // Enhanced error handling for Safari
+      if (isMobileSafari()) {
+        setLocationError('Safari blocked location access. Try these quick fixes:');
+      setHasLocationError(true);
+        setLocationStatusMessage('Tap "Fix Location" for Safari help');
+      } else {
+        setLocationError(`Location access denied: ${error.message}. Please enable location permissions in your browser settings.`);
+        setHasLocationError(true);
+        setLocationStatusMessage('Location permission denied - tap the map to try again');
+      }
+    }
+  };
+
+  // Auto-start location tracking when component mounts (only for non-mobile Safari)
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
   useEffect(() => {
     let isInitialized = false;
     
@@ -1259,11 +1309,95 @@ function MobileRideCreator() {
 
 
   const handleCreateRide = async () => {
-    if (!destination || !userLocation || participants.length === 0) {
+    if (!destination || participants.length === 0) {
       toast.error('Please complete all steps before creating the ride');
       return;
     }
 
+<<<<<<< HEAD
+=======
+    // Request location permission if not already granted and user is a driver
+    if (!userLocation && userRole === 'driver') {
+      try {
+        console.log('Requesting location permission for driver...');
+        const location = await getCurrentLocation();
+        setUserLocation(location);
+        console.log('Location obtained:', location);
+      } catch (error) {
+        console.warn('Location permission denied or failed:', error);
+        toast.warning('Location permission is required for drivers. Please enable location sharing in your browser settings.');
+        // Continue without location - user can set it later
+      }
+    }
+
+      // Validate and clean participant data
+      const validPassengers = participants.map(p => {
+        // Ensure all required fields are present and valid
+        const passenger = {
+          uid: p.uid || p.id,
+          displayName: p.displayName || p.name || 'Unknown User',
+          photoURL: p.photoURL || '',
+          role: p.role || 'passenger'
+        };
+
+        // Handle location data - set to null if undefined/invalid
+        if (p.location && typeof p.location === 'object' && 
+            (p.location.lat || p.location.latitude) && 
+            (p.location.lng || p.location.longitude)) {
+          passenger.location = {
+            lat: p.location.lat || p.location.latitude,
+            lng: p.location.lng || p.location.longitude
+          };
+        } else {
+          passenger.location = null; // Set to null instead of undefined
+        }
+
+        return passenger;
+      });
+
+    console.log('🚗 Preparing ride data for verification:', {
+        destination,
+        driver: {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          location: userLocation
+        },
+        passengers: validPassengers
+      });
+
+      const rideData = {
+      name: `Ride to ${destination.address || destination.name}`,
+        destination: {
+          location: {
+            lat: destination.lat,
+            lng: destination.lng
+          },
+          address: destination.address || destination.name
+        },
+        driver: {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          location: userLocation || null, // Allow null location initially
+          photoURL: user.photoURL || ''
+        },
+        passengers: validPassengers,
+      startTime: '',
+      description: '',
+      carSeatsAvailable: userRole === 'driver' ? 4 : 0, // Set seats based on role
+      avoidTolls: userRole === 'driver' ? avoidTolls : false, // Include tolls preference
+      specialNotes: '',
+        createdAt: serverTimestamp(),
+      status: 'created',
+      userRole: userRole // Include the user's role
+    };
+
+    // Show verification modal instead of creating ride directly
+    setRideDataForVerification(rideData);
+    setShowVerificationModal(true);
+  };
+
+  const handleConfirmRide = async (verifiedRideData) => {
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
     setIsLoading(true);
     try {
       // Validate and clean participant data
@@ -2008,6 +2142,88 @@ function MobileRideCreator() {
               <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 2 }}>
                 {participants.length + 1} participants • {((routeDetails.distance / 1609.34)).toFixed(1)} mi
               </Typography>
+<<<<<<< HEAD
+=======
+              
+              {/* Role Selection */}
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 1 }}>
+                  Your Role
+              </Typography>
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button
+                    variant={userRole === 'driver' ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => setUserRole('driver')}
+                    startIcon={<CarIcon sx={{ fontSize: '14px' }} />}
+                    sx={{ 
+                      fontSize: '11px',
+                      flex: 1,
+                      py: 0.5,
+                      background: userRole === 'driver' ? '#1976d2' : 'transparent',
+                      color: userRole === 'driver' ? 'white' : '#1976d2',
+                      '&:hover': {
+                        background: userRole === 'driver' ? '#1565c0' : 'rgba(25, 118, 210, 0.04)'
+                      }
+                    }}
+                  >
+                    Driver
+                  </Button>
+                  <Button
+                    variant={userRole === 'passenger' ? 'contained' : 'outlined'}
+                    size="small"
+                    onClick={() => setUserRole('passenger')}
+                    startIcon={<PersonIcon sx={{ fontSize: '14px' }} />}
+                    sx={{ 
+                      fontSize: '11px',
+                      flex: 1,
+                      py: 0.5,
+                      background: userRole === 'passenger' ? '#1976d2' : 'transparent',
+                      color: userRole === 'passenger' ? 'white' : '#1976d2',
+                      '&:hover': {
+                        background: userRole === 'passenger' ? '#1565c0' : 'rgba(25, 118, 210, 0.04)'
+                      }
+                    }}
+                  >
+                    Passenger
+                  </Button>
+                </Box>
+              </Box>
+              
+              {/* Tolls Preference */}
+              {userRole === 'driver' && (
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 1 }}>
+                    Route Preferences
+                  </Typography>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    p: 1, 
+                    border: '1px solid #e0e0e0', 
+                    borderRadius: 1,
+                    backgroundColor: '#fafafa'
+                  }}>
+                    <input
+                      type="checkbox"
+                      id="avoidTolls"
+                      checked={avoidTolls}
+                      onChange={(e) => setAvoidTolls(e.target.checked)}
+                      style={{ marginRight: '8px' }}
+                    />
+                    <label htmlFor="avoidTolls" style={{ 
+                      margin: 0, 
+                      cursor: 'pointer', 
+                      fontSize: '12px',
+                      color: '#333'
+                    }}>
+                      Avoid tolls in route planning
+                    </label>
+                  </Box>
+                </Box>
+              )}
+              
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
               <Box sx={{ display: 'flex', gap: 1 }}>
                 <Button
                   variant="outlined"

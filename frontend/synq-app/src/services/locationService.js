@@ -891,6 +891,68 @@ export const debugMapboxSearch = async (query = 'food', userLocation = null) => 
   }
 };
 
+<<<<<<< HEAD
+=======
+
+
+// Route quality scoring function to select better routes
+// Removed scoreRouteQuality function - simplified routing logic
+
+// Simplified route selection - just return the first route
+export const selectBestRoute = (routes, waypoints, options = {}) => {
+  if (!routes || routes.length === 0) return null;
+  
+  console.log('🗺️ Using first available route (simplified selection)');
+  return routes[0];
+};
+
+// Simplified multi-waypoint routing with automatic profile fallback
+export const getMultiWaypointDirectionsWithFallback = async (waypoints, options = {}) => {
+  const {
+    profile = ROUTING_PROFILES.DRIVING_TRAFFIC,
+    fallbackProfile = ROUTING_PROFILES.DRIVING,
+    ...otherOptions
+  } = options;
+  
+  try {
+    console.log('🗺️ Getting route with primary profile:', profile);
+    
+    // Try the primary profile first
+    const routes = await getMultiWaypointDirections(waypoints, {
+      ...otherOptions,
+      profile
+    });
+    
+    if (routes && routes.length > 0) {
+      console.log('✅ Route found with primary profile');
+      return routes;
+    }
+    
+    // If primary fails, try fallback profile
+    if (profile !== fallbackProfile) {
+      console.log('🔄 Primary route failed, trying fallback profile:', fallbackProfile);
+      
+      const fallbackRoutes = await getMultiWaypointDirections(waypoints, {
+        ...otherOptions,
+        profile: fallbackProfile
+      });
+      
+      if (fallbackRoutes && fallbackRoutes.length > 0) {
+        console.log('✅ Route found with fallback profile');
+        return fallbackRoutes;
+      }
+    }
+    
+    // If both fail, throw error
+    throw new Error('No route found with any profile');
+    
+  } catch (error) {
+    console.error('❌ Error in getMultiWaypointDirectionsWithFallback:', error);
+    throw error;
+  }
+};
+
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 // Export service object for backward compatibility
 export const MAPBOX_SERVICE = {
   config: CONFIG.mapbox,
@@ -900,7 +962,23 @@ export const MAPBOX_SERVICE = {
   getCurrentLocation,
   calculateDistance: calculateDistanceInternal,
   clearSearchCache,
+<<<<<<< HEAD
   isApiKeyConfigured
+=======
+  isApiKeyConfigured,
+  // New v5 API functions
+  getDirections,
+  getMultiWaypointDirections,
+  // getEVDirections, // Commented out - EV routing not needed
+  ROUTING_PROFILES,
+  compareRoutes,
+  extractTurnByTurnInstructions,
+  getRouteSummary,
+  // Route selection functions
+  selectBestRoute,
+  // Enhanced routing with fallback
+  getMultiWaypointDirectionsWithFallback
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 };
 
 // Expose globally for debugging
@@ -909,6 +987,21 @@ if (typeof window !== 'undefined') {
   window.searchDestinations = searchDestinations;
   window.getCurrentLocation = getCurrentLocation;
   window.clearSearchCache = clearSearchCache;
+<<<<<<< HEAD
+=======
+  // New v5 API functions
+  window.getDirections = getDirections;
+  window.getMultiWaypointDirections = getMultiWaypointDirections;
+  // window.getEVDirections = getEVDirections; // Commented out - EV routing not needed
+  window.ROUTING_PROFILES = ROUTING_PROFILES;
+  window.compareRoutes = compareRoutes;
+  window.extractTurnByTurnInstructions = extractTurnByTurnInstructions;
+  window.getRouteSummary = getRouteSummary;
+  // Route selection functions
+  window.selectBestRoute = selectBestRoute;
+  // Enhanced routing with fallback
+  window.getMultiWaypointDirectionsWithFallback = getMultiWaypointDirectionsWithFallback;
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 }
 
 // Expose debug function globally

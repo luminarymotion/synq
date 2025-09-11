@@ -1,0 +1,211 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid.trim() == userId.trim();
+    }
+
+    function isValidProfileData() {
+      let profile = request.resource.data.profile;
+      return profile != null &&
+             profile.email is string &&
+             (profile.displayName == null || profile.displayName is string) &&
+             (profile.phoneNumber == null || profile.phoneNumber is string) &&
+             (profile.photoURL == null || profile.photoURL is string) &&
+             (profile.bio == null || profile.bio is string) &&
+             (profile.location == null || profile.location is map) &&
+             (profile.social == null || profile.social is map);
+    }
+
+    // User profiles
+    match /users/{userId} {
+      // Allow read if authenticated
+      allow read: if isAuthenticated();
+      
+      // Allow create if:
+      // 1. User is authenticated
+      // 2. Document ID matches user's UID
+      // 3. Data is valid
+      allow create: if isOwner(userId) && isValidProfileData();
+      
+      // Allow update if:
+      // 1. User is authenticated
+      // 2. Document ID matches user's UID
+      // 3. Data is valid
+      allow update: if isOwner(userId) && isValidProfileData();
+      
+      // Friends subcollection
+      match /friends/{friendId} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Friend Requests
+    match /friendRequests/{requestId} {
+      // Basic validation function
+      function isValidFriendRequest() {
+        let data = request.resource.data;
+        
+        // Check each condition separately
+        let isAuthenticated = request.auth != null;
+        let senderMatchesAuth = data.senderId.trim() == request.auth.uid.trim();
+        let hasValidFields = data.senderId is string && 
+                           data.receiverId is string && 
+                           data.message is string;
+        
+        // Check for metadata structure (new format)
+        let hasValidMetadata = data.metadata != null &&
+                              data.metadata.status is string &&
+                              data.metadata.createdBy is string;
+        
+        // Check for senderProfile structure (new format)
+        let hasValidSenderProfile = data.senderProfile != null &&
+                                   data.senderProfile.displayName is string &&
+                                   data.senderProfile.email is string &&
+                                   data.senderProfile.photoURL is string;
+        
+        let isValid = isAuthenticated && senderMatchesAuth && hasValidFields && 
+                     hasValidMetadata && hasValidSenderProfile;
+        
+        return isValid;
+      }
+
+      // Allow read if user is either sender or receiver
+      allow read: if isAuthenticated() && (
+        resource.data.senderId.trim() == request.auth.uid.trim() ||
+        resource.data.receiverId.trim() == request.auth.uid.trim()
+      );
+      
+      // Allow create with basic validation
+      allow create: if isValidFriendRequest();
+      
+      // Allow update if user is the receiver
+      allow update: if isAuthenticated() && 
+        resource.data.receiverId.trim() == request.auth.uid.trim() &&
+        // Validate that only metadata is being updated
+        request.resource.data.metadata != null &&
+        request.resource.data.metadata.status in ['accepted', 'rejected'] &&
+        request.resource.data.metadata.updatedBy == request.auth.uid &&
+        // Ensure other fields remain unchanged
+        request.resource.data.senderId == resource.data.senderId &&
+        request.resource.data.receiverId == resource.data.receiverId &&
+        request.resource.data.message == resource.data.message &&
+        request.resource.data.senderProfile == resource.data.senderProfile;
+      
+      // Allow delete if user is either sender or receiver
+      allow delete: if isAuthenticated() && (
+        resource.data.senderId.trim() == request.auth.uid.trim() ||
+        resource.data.receiverId.trim() == request.auth.uid.trim()
+      );
+    }
+
+    // Relationships
+    match /relationships/{relationshipId} {
+      // Allow read if user is part of the relationship
+      allow read: if isAuthenticated() && 
+        request.auth.uid in resource.data.users;
+      
+      // Allow create if user is part of the relationship
+      allow create: if isAuthenticated() && 
+        request.auth.uid in request.resource.data.users;
+      
+      // Allow update if user is part of the relationship
+      allow update: if isAuthenticated() && 
+        request.auth.uid in resource.data.users;
+      
+      // Allow delete if user is part of the relationship
+      allow delete: if isAuthenticated() && 
+        request.auth.uid in resource.data.users;
+    }
+
+    // Counters collection
+    match /counters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Rides collection
+    match /rides/{rideId} {
+      // Allow reading if user is driver, passenger, participant, or has invitation
+      allow read: if isAuthenticated() && (
+        (resource.data.driver != null && resource.data.driver.uid == request.auth.uid) ||
+        request.auth.uid in resource.data.passengerUids ||
+        (resource.data.participants != null && request.auth.uid in resource.data.participants) ||
+        (resource.data.invitations != null && request.auth.uid in resource.data.invitations)
+      );
+      
+      // Allow creating new rides - creator can be either driver or passenger
+      allow create: if isAuthenticated() && 
+        request.resource.data.createdBy == request.auth.uid;
+      
+      // Allow updating if user is driver, passenger, participant, or has an invitation
+      allow update: if isAuthenticated() && (
+        (resource.data.driver != null && resource.data.driver.uid == request.auth.uid) ||
+        request.auth.uid in resource.data.passengerUids ||
+        (resource.data.participants != null && request.auth.uid in resource.data.participants) ||
+        (resource.data.invitations != null && 
+         request.auth.uid in resource.data.invitations)
+      );
+      
+      // Allow deleting if user is the creator
+      allow delete: if isAuthenticated() && 
+        resource.data.createdBy == request.auth.uid;
+    }
+
+    // Ride invitations
+    match /rideInvitations/{invitationId} {
+      allow read: if isAuthenticated() && (
+        resource.data.inviterId == request.auth.uid ||
+        resource.data.inviteeId == request.auth.uid
+      );
+      allow create: if isAuthenticated() && request.resource.data.inviterId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (
+        resource.data.inviterId == request.auth.uid ||
+        resource.data.inviteeId == request.auth.uid
+      );
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && (
+        // Allow creating notifications for yourself
+        request.resource.data.userId == request.auth.uid ||
+        // Allow creating friend request notifications
+        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added', 'ride_invitation', 'ride_invitation_response'] &&
+         (
+           // For friend requests, sender can create notification for receiver
+           (request.resource.data.type == 'friend_request' && 
+            request.resource.data.data.senderId == request.auth.uid) ||
+           // For friend request responses, receiver can create notification for sender
+           (request.resource.data.type in ['friend_request_accepted', 'friend_request_rejected'] && 
+            request.auth.uid != request.resource.data.userId) ||
+           // For friend added, either user can create notification
+           (request.resource.data.type == 'friend_added' && 
+            (request.resource.data.data.senderId == request.auth.uid || 
+             request.resource.data.data.receiverId == request.auth.uid)) ||
+           // For ride invitations, inviter can create notification for invitee
+           (request.resource.data.type == 'ride_invitation' && 
+            request.resource.data.metadata.inviterId == request.auth.uid) ||
+           // For ride invitation responses, invitee can create notification for inviter
+           (request.resource.data.type == 'ride_invitation_response' && 
+            request.auth.uid != request.resource.data.userId)
+         ))
+      );
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
+    // Recent Rides
+    match /recentRides/{rideId} {
+      allow read: if isAuthenticated() && (
+        resource.data.creatorId == request.auth.uid ||
+        request.auth.uid in resource.data.participants
+      );
+    }
+  }
+} 

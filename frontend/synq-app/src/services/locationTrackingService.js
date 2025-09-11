@@ -981,12 +981,29 @@ class LocationTrackingService {
 
         navigator.geolocation.getCurrentPosition(successCallback, errorCallback, options);
       };
+<<<<<<< HEAD
 
       // Start the first attempt
       tryGetPosition();
     });
 
     return this.pendingPositionRequest;
+=======
+      
+      try {
+        return await tryGetPosition();
+      } catch (error) {
+        if (error.code === 3) { // Timeout error
+          this.logger.info('Retrying with lower accuracy');
+          return await tryGetPosition(true, true);
+        }
+        throw error;
+      }
+    } catch (error) {
+      this.logger.error('Error getting current position', { error: error.message });
+      throw error;
+    }
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
   }
 
   // Optimized location update handler with async address lookup and batched Firebase updates

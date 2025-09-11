@@ -187,6 +187,7 @@ function Dashboard() {
     if (!user) return;
 
     console.log('Setting up ride listeners for dashboard');
+    console.log('Current user:', { uid: user.uid, email: user.email, displayName: user.displayName });
 
     // Simple queries that should work with existing indexes
     const queries = [];
@@ -207,36 +208,64 @@ function Dashboard() {
     );
     queries.push({ query: passengerQuery, type: 'passenger' });
 
+<<<<<<< HEAD
+=======
+    // Query for rides where user is in participants field (covers ride creators and RSVP participants)
+    const participantQuery = query(
+      collection(db, 'rides'),
+      where(`participants.${user.uid}.status`, '==', 'accepted'),
+      where('status', 'in', ['active', 'created', 'forming', 'pending', 'ready'])
+    );
+    queries.push({ query: participantQuery, type: 'participant' });
+
+    // Note: We now cover all cases - driver, passenger, and participant fields
+    // This ensures ride creators and RSVP participants are included in active rides
+
+    // console.log('🔍 Dashboard queries setup for user:', user.uid, user.displayName);
+    // console.log('Total queries to execute:', queries.length);
+    // queries.forEach((q, index) => {
+    //   console.log(`Query ${index + 1} (${q.type}):`, q.query);
+    // });
+
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
     // Set up subscriptions
     const unsubscribes = [];
 
     queries.forEach(({ query: firestoreQuery, type }) => {
       const unsubscribe = onSnapshot(firestoreQuery, 
         (snapshot) => {
-          const rides = snapshot.docs.map(doc => ({
+          console.log(`📊 ${type} query returned ${snapshot.docs.length} documents`);
+          let rides = snapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
+<<<<<<< HEAD
             userType: type
+=======
+            userType: type === 'accepted_invitation' ? 'passenger' : type === 'participant' ? 'participant' : type
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
           }));
-          console.log(`${type} rides:`, rides);
-          console.log(`${type} rides details:`, rides.map(ride => ({
-            id: ride.id,
-            status: ride.status,
-            driver: ride.driver?.uid,
-            passengers: ride.passengerUids,
-            createdAt: ride.createdAt
-          })));
+
+          // console.log(`${type} rides:`, rides);
+          // console.log(`${type} rides details:`, rides.map(ride => ({
+          //   id: ride.id,
+          //   status: ride.status,
+          //   driver: ride.driver?.uid,
+          //   driverName: ride.driver?.name || ride.driver?.displayName,
+          //   passengers: ride.passengerUids,
+          //   createdAt: ride.createdAt,
+          //   userType: ride.userType
+          // })));
 
           // Update all rides state
           setAllRides(prevRides => {
             // Remove rides from this type and add new ones
             const filteredRides = prevRides.filter(ride => ride.userType !== type);
             const newRides = [...filteredRides, ...rides];
-            console.log('Updated allRides state:', newRides.map(ride => ({
-              id: ride.id,
-              status: ride.status,
-              userType: ride.userType
-            })));
+            // console.log('Updated allRides state:', newRides.map(ride => ({
+            //   id: ride.id,
+            //   status: ride.status,
+            //   userType: ride.userType
+            // })));
             return newRides;
           });
             setLoading(false);
@@ -271,6 +300,7 @@ function Dashboard() {
     };
   }, [user]);
 
+<<<<<<< HEAD
   // Map initialization effect
   useEffect(() => {
     if (!loading && allRides.length > 0) {
@@ -309,6 +339,61 @@ function Dashboard() {
         zoom: 12,
         interactive: false // Disable interactions for snapshot view
       });
+=======
+  // Process and sort rides - now with proper expiration filtering
+  const activeRides = useMemo(() => {
+  const seenIds = new Set();
+  const uniqueRides = allRides
+    .filter(ride => {
+      if (seenIds.has(ride.id)) {
+        return false;
+      }
+      seenIds.add(ride.id);
+      
+      // Filter out rides where user has declined invitation (but not for ride creators)
+      if (ride.invitations && ride.invitations[user?.uid] && ride.createdBy !== user?.uid) {
+        const userInvitation = ride.invitations[user.uid];
+        if (userInvitation.status === 'declined') {
+          console.log('Filtering out declined ride:', ride.id);
+          return false;
+        }
+          // Only include rides where user has accepted the invitation or is directly participating
+          if (userInvitation.status === 'pending') {
+            console.log('Filtering out pending invitation ride:', ride.id);
+            return false;
+          }
+      }
+      
+      return true;
+    })
+      .filter(ride => {
+        // Only include rides that are not expired
+        return !isRideExpired(ride);
+      })
+    .sort((a, b) => {
+        // Sort by status priority (active first, then ready, then forming, then created, then pending)
+        const statusOrder = { 
+          active: 0, 
+          ready: 1, 
+          forming: 2, 
+          created: 3, 
+          pending: 4 
+        };
+        const aOrder = statusOrder[a.status] || 5;
+        const bOrder = statusOrder[b.status] || 5;
+      
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      
+      // Then sort by creation time (newest first)
+      if (a.createdAt && b.createdAt) {
+        return b.createdAt.toDate() - a.createdAt.toDate();
+      }
+      
+      return b.id.localeCompare(a.id);
+    });
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 
       // Wait for map to load before adding markers
       map.on('load', () => {
@@ -428,6 +513,7 @@ function Dashboard() {
   }
 
   return (
+<<<<<<< HEAD
     <Box sx={{ background: '#f9f6f2', minHeight: '100vh', py: { xs: 2, md: 5 } }}>
       <Container maxWidth="xl" sx={{ px: { xs: 1, sm: 3, md: 6 } }}>
         <Box sx={{ display: 'flex', gap: 2.5, alignItems: 'flex-start' }}>
@@ -497,6 +583,123 @@ function Dashboard() {
               <Typography variant="h6" fontWeight={600} color="#4e342e">
                     <DirectionsCarIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                     Your Active Rides
+=======
+    <Box sx={{ background: '#f9f6f2', minHeight: '100vh', py: { xs: 2, md: 4 } }}>
+      <Container maxWidth="lg" sx={{ px: { xs: 2, sm: 3, md: 4 } }}>
+        {/* Unified Single-Column Layout */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          
+          {/* Welcome Card - Enhanced for mobile/web consistency */}
+          <Card sx={{ 
+            borderRadius: { xs: 3, md: 4 }, 
+            background: 'linear-gradient(135deg, #f9f6f2 0%, #f5f3e7 100%)', 
+            boxShadow: '0 4px 24px 0 #e0c9b3', 
+            p: { xs: 3, md: 4 },
+            position: 'relative',
+            overflow: 'hidden'
+          }}>
+            <Box sx={{ 
+              display: 'flex', 
+              flexDirection: { xs: 'column', sm: 'row' }, 
+              alignItems: { xs: 'flex-start', sm: 'center' }, 
+              justifyContent: 'space-between',
+              gap: { xs: 2, sm: 3 }
+            }}>
+              <Box sx={{ flex: 1 }}>
+        <Typography variant="h4" fontWeight={700} color="#4e342e" mb={1}>
+          Welcome back, {userName}! <span role="img" aria-label="sparkles">✨</span>
+        </Typography>
+                <Typography variant="body1" color="#7c5e48" mb={3}>
+                  Your community is active with 12 rides this week
+        </Typography>
+                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                  <Button 
+                    variant="contained" 
+                    onClick={() => navigate('/create-group')}
+                    sx={{ 
+                      background: '#a47551', 
+                      color: '#fff', 
+                      borderRadius: 2, 
+                      fontWeight: 600, 
+                      px: 3, 
+                      py: 1.2, 
+                      fontSize: { xs: 16, md: 18 }
+                    }}
+                  >
+                    Offer a Ride
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    sx={{ 
+                      color: '#b08968', 
+                      borderColor: '#e0c9b3', 
+                      borderRadius: 2, 
+                      fontWeight: 600, 
+                      px: 3, 
+                      py: 1.2, 
+                      fontSize: { xs: 16, md: 18 }
+                    }}
+                  >
+                    Find Rides
+                  </Button>
+                </Stack>
+              </Box>
+              <Avatar 
+                src="/profile-placeholder.jpg" 
+                sx={{ 
+                  width: { xs: 80, sm: 100 }, 
+                  height: { xs: 80, sm: 100 }, 
+                  boxShadow: 3,
+                  alignSelf: { xs: 'center', sm: 'flex-end' }
+                }} 
+              />
+            </Box>
+            </Card>
+
+          {/* Stats Grid - Responsive grid that adapts to screen size */}
+          <Box sx={{ 
+            display: 'grid', 
+            gridTemplateColumns: { 
+              xs: '1fr', 
+              sm: 'repeat(2, 1fr)', 
+              md: 'repeat(4, 1fr)' 
+            }, 
+            gap: 2 
+          }}>
+            <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+              <CardContent sx={{ py: 3, textAlign: 'center' }}>
+                <Typography variant="subtitle2" color="#7c5e48" mb={1}>Active rides today</Typography>
+                <Typography variant="h4" fontWeight={700} color="#4e342e">{activeRides.length}</Typography>
+                </CardContent>
+              </Card>
+            <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+              <CardContent sx={{ py: 3, textAlign: 'center' }}>
+                <Typography variant="subtitle2" color="#7c5e48" mb={1}>Groups you've joined</Typography>
+                <Typography variant="h4" fontWeight={700} color="#4e342e">{myGroups}</Typography>
+            </CardContent>
+          </Card>
+            <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+              <CardContent sx={{ py: 3, textAlign: 'center' }}>
+                <Typography variant="subtitle2" color="#7c5e48" mb={1}>Your community rating</Typography>
+                <Typography variant="h4" fontWeight={700} color="#4e342e">4.9</Typography>
+            </CardContent>
+          </Card>
+            <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+              <CardContent sx={{ py: 3, textAlign: 'center' }}>
+                <Typography variant="subtitle2" color="#7c5e48" mb={1}>Miles saved this month</Typography>
+                <Typography variant="h4" fontWeight={700} color="#4e342e">127</Typography>
+            </CardContent>
+          </Card>
+          </Box>
+
+          {/* Active Rides Section - Now properly filtered for non-expired rides */}
+          <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+            <CardContent sx={{ py: 3 }}>
+              <Box display="flex" alignItems="center" justifyContent="space-between" mb={3}>
+              <Typography variant="h6" fontWeight={600} color="#4e342e">
+                    <DirectionsCarIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                  Your Active Rides ({activeRides.length})
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
               </Typography>
                   <Button 
                     component={Link} 
@@ -508,7 +711,11 @@ function Dashboard() {
                 View All
               </Button>
             </Box>
+<<<<<<< HEAD
                 {uniqueRides.filter(ride => ride.status === 'active' || ride.status === 'created').length === 0 ? (
+=======
+              {activeRides.length === 0 ? (
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
               <Box display="flex" flexDirection="column" alignItems="center" py={4}>
                     <DirectionsCarIcon sx={{ fontSize: 48, color: '#b08968', mb: 2 }} />
                     <Typography color="#b08968" mb={1} fontSize={18}>No active rides</Typography>
@@ -524,10 +731,20 @@ function Dashboard() {
               </Box>
             ) : (
               <Stack spacing={2}>
+<<<<<<< HEAD
                 {uniqueRides
                       .filter(ride => ride.status === 'active' || ride.status === 'created')
                   .slice(0, 3)
                       .map(ride => (
+=======
+                  {activeRides
+                  .slice(0, 3)
+                    .map(ride => {
+                      const statusInfo = getRideStatusInfo(ride);
+                      const timeRemaining = getRideTimeRemaining(ride);
+                      
+                      return (
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                         <Box 
                           key={ride.id} 
                           sx={{ 
@@ -552,17 +769,49 @@ function Dashboard() {
                             sx={{ width: 48, height: 48, mr: 2, bgcolor: '#b08968' }} 
                           />
                           <Box sx={{ flex: 1 }}>
+<<<<<<< HEAD
                             <Typography fontWeight={600} color="#4e342e" fontSize={16}>
                               {ride.groupName || 'Ride Group'}
                             </Typography>
                             <Typography variant="body2" color="#7c5e48" fontSize={14}>
+=======
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                            <Typography fontWeight={600} color="#4e342e" fontSize={16}>
+                              {ride.groupName || 'Ride Group'}
+                            </Typography>
+                              <Chip
+                                label={statusInfo.label}
+                                size="small"
+                                icon={statusInfo.icon}
+                                sx={{
+                                  backgroundColor: statusInfo.bgColor,
+                                  color: statusInfo.color,
+                                  fontWeight: 600,
+                                  fontSize: '11px',
+                                  height: '20px'
+                                }}
+                              />
+                            </Box>
+                            <Typography variant="body2" color="#7c5e48" fontSize={14} mb={1}>
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                               {!ride.destination ? 'No destination' : 
                                typeof ride.destination === 'string' ? ride.destination : 
                                ride.destination.address || 'Unknown destination'}
                             </Typography>
+<<<<<<< HEAD
                             <Typography variant="caption" color="#b08968" fontSize={12}>
                               {ride.status === 'active' ? '🟢 Active' : '🟡 Forming'} • {ride.userType === 'driver' ? 'Driver' : 'Passenger'}
                             </Typography>
+=======
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                            <Typography variant="caption" color="#b08968" fontSize={12}>
+                                {ride.userType === 'driver' ? '🚗 Driver' : '👤 Passenger'}
+                              </Typography>
+                              <Typography variant="caption" color="#666" fontSize={11}>
+                                ⏰ {timeRemaining}
+                            </Typography>
+                            </Box>
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                         </Box>
                         <Button 
                           variant="outlined" 
@@ -579,7 +828,12 @@ function Dashboard() {
                             View
                         </Button>
                       </Box>
+<<<<<<< HEAD
                   ))}
+=======
+                      );
+                    })}
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
               </Stack>
             )}
           </CardContent>
@@ -617,6 +871,7 @@ function Dashboard() {
             {/* Community Pulse (Activity Feed) */}
             <Card sx={{ borderRadius: 4, boxShadow: 0, mb: 2 }}>
               <CardContent sx={{ py: 3 }}>
+<<<<<<< HEAD
             <Typography variant="h6" fontWeight={600} color="#4e342e" mb={2}>
                   Community Pulse
                 </Typography>
@@ -649,13 +904,21 @@ function Dashboard() {
               <CardContent sx={{ py: 3 }}>
             <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
               <Typography variant="h6" fontWeight={600} color="#4e342e">
+=======
+                <Box display="flex" alignItems="center" justifyContent="space-between" mb={3}>
+              <Typography variant="h6" fontWeight={600} color="#4e342e">
+                    <GroupIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                     My Communities
               </Typography>
               <IconButton size="small" sx={{ color: '#b08968' }}>
                 <AddIcon />
               </IconButton>
             </Box>
+<<<<<<< HEAD
                 {/* TODO: Replace with actual communities logic */}
+=======
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                 <Stack spacing={2}>
                   <Box display="flex" alignItems="center">
                     <Avatar src="/group2.jpg" sx={{ width: 32, height: 32, mr: 2 }} />
@@ -688,6 +951,7 @@ function Dashboard() {
                 <Typography variant="h6" fontWeight={600} color="#4e342e" mb={2}>
                   Trending Communities
                 </Typography>
+<<<<<<< HEAD
                 {/* TODO: Replace with trending communities logic */}
             <Stack spacing={2}>
                   <Box display="flex" alignItems="center" justifyContent="space-between">
@@ -745,10 +1009,68 @@ function Dashboard() {
                   <Button variant="outlined" sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}>
                     Browse Destinations
               </Button>
+=======
+                <Typography variant="body2" color="#b08968" mb={3}>
+                  What's happening in your ride-sharing network
+                </Typography>
+                <Stack spacing={1}>
+                  {activityFeed.length === 0 ? (
+                    <Typography color="#b08968">No recent activity yet.</Typography>
+                  ) : (
+                    activityFeed.slice(0, 5).map((activity, idx) => (
+                      <Box key={activity.id + idx} sx={{ background: '#f9f6ef', borderRadius: 2, p: 2, display: 'flex', alignItems: 'center' }}>
+                        <Avatar src={activity.avatar} sx={{ width: 32, height: 32, mr: 2 }} />
+                      <Box>
+                          <Typography variant="body2" fontWeight={500}>{activity.text}</Typography>
+                          <Typography variant="caption" color="#b08968">{activity.time.toLocaleString()}</Typography>
+                      </Box>
+                    </Box>
+                    ))
+                  )}
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
             </Stack>
           </CardContent>
         </Card>
           </Box>
+<<<<<<< HEAD
+=======
+
+        {/* Quick Actions */}
+          <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+              <CardContent sx={{ py: 3 }}>
+              <Typography variant="h6" fontWeight={600} color="#4e342e" mb={3}>
+              Quick Actions
+            </Typography>
+              <Box sx={{ 
+                display: 'grid', 
+                gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, 
+                gap: 2 
+              }}>
+              <Button 
+                variant="contained" 
+                startIcon={<AddIcon />} 
+                onClick={() => navigate('/create-group')}
+                    sx={{ background: '#a47551', color: '#fff', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
+              >
+                    Offer a Ride
+              </Button>
+                <Button 
+                  variant="outlined" 
+                  sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
+                >
+                    Find Communities
+              </Button>
+                <Button 
+                  variant="outlined" 
+                  sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
+                >
+                    Browse Destinations
+              </Button>
+              </Box>
+          </CardContent>
+        </Card>
+
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
         </Box>
       </Container>
     </Box>

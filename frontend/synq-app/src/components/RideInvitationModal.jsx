@@ -1,4 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
+<<<<<<< HEAD
+=======
+import {
+  Box,
+  Dialog,
+  DialogContent,
+  Typography,
+  Button,
+  TextField,
+  IconButton,
+  Alert,
+  CircularProgress,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  FormHelperText,
+  FormControlLabel,
+  Checkbox,
+  Avatar
+} from '@mui/material';
+import {
+  ArrowBack as ArrowBackIcon,
+  Close as CloseIcon,
+  Check as CheckIcon,
+  DirectionsCar as DriverIcon,
+  Person as PassengerIcon,
+  LocationOn as LocationIcon,
+  LocationOff as LocationOffIcon,
+  AccessTime as TimeIcon,
+  Notes as NotesIcon,
+  Group as GroupIcon
+} from '@mui/icons-material';
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 import { respondToRideInvitation } from '../services/firebaseOperations';
 import { searchDestinations } from '../services/locationService';
 import '../styles/RideInvitationModal.css';
@@ -17,8 +51,10 @@ function RideInvitationModal({
     pickupLocation: '',
     location: null,
     role: 'passenger',
+    seatCapacity: 4,
     readyTime: '',
-    locationSharing: true,
+    live_location_consent: 'never', // NEW - granular location sharing control
+    locationSharing: false, // Keep for backward compatibility, default to false
     notes: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -26,6 +62,24 @@ function RideInvitationModal({
   const [selectedResponse, setSelectedResponse] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [error, setError] = useState(null);
+  
+  // Debug: Log when modal opens/closes
+  useEffect(() => {
+    console.log('🔵 RideInvitationModal: Modal state changed:', {
+      isOpen,
+      showDetailsModal,
+      selectedResponse,
+      isSubmitting
+    });
+  }, [isOpen, showDetailsModal, selectedResponse, isSubmitting]);
+
+  // Debug: Log when component mounts/unmounts
+  useEffect(() => {
+    console.log('🔵 RideInvitationModal: Component mounted');
+    return () => {
+      console.log('🔵 RideInvitationModal: Component unmounted');
+    };
+  }, []);
   
   // Address suggestions state
   const [suggestions, setSuggestions] = useState([]);
@@ -190,25 +244,68 @@ function RideInvitationModal({
       details,
       rideDetails,
       hasLocation: !!rideDetails.location,
-      locationData: rideDetails.location
+      locationData: rideDetails.location,
+      role: rideDetails.role,
+      seatCapacity: rideDetails.seatCapacity
     });
     
     try {
       // Use the onRSVPSubmit prop if provided, otherwise fall back to firebaseOperations
       if (onRSVPSubmit) {
+<<<<<<< HEAD
         const rsvpData = {
           status: response,
           ...details,
           location: details?.location || rideDetails.location // Ensure location is included
+=======
+        console.log('🔵 RideInvitationModal: Using onRSVPSubmit prop');
+        console.log('🔵 RideInvitationModal: onRSVPSubmit function:', typeof onRSVPSubmit);
+        
+        // Clean location data before submission
+        let cleanedRideDetails = { ...rideDetails };
+        if (cleanedRideDetails.location) {
+          if (cleanedRideDetails.location.lng === undefined || 
+              cleanedRideDetails.location.lat === undefined ||
+              cleanedRideDetails.location.lng === null || 
+              cleanedRideDetails.location.lat === null) {
+            console.warn('Invalid location data detected, removing location before submission:', cleanedRideDetails.location);
+            delete cleanedRideDetails.location;
+          }
+        }
+        
+        const rsvpData = {
+          status: response,
+          ...details,
+          location: details?.location || cleanedRideDetails.location, // Use cleaned location
+          pickupLocation: cleanedRideDetails.pickupLocation,
+          readyTime: cleanedRideDetails.readyTime,
+          live_location_consent: cleanedRideDetails.live_location_consent, // NEW - granular location sharing
+          locationSharing: cleanedRideDetails.locationSharing, // Keep for backward compatibility
+          notes: cleanedRideDetails.notes,
+          role: cleanedRideDetails.role,
+          seatCapacity: cleanedRideDetails.seatCapacity
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
         };
         
-        console.log('RideInvitationModal - Calling onRSVPSubmit with:', rsvpData);
+        console.log('🔵 RideInvitationModal: Calling onRSVPSubmit with:', rsvpData);
+        console.log('🔵 RideInvitationModal: RSVP Data details:', {
+          status: rsvpData.status,
+          role: rsvpData.role,
+          seatCapacity: rsvpData.seatCapacity,
+          location: rsvpData.location,
+          pickupLocation: rsvpData.pickupLocation,
+          locationSharing: rsvpData.locationSharing,
+          readyTime: rsvpData.readyTime,
+          notes: rsvpData.notes
+        });
+        
         await onRSVPSubmit(rsvpData);
         setSuccessMessage('Response submitted successfully!');
         setTimeout(() => {
           onClose();
         }, 2000);
       } else {
+        console.log('🔵 RideInvitationModal: No onRSVPSubmit prop, using fallback');
         // Fallback to firebaseOperations
         const result = await respondToRideInvitation(
           ride.id, 
@@ -246,7 +343,80 @@ function RideInvitationModal({
     setSelectedResponse(null);
   };
 
+<<<<<<< HEAD
   if (!isOpen) return null;
+=======
+  const handleClose = () => {
+    setErrors({});
+    setError(null);
+    setSuccessMessage(null);
+    onClose();
+  };
+
+  const handlePickupLocationChange = (value) => {
+    // If user is typing (not selecting from suggestions), store as string
+    setRideDetails(prev => ({
+      ...prev,
+      pickupLocation: value
+    }));
+  };
+
+  const handleSuggestionSelect = (suggestion) => {
+    console.log('🔵 Suggestion selected:', suggestion);
+    
+    // Validate location data before setting it
+    const hasValidLocation = suggestion.lat !== undefined && 
+                            suggestion.lng !== undefined && 
+                            suggestion.lat !== null && 
+                            suggestion.lng !== null;
+    
+    if (!hasValidLocation) {
+      console.warn('Invalid location data in suggestion, not setting location:', suggestion);
+    }
+    
+    setRideDetails(prev => ({
+      ...prev,
+      pickupLocation: hasValidLocation ? {
+        lat: suggestion.lat,
+        lng: suggestion.lng,
+        address: suggestion.address || suggestion.display_name || suggestion.name
+      } : suggestion.address || suggestion.display_name || suggestion.name,
+      location: hasValidLocation ? {
+        lat: suggestion.lat,
+        lng: suggestion.lng,
+        address: suggestion.address || suggestion.display_name || suggestion.name
+      } : null
+    }));
+    setShowSuggestions(false);
+  };
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (suggestionsRef.current && !suggestionsRef.current.contains(event.target)) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  if (!isOpen || !ride) {
+    console.log('🔴 Modal not rendering - conditions:', { isOpen, hasRide: !!ride });
+    return null;
+  }
+
+  console.log('🟢 Rendering RideInvitationModal:', {
+    isOpen,
+    showDetailsModal,
+    selectedResponse,
+    isSubmitting,
+    rideId: ride?.id
+  });
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 
   return (
     <div className="modal-backdrop" style={{ pointerEvents: 'auto' }} onClick={onClose}>
@@ -305,11 +475,52 @@ function RideInvitationModal({
               </div>
             </div>
 
+<<<<<<< HEAD
             <div className="rsvp-actions">
               <h4>{isStatusChange ? 'Change your response:' : 'Will you join this ride?'}</h4>
               <div className="rsvp-buttons">
                 <button 
                   className="rsvp-btn accept"
+=======
+            {isStatusChange && (
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    Current status: {getInvitationStatusText(currentStatus)}
+                  </Alert>
+                )}
+
+                {/* Ride Start Status Notification */}
+                {(() => {
+                  const startStatusMessage = getRideStartStatusMessage();
+                  if (startStatusMessage) {
+                    return (
+                      <Alert 
+                        severity={startStatusMessage.type} 
+                        sx={{ 
+                          mb: 2,
+                          '& .MuiAlert-message': {
+                            fontSize: '0.9rem',
+                            lineHeight: 1.4
+                          }
+                        }}
+                      >
+                        {startStatusMessage.message}
+                      </Alert>
+                    );
+                  }
+                  return null;
+                })()}
+              </Box>
+
+              {/* RSVP Actions */}
+              <Box className="rsvp-actions">
+                <Typography variant="h6" sx={{ color: '#4e342e', fontWeight: 600, mb: 2, textAlign: 'center' }}>
+                  {isStatusChange ? 'Change your response:' : 'Will you join this ride?'}
+                </Typography>
+                
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <Button
+                    variant="contained"
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                   onClick={() => handleRSVP('accepted')}
                   disabled={isSubmitting}
                 >
@@ -339,6 +550,7 @@ function RideInvitationModal({
 
         {/* Ride Details Section - Slides over RSVP */}
         {showDetailsModal && (
+<<<<<<< HEAD
           <div className="details-section slide-in">
             <div className="modal-header">
               <button className="back-button" onClick={handleBack}>
@@ -359,6 +571,54 @@ function RideInvitationModal({
                       type="text"
                       id="pickupLocation"
                       value={rideDetails.pickupLocation}
+=======
+          <Box className="details-section">
+            {console.log('🟠 Rendering Details section')}
+            {/* Header */}
+            <Box className="modal-header">
+              <IconButton onClick={handleBack} className="back-button">
+                <ArrowBackIcon />
+              </IconButton>
+              <Typography variant="h6" className="modal-title">
+                Ride Details
+              </Typography>
+              <IconButton onClick={handleClose} className="close-button">
+                <CloseIcon />
+              </IconButton>
+            </Box>
+
+            {/* Form */}
+            <Box className="modal-body">
+              <Box className="form-container" sx={{ pt: 2 }}>
+                {/* Ride Start Status Notification */}
+                {(() => {
+                  const startStatusMessage = getRideStartStatusMessage();
+                  if (startStatusMessage) {
+                    return (
+                      <Alert 
+                        severity={startStatusMessage.type} 
+                        sx={{ 
+                          mb: 3,
+                          '& .MuiAlert-message': {
+                            fontSize: '0.9rem',
+                            lineHeight: 1.4
+                          }
+                        }}
+                      >
+                        {startStatusMessage.message}
+                      </Alert>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Pickup Location */}
+                <Box sx={{ position: 'relative', mb: 3 }}>
+                  <TextField
+                    fullWidth
+                    label="Starting Location"
+                      value={typeof rideDetails.pickupLocation === 'string' ? rideDetails.pickupLocation : (rideDetails.pickupLocation?.address || '')}
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                       onChange={(e) => handlePickupLocationChange(e.target.value)}
                       placeholder="Enter your pickup address"
                       required
@@ -386,6 +646,7 @@ function RideInvitationModal({
                             }
                           };
 
+<<<<<<< HEAD
                           // Get the primary display text
                           const getPrimaryText = () => {
                             if (suggestion.name && suggestion.name !== suggestion.address) {
@@ -449,6 +710,64 @@ function RideInvitationModal({
                     <span>Share my location during the ride</span>
                   </label>
                 </div>
+=======
+                {/* Location Sharing */}
+                <FormControl fullWidth size="small" className="form-field" sx={{ mb: 3 }}>
+                  <InputLabel id="location-sharing-label" sx={{ color: '#4e342e', fontWeight: 600 }}>
+                    Location Sharing
+                  </InputLabel>
+                  <Select
+                    labelId="location-sharing-label"
+                    value={rideDetails.live_location_consent}
+                    label="Location Sharing"
+                    onChange={(e) => {
+                      const newConsent = e.target.value;
+                      handleDetailsChange('live_location_consent', newConsent);
+                      // Update backward compatibility field
+                      handleDetailsChange('locationSharing', newConsent !== 'never');
+                    }}
+                    sx={{ 
+                      '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e0c9b3' },
+                      '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#b08968' },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#a47551' }
+                    }}
+                  >
+                    <MenuItem value="never">
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <LocationOffIcon fontSize="small" />
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>Never share location</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Your location will not be shared with other participants
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </MenuItem>
+                    <MenuItem value="on_pickup">
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <LocationIcon fontSize="small" />
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>Share after pickup</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Location sharing activates when driver is within 100m of your pickup
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </MenuItem>
+                    <MenuItem value="during_ride">
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <LocationIcon fontSize="small" />
+                        <Box>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>Share during ride</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Location sharing active from ride start until dropoff
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </MenuItem>
+                  </Select>
+                </FormControl>
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 
                 <div className="form-group">
                   <label htmlFor="role">Role</label>
@@ -462,9 +781,40 @@ function RideInvitationModal({
                   </select>
                 </div>
 
+<<<<<<< HEAD
                 <div className="form-group">
                   <label htmlFor="readyTime">Ready Time</label>
                   <input
+=======
+                {/* Seat Capacity - Only show when driver is selected */}
+                {rideDetails.role === 'driver' && (
+                  <FormControl fullWidth size="small" className="form-field" sx={{ mb: 3 }}>
+                    <InputLabel id="seat-capacity-label" sx={{ color: '#4e342e', fontWeight: 600 }}>Seats Available</InputLabel>
+                    <Select
+                      labelId="seat-capacity-label"
+                      value={rideDetails.seatCapacity !== undefined ? rideDetails.seatCapacity : 4}
+                      label="Seats Available"
+                      onChange={(e) => handleDetailsChange('seatCapacity', parseInt(e.target.value))}
+                      sx={{ 
+                        '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e0c9b3' },
+                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#b08968' },
+                        '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#a47551' }
+                      }}
+                    >
+                      {[0, 1, 2, 3, 4, 5, 6, 7].map(seats => (
+                        <MenuItem key={seats} value={seats}>
+                          {seats}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
+
+                {/* Ready Time */}
+                <TextField
+                  fullWidth
+                  label="Ready Time"
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
                     type="time"
                     id="readyTime"
                     value={rideDetails.readyTime}
@@ -479,10 +829,283 @@ function RideInvitationModal({
                     value={rideDetails.notes}
                     onChange={(e) => handleDetailsChange('notes', e.target.value)}
                     placeholder="Any special instructions or accessibility needs..."
+<<<<<<< HEAD
                     rows="3"
                   />
                 </div>
               </div>
+=======
+                  className="form-field"
+                  size="small"
+                  InputProps={{
+                    startAdornment: <NotesIcon sx={{ color: '#666', mr: 1 }} />
+                  }}
+                  sx={{ 
+                    '& .MuiInputLabel-root': { 
+                      color: '#4e342e',
+                      fontWeight: 600 
+                    },
+                    '& .MuiOutlinedInput-root': {
+                      '& fieldset': { borderColor: '#e0c9b3' },
+                      '&:hover fieldset': { borderColor: '#b08968' },
+                      '&.Mui-focused fieldset': { borderColor: '#a47551' }
+                    }
+                  }}
+                />
+
+                {/* Participants Table with Driver-Passenger Mapping */}
+                {ride?.participants && Object.keys(ride.participants).length > 0 && (
+                  <Box sx={{ mt: 4 }}>
+                    <Typography variant="h6" sx={{ 
+                      color: '#4e342e', 
+                      fontWeight: 600, 
+                      mb: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1
+                    }}>
+                      <GroupIcon />
+                      Ride Participants
+                    </Typography>
+                    
+                    {(() => {
+                      const allParticipants = Object.entries(ride.participants).map(([uid, data]) => ({
+                        uid,
+                        ...data,
+                        displayName: ride.invitations?.[uid]?.inviteeName || data.displayName || `User ${uid.slice(-4)}`
+                      }));
+                      
+                      // Filter to only show participants relevant to current user
+                      const currentUserParticipant = allParticipants.find(p => p.uid === currentUserId);
+                      if (!currentUserParticipant) return null;
+                      
+                      let relevantParticipants = [];
+                      
+                      if (currentUserParticipant.role === 'driver') {
+                        // If current user is driver, show passengers they're picking up
+                        const drivers = allParticipants.filter(p => p.role === 'driver' && p.status === 'accepted');
+                        const passengers = allParticipants.filter(p => p.role === 'passenger' && p.status === 'accepted');
+                        
+                        // Simple assignment logic: distribute passengers evenly among drivers
+                        const getDriverPassengerMapping = () => {
+                          if (drivers.length === 0 || passengers.length === 0) return {};
+                          
+                          const mapping = {};
+                          drivers.forEach((driver, index) => {
+                            const startIndex = Math.floor((passengers.length * index) / drivers.length);
+                            const endIndex = Math.floor((passengers.length * (index + 1)) / drivers.length);
+                            mapping[driver.uid] = passengers.slice(startIndex, endIndex);
+                          });
+                          return mapping;
+                        };
+                        
+                        const driverPassengerMapping = getDriverPassengerMapping();
+                        const currentUserPassengers = driverPassengerMapping[currentUserId] || [];
+                        
+                        relevantParticipants = [
+                          ...drivers.filter(d => d.uid === currentUserId),
+                          ...currentUserPassengers
+                        ];
+                      } else {
+                        // If current user is passenger, show their assigned driver
+                        const drivers = allParticipants.filter(p => p.role === 'driver' && p.status === 'accepted');
+                        const passengers = allParticipants.filter(p => p.role === 'passenger' && p.status === 'accepted');
+                        
+                        // Simple assignment logic: distribute passengers evenly among drivers
+                        const getDriverPassengerMapping = () => {
+                          if (drivers.length === 0 || passengers.length === 0) return {};
+                          
+                          const mapping = {};
+                          drivers.forEach((driver, index) => {
+                            const startIndex = Math.floor((passengers.length * index) / drivers.length);
+                            const endIndex = Math.floor((passengers.length * (index + 1)) / drivers.length);
+                            mapping[driver.uid] = passengers.slice(startIndex, endIndex);
+                          });
+                          return mapping;
+                        };
+                        
+                        const driverPassengerMapping = getDriverPassengerMapping();
+                        const assignedDriver = drivers.find(driver => 
+                          driverPassengerMapping[driver.uid]?.some(p => p.uid === currentUserId)
+                        );
+                        
+                        relevantParticipants = [
+                          ...(assignedDriver ? [assignedDriver] : []),
+                          ...passengers.filter(p => p.uid === currentUserId)
+                        ];
+                      }
+                      
+                      const drivers = relevantParticipants.filter(p => p.role === 'driver');
+                      const passengers = relevantParticipants.filter(p => p.role === 'passenger');
+                      
+                      // Create mapping for relevant participants only
+                      const getDriverPassengerMapping = () => {
+                        if (drivers.length === 0 || passengers.length === 0) return {};
+                        
+                        const mapping = {};
+                        drivers.forEach((driver, index) => {
+                          const startIndex = Math.floor((passengers.length * index) / drivers.length);
+                          const endIndex = Math.floor((passengers.length * (index + 1)) / drivers.length);
+                          mapping[driver.uid] = passengers.slice(startIndex, endIndex);
+                        });
+                        return mapping;
+                      };
+                      
+                      const driverPassengerMapping = getDriverPassengerMapping();
+                      
+                      return (
+                        <Box sx={{ 
+                          background: 'rgba(248, 249, 250, 0.4)',
+                          borderRadius: '12px',
+                          border: '1px solid rgba(0, 0, 0, 0.04)',
+                          p: 3
+                        }}>
+                          {/* Drivers Section */}
+                          {drivers.length > 0 && (
+                            <Box sx={{ mb: 3 }}>
+                              <Typography variant="subtitle2" sx={{ 
+                                color: '#4e342e', 
+                                fontWeight: 600, 
+                                mb: 2,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                                fontSize: '0.8rem'
+                              }}>
+                                Drivers ({drivers.length})
+                              </Typography>
+                              
+                              {drivers.map((driver) => (
+                                <Box key={driver.uid} sx={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: 2, 
+                                  p: 2,
+                                  mb: 2,
+                                  background: 'white',
+                                  borderRadius: '8px',
+                                  border: '1px solid rgba(0, 0, 0, 0.06)',
+                                  borderLeft: '4px solid #4caf50'
+                                }}>
+                                  <Avatar 
+                                    sx={{ 
+                                      width: 40, 
+                                      height: 40, 
+                                      background: '#4caf50',
+                                      color: 'white',
+                                      fontWeight: 600
+                                    }}
+                                  >
+                                    <DriverIcon />
+                                  </Avatar>
+                                  <Box sx={{ flex: 1 }}>
+                                    <Typography variant="body1" fontWeight={600} color="text.primary">
+                                      {driver.displayName}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      {driver.seatCapacity !== undefined ? `${driver.seatCapacity} seats available` : 'Seat capacity not specified'}
+                                    </Typography>
+                                  </Box>
+                                  <Box sx={{ textAlign: 'right' }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      Assigned passengers:
+                                    </Typography>
+                                    <Typography variant="body2" fontWeight={600} color="primary">
+                                      {driverPassengerMapping[driver.uid]?.length || 0}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                              ))}
+                            </Box>
+                          )}
+                          
+                          {/* Passengers Section */}
+                          {passengers.length > 0 && (
+                            <Box>
+                              <Typography variant="subtitle2" sx={{ 
+                                color: '#4e342e', 
+                                fontWeight: 600, 
+                                mb: 2,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px',
+                                fontSize: '0.8rem'
+                              }}>
+                                Passengers ({passengers.length})
+                              </Typography>
+                              
+                              {passengers.map((passenger) => {
+                                const assignedDriver = Object.entries(driverPassengerMapping).find(([_, passengers]) => 
+                                  passengers.some(p => p.uid === passenger.uid)
+                                )?.[0];
+                                const driverName = drivers.find(d => d.uid === assignedDriver)?.displayName;
+                                
+                                return (
+                                  <Box key={passenger.uid} sx={{ 
+                                    display: 'flex', 
+                                    alignItems: 'center', 
+                                    gap: 2, 
+                                    p: 2,
+                                    mb: 2,
+                                    background: 'white',
+                                    borderRadius: '8px',
+                                    border: '1px solid rgba(0, 0, 0, 0.06)',
+                                    borderLeft: '4px solid #2196f3'
+                                  }}>
+                                    <Avatar 
+                                      sx={{ 
+                                        width: 40, 
+                                        height: 40, 
+                                        background: '#2196f3',
+                                        color: 'white',
+                                        fontWeight: 600
+                                      }}
+                                    >
+                                      <PassengerIcon />
+                                    </Avatar>
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="body1" fontWeight={600} color="text.primary">
+                                        {passenger.displayName}
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {passenger.pickupLocation?.address || 'Pickup location pending'}
+                                      </Typography>
+                                    </Box>
+                                    <Box sx={{ textAlign: 'right' }}>
+                                      <Typography variant="caption" color="text.secondary">
+                                        Assigned to:
+                                      </Typography>
+                                      <Typography variant="body2" fontWeight={600} color="primary">
+                                        {driverName || 'Unassigned'}
+                                      </Typography>
+                                    </Box>
+                                  </Box>
+                                );
+                              })}
+                            </Box>
+                          )}
+                          
+                          {/* Summary */}
+                          <Box sx={{ 
+                            mt: 3, 
+                            p: 2, 
+                            background: 'rgba(76, 175, 80, 0.1)', 
+                            borderRadius: '8px',
+                            border: '1px solid rgba(76, 175, 80, 0.2)'
+                          }}>
+                            <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center' }}>
+                              <strong>{drivers.length}</strong> driver{drivers.length !== 1 ? 's' : ''} • <strong>{passengers.length}</strong> passenger{passengers.length !== 1 ? 's' : ''}
+                              {drivers.length > 0 && passengers.length > 0 && (
+                                <span> • Passengers automatically distributed among drivers</span>
+                              )}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      );
+                    })()}
+                  </Box>
+                )}
+              </Box>
+            </Box>
+>>>>>>> 096174b (feature/build-routing-for-live-rides: have basic routing down, implementing drive mode for users, then will move onto improving routing algo)
 
               <div className="modal-actions">
                 <button 

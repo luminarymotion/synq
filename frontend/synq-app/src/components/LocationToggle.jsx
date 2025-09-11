@@ -6,7 +6,10 @@ import {
   Chip,
   Tooltip,
   IconButton,
-  Alert
+  Alert,
+  FormControl,
+  Select,
+  MenuItem
 } from '@mui/material';
 import {
   LocationOn as LocationIcon,
@@ -27,7 +30,10 @@ const LocationToggle = ({
   isTracking, 
   onToggleChange, 
   onOpenSettings,
-  compact = false 
+  compact = false,
+  showGranularOptions = false, // NEW - show granular location sharing options
+  currentConsent = 'never', // NEW - current location consent setting
+  onConsentChange = null // NEW - callback for consent changes
 }) => {
   const [permissionStatus, setPermissionStatus] = useState(null);
   const [userPreferences, setUserPreferences] = useState(null);
@@ -107,6 +113,35 @@ const LocationToggle = ({
     }
   };
 
+  // Handle granular consent change
+  const handleConsentChange = async (newConsent) => {
+    try {
+      console.log('🔄 LocationToggle: handleConsentChange called with:', newConsent);
+      setError(null);
+      
+      // Notify parent component of consent change
+      if (onConsentChange) {
+        console.log('🔄 LocationToggle: Calling onConsentChange with:', newConsent);
+        onConsentChange(newConsent);
+      } else {
+        console.warn('🔄 LocationToggle: onConsentChange is not provided');
+      }
+      
+      // Also update the toggle state based on consent
+      const isEnabled = newConsent !== 'never';
+      if (onToggleChange) {
+        console.log('🔄 LocationToggle: Calling onToggleChange with:', isEnabled);
+        onToggleChange(isEnabled, { consent: newConsent });
+      } else {
+        console.warn('🔄 LocationToggle: onToggleChange is not provided');
+      }
+      
+    } catch (err) {
+      console.error('❌ LocationToggle: Failed to update location consent:', err);
+      setError('Failed to update location consent');
+    }
+  };
+
   // Get status display info
   const getStatusInfo = () => {
     if (rideOverride !== null) {
@@ -182,33 +217,85 @@ const LocationToggle = ({
   if (compact) {
     return (
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <Tooltip title={rideOverride !== null ? "Override your default location setting for this ride" : "Toggle location sharing for this ride"}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
-              {isEnabled ? 'ON' : 'OFF'}
-            </Typography>
-            <Switch
-              checked={isEnabled}
-              onChange={(e) => handleToggleChange(e.target.checked)}
-              size="small"
-              color="primary"
-            />
-          </Box>
-        </Tooltip>
-        <Tooltip title={statusInfo.text}>
-          <Chip
-            icon={statusInfo.icon}
-            label={statusInfo.text}
-            color={statusInfo.color}
-            size="small"
-            variant="outlined"
-            sx={{ 
-              fontSize: '0.7rem',
-              height: 24,
-              '& .MuiChip-icon': { fontSize: '0.8rem' }
-            }}
+        {showGranularOptions ? (
+          // Granular location sharing options
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <Select
+              value={currentConsent}
+              onChange={(e) => {
+                console.log('🔄 LocationToggle: Select onChange triggered with value:', e.target.value);
+                handleConsentChange(e.target.value);
+              }}
+              onOpen={() => {
+                console.log('🔄 LocationToggle: Select opened');
+              }}
+              onClose={() => {
+                console.log('🔄 LocationToggle: Select closed');
+              }}
+              sx={{
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e0c9b3' },
+                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#b08968' },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#a47551' },
+                '& .MuiSelect-select': { py: 1 }
+              }}
+            >
+              <MenuItem value="never">
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <LocationOffIcon fontSize="small" />
+                  <Typography variant="body2">Never</Typography>
+                </Box>
+              </MenuItem>
+              <MenuItem value="on_pickup">
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <LocationIcon fontSize="small" />
+                  <Typography variant="body2">After Pickup</Typography>
+                </Box>
+              </MenuItem>
+              <MenuItem value="during_ride">
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <LocationIcon fontSize="small" />
+                  <Typography variant="body2">During Ride</Typography>
+                </Box>
+              </MenuItem>
+            </Select>
+          </FormControl>
+        ) : (
+          // Original simple toggle
+          <Tooltip title={rideOverride !== null ? "Override your default location setting for this ride" : "Toggle location sharing for this ride"}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                {isEnabled ? 'ON' : 'OFF'}
+              </Typography>
+              <Switch
+                checked={isEnabled}
+                onChange={(e) => handleToggleChange(e.target.checked)}
+                size="small"
+                color="primary"
+              />
+            </Box>
+          </Tooltip>
+        )}
+        
+        {/* Status indicator */}
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: 1,
+          px: 2,
+          py: 1,
+          background: isTracking && currentConsent !== 'never' ? 'rgba(76, 175, 80, 0.1)' : 'rgba(158, 158, 158, 0.1)',
+          borderRadius: 1,
+          border: `1px solid ${isTracking && currentConsent !== 'never' ? '#4caf50' : '#9e9e9e'}`
+        }}>
+          <LocationIcon 
+            fontSize="small" 
+            color={isTracking && currentConsent !== 'never' ? 'success' : 'disabled'} 
           />
-        </Tooltip>
+          <Typography variant="caption" color={isTracking && currentConsent !== 'never' ? 'success.main' : 'text.secondary'}>
+            {isTracking && currentConsent !== 'never' ? 'Live sharing active' : 'Location sharing off'}
+          </Typography>
+        </Box>
+        
         {onOpenSettings && (
           <Tooltip title="Location Settings">
             <IconButton size="small" onClick={onOpenSettings}>
