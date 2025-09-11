@@ -99,7 +99,7 @@ exports.sendSmsNotification = functions.firestore
     const notification = snap.data();
 
     // Only process ride invitations
-    if (notification.type !== "ride-invitation") {
+    if (notification.type !== "ride_invitation") {
       return null;
     }
 

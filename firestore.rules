@@ -130,30 +130,30 @@ service cloud.firestore {
 
     // Rides collection
     match /rides/{rideId} {
-      // Allow reading if user is driver, passenger, or has pending invitation
+      // Allow reading if user is driver, passenger, participant, or has invitation
       allow read: if isAuthenticated() && (
-        resource.data.driver.uid == request.auth.uid ||
+        (resource.data.driver != null && resource.data.driver.uid == request.auth.uid) ||
         request.auth.uid in resource.data.passengerUids ||
-        (resource.data.invitations != null && 
-         request.auth.uid in resource.data.invitations &&
-         resource.data.invitations[request.auth.uid].status == 'pending')
+        (resource.data.participants != null && request.auth.uid in resource.data.participants) ||
+        (resource.data.invitations != null && request.auth.uid in resource.data.invitations)
       );
       
-      // Allow creating new rides
+      // Allow creating new rides - creator can be either driver or passenger
       allow create: if isAuthenticated() && 
-        request.resource.data.driver.uid == request.auth.uid;
+        request.resource.data.createdBy == request.auth.uid;
       
-      // Allow updating if user is driver, passenger, or has an invitation
+      // Allow updating if user is driver, passenger, participant, or has an invitation
       allow update: if isAuthenticated() && (
-        resource.data.driver.uid == request.auth.uid ||
+        (resource.data.driver != null && resource.data.driver.uid == request.auth.uid) ||
         request.auth.uid in resource.data.passengerUids ||
+        (resource.data.participants != null && request.auth.uid in resource.data.participants) ||
         (resource.data.invitations != null && 
          request.auth.uid in resource.data.invitations)
       );
       
-      // Allow deleting if user is driver
+      // Allow deleting if user is the creator
       allow delete: if isAuthenticated() && 
-        resource.data.driver.uid == request.auth.uid;
+        resource.data.createdBy == request.auth.uid;
     }
 
     // Ride invitations
@@ -176,7 +176,7 @@ service cloud.firestore {
         // Allow creating notifications for yourself
         request.resource.data.userId == request.auth.uid ||
         // Allow creating friend request notifications
-        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added', 'ride-invitation', 'ride-invitation-response'] &&
+        (request.resource.data.type in ['friend_request', 'friend_request_accepted', 'friend_request_rejected', 'friend_added', 'ride_invitation', 'ride_invitation_response'] &&
          (
            // For friend requests, sender can create notification for receiver
            (request.resource.data.type == 'friend_request' && 
@@ -189,10 +189,10 @@ service cloud.firestore {
             (request.resource.data.data.senderId == request.auth.uid || 
              request.resource.data.data.receiverId == request.auth.uid)) ||
            // For ride invitations, inviter can create notification for invitee
-           (request.resource.data.type == 'ride-invitation' && 
+           (request.resource.data.type == 'ride_invitation' && 
             request.resource.data.metadata.inviterId == request.auth.uid) ||
            // For ride invitation responses, invitee can create notification for inviter
-           (request.resource.data.type == 'ride-invitation-response' && 
+           (request.resource.data.type == 'ride_invitation_response' && 
             request.auth.uid != request.resource.data.userId)
          ))
       );
