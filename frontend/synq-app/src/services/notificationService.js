@@ -35,14 +35,16 @@ export const createRideInvitationNotification = async (recipientId, rideData, in
     });
 
     const notification = {
-      recipientId,
+      userId: recipientId,
       type: 'ride_invitation',
       title: 'New Ride Invitation',
       message: `${inviterName} has invited you to join a ride to ${rideData.destination?.address || 'a destination'}`,
-      rideId: rideData.id,
-      inviterId: rideData.createdBy || rideData.creatorId,
-      inviterName,
-      destination: rideData.destination,
+      metadata: {
+        rideId: rideData.id,
+        inviterId: rideData.createdBy || rideData.creatorId,
+        inviterName: inviterName,
+        destination: rideData.destination
+      },
       createdAt: serverTimestamp(),
       read: false
     };
@@ -51,6 +53,15 @@ export const createRideInvitationNotification = async (recipientId, rideData, in
 
     const result = await createNotification(notification);
     console.log('✅ Ride invitation notification created successfully:', result);
+    
+    // Additional debugging to verify the notification was actually created
+    console.log('🔍 Verifying notification creation:', {
+      notificationId: result?.id,
+      recipientId: recipientId,
+      type: notification.type,
+      title: notification.title
+    });
+    
     return result;
   } catch (error) {
     console.error('❌ Error creating ride invitation notification:', error);
@@ -86,7 +97,7 @@ export const createRideUpdateNotification = async (recipientId, rideData, update
     }
 
     const notification = {
-      recipientId,
+      userId: recipientId,
       type: 'ride_update',
       title,
       message,

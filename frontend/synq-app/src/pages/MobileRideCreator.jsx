@@ -510,7 +510,7 @@ function MobileRideCreator() {
       // Enhanced error handling for Safari
       if (isMobileSafari()) {
         setLocationError('Safari blocked location access. Try these quick fixes:');
-        setHasLocationError(true);
+      setHasLocationError(true);
         setLocationStatusMessage('Tap "Fix Location" for Safari help');
       } else {
         setLocationError(`Location access denied: ${error.message}. Please enable location permissions in your browser settings.`);
@@ -1465,68 +1465,82 @@ function MobileRideCreator() {
 
 
   const handleCreateRide = async () => {
-    if (!destination || !userLocation || participants.length === 0) {
+    if (!destination || participants.length === 0) {
       toast.error('Please complete all steps before creating the ride');
       return;
     }
 
-    // Validate and clean participant data
-    const validPassengers = participants.map(p => {
-      // Ensure all required fields are present and valid
-      const passenger = {
-        uid: p.uid || p.id,
-        displayName: p.displayName || p.name || 'Unknown User',
-        photoURL: p.photoURL || '',
-        role: p.role || 'passenger'
-      };
-
-      // Handle location data - set to null if undefined/invalid
-      if (p.location && typeof p.location === 'object' && 
-          (p.location.lat || p.location.latitude) && 
-          (p.location.lng || p.location.longitude)) {
-        passenger.location = {
-          lat: p.location.lat || p.location.latitude,
-          lng: p.location.lng || p.location.longitude
-        };
-      } else {
-        passenger.location = null; // Set to null instead of undefined
+    // Request location permission if not already granted and user is a driver
+    if (!userLocation && userRole === 'driver') {
+      try {
+        console.log('Requesting location permission for driver...');
+        const location = await getCurrentLocation();
+        setUserLocation(location);
+        console.log('Location obtained:', location);
+      } catch (error) {
+        console.warn('Location permission denied or failed:', error);
+        toast.warning('Location permission is required for drivers. Please enable location sharing in your browser settings.');
+        // Continue without location - user can set it later
       }
+    }
 
-      return passenger;
-    });
+      // Validate and clean participant data
+      const validPassengers = participants.map(p => {
+        // Ensure all required fields are present and valid
+        const passenger = {
+          uid: p.uid || p.id,
+          displayName: p.displayName || p.name || 'Unknown User',
+          photoURL: p.photoURL || '',
+          role: p.role || 'passenger'
+        };
+
+        // Handle location data - set to null if undefined/invalid
+        if (p.location && typeof p.location === 'object' && 
+            (p.location.lat || p.location.latitude) && 
+            (p.location.lng || p.location.longitude)) {
+          passenger.location = {
+            lat: p.location.lat || p.location.latitude,
+            lng: p.location.lng || p.location.longitude
+          };
+        } else {
+          passenger.location = null; // Set to null instead of undefined
+        }
+
+        return passenger;
+      });
 
     console.log('🚗 Preparing ride data for verification:', {
-      destination,
-      driver: {
-        uid: user.uid,
-        displayName: user.displayName || user.email,
-        location: userLocation
-      },
-      passengers: validPassengers
-    });
-
-    const rideData = {
-      name: `Ride to ${destination.address || destination.name}`,
-      destination: {
-        location: {
-          lat: destination.lat,
-          lng: destination.lng
+        destination,
+        driver: {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          location: userLocation
         },
-        address: destination.address || destination.name
-      },
-      driver: {
-        uid: user.uid,
-        displayName: user.displayName || user.email,
-        location: userLocation,
-        photoURL: user.photoURL || ''
-      },
-      passengers: validPassengers,
+        passengers: validPassengers
+      });
+
+      const rideData = {
+      name: `Ride to ${destination.address || destination.name}`,
+        destination: {
+          location: {
+            lat: destination.lat,
+            lng: destination.lng
+          },
+          address: destination.address || destination.name
+        },
+        driver: {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          location: userLocation || null, // Allow null location initially
+          photoURL: user.photoURL || ''
+        },
+        passengers: validPassengers,
       startTime: '',
       description: '',
       carSeatsAvailable: userRole === 'driver' ? 4 : 0, // Set seats based on role
       avoidTolls: userRole === 'driver' ? avoidTolls : false, // Include tolls preference
       specialNotes: '',
-      createdAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
       status: 'created',
       userRole: userRole // Include the user's role
     };
@@ -2401,7 +2415,7 @@ function MobileRideCreator() {
               <Box sx={{ mb: 2 }}>
                 <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 1 }}>
                   Your Role
-                </Typography>
+              </Typography>
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   <Button
                     variant={userRole === 'driver' ? 'contained' : 'outlined'}

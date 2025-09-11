@@ -20,7 +20,8 @@ import {
   Check as CheckIcon,
   Close as CloseIcon,
   DirectionsCar as DriverIcon,
-  Person as PassengerIcon
+  Person as PassengerIcon,
+  Person as PersonIcon
 } from '@mui/icons-material';
 import '../styles/RideDetailsVerificationModal.css';
 
@@ -38,6 +39,7 @@ function RideDetailsVerificationModal({
     destination: '',
     description: '',
     creatorRole: 'driver', // Changed from userRole to creatorRole to match the data structure
+    seatCapacity: 4, // Seat capacity for driver
     specialNotes: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -53,6 +55,7 @@ function RideDetailsVerificationModal({
         destination: rideData.destination?.address || rideData.destination || '',
         description: rideData.description || '',
         creatorRole: rideData.creatorRole || 'driver', // Changed from userRole to creatorRole
+        seatCapacity: rideData.seatCapacity !== undefined ? rideData.seatCapacity : 4,
         specialNotes: rideData.specialNotes || ''
       });
     }
@@ -350,6 +353,30 @@ function RideDetailsVerificationModal({
               </Select>
               {errors.creatorRole && <FormHelperText error>{errors.creatorRole}</FormHelperText>}
             </FormControl>
+
+            {/* Seat Capacity - Only show when driver is selected */}
+            {formData.creatorRole === 'driver' && (
+              <FormControl fullWidth size="small" className="form-field">
+                <InputLabel id="seat-capacity-label" sx={{ color: '#4e342e', fontWeight: 600 }}>Seats Available</InputLabel>
+                <Select
+                  labelId="seat-capacity-label"
+                  value={formData.seatCapacity !== undefined ? formData.seatCapacity : 4}
+                  label="Seats Available"
+                  onChange={(e) => handleInputChange('seatCapacity', parseInt(e.target.value))}
+                  sx={{ 
+                    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#e0c9b3' },
+                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#b08968' },
+                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#a47551' }
+                  }}
+                >
+                  {[0, 1, 2, 3, 4, 5, 6, 7].map(seats => (
+                    <MenuItem key={seats} value={seats}>
+                      {seats}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
 
             <TextField
               fullWidth

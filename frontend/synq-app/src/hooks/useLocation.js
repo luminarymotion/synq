@@ -7,7 +7,8 @@ export const useLocation = (options = {}) => {
     updateFirebase = false,
     onLocationUpdate = () => {},
     onError = () => {},
-    onStatusChange = () => {}
+    onStatusChange = () => {},
+    userId = null
   } = options;
 
   const [location, setLocation] = useState(null);
@@ -18,19 +19,26 @@ export const useLocation = (options = {}) => {
   const trackingRef = useRef(false);
   const locationIntervalRef = useRef(null);
 
-  const startTracking = useCallback(async () => {
+  const startTracking = useCallback(async (trackingUserId = userId, trackingOptions = {}) => {
     try {
       if (trackingRef.current) {
         console.log('📍 Location tracking already active');
         return;
       }
 
-      console.log('📍 Starting location tracking with preset:', preset);
+      if (!trackingUserId) {
+        throw new Error('User ID is required for location tracking');
+      }
+
+      console.log('📍 Starting location tracking with preset:', preset, 'for user:', trackingUserId);
       setStatus('starting');
       setError(null);
 
       // Start location tracking service
-      await locationTrackingService.startTracking(preset);
+      await locationTrackingService.startTracking(trackingUserId, {
+        preset,
+        ...trackingOptions
+      });
       
       trackingRef.current = true;
       setIsTracking(true);
@@ -39,7 +47,7 @@ export const useLocation = (options = {}) => {
       // Set up location polling
       locationIntervalRef.current = setInterval(async () => {
         try {
-          const currentLocation = await locationTrackingService.getCurrentLocation();
+          const currentLocation = await locationTrackingService.getCurrentPositionFast();
           if (currentLocation) {
             setLocation(currentLocation);
             onLocationUpdate(currentLocation);

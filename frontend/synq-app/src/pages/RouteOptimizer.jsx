@@ -1627,6 +1627,16 @@ function RouteOptimizer({ mode = 'create' }) {
       finalRideDataKeys: Object.keys(finalRideData)
     });
     
+    // Debug seat capacity
+    console.log('🔢 Seat capacity debug in RouteOptimizer:', {
+      finalRideDataCarSeatsAvailable: finalRideData.carSeatsAvailable,
+      finalRideDataSeatCapacity: finalRideData.seatCapacity,
+      localCarSeatsAvailable: carSeatsAvailable,
+      finalCarSeatsAvailable: finalRideData.seatCapacity !== undefined ? finalRideData.seatCapacity : (finalRideData.carSeatsAvailable !== undefined ? finalRideData.carSeatsAvailable : carSeatsAvailable),
+      priority: 'seatCapacity > carSeatsAvailable > localCarSeatsAvailable',
+      finalRideDataKeys: Object.keys(finalRideData)
+    });
+    
     // Modified driver check to include creator if they are a driver
     const driver = users.find(u => u.role === 'driver') || 
                   (updatedCreatorRole === 'driver' ? {
@@ -1634,8 +1644,16 @@ function RouteOptimizer({ mode = 'create' }) {
                     name: user.displayName || 'You',
                     role: 'driver',
                     isCreator: true,
-                    userLocationCoords: userLocation
+                    userLocationCoords: userLocation || null
                   } : null);
+
+    console.log('🔍 Driver analysis:', {
+      updatedCreatorRole,
+      driverFound: !!driver,
+      driverLocation: driver?.userLocationCoords,
+      userLocation,
+      hasValidLocation
+    });
 
     // Only require a driver if creator is not a driver (creator as passenger means no initial driver)
     if (!driver && updatedCreatorRole === 'driver') {
@@ -1644,6 +1662,17 @@ function RouteOptimizer({ mode = 'create' }) {
         usersWithRoles: users.map(u => ({ name: u.name, role: u.role }))
       });
       showLocalNotification('Please assign a driver for the ride', 'error');
+      return;
+    }
+
+    // Validate that driver has location if creator is a driver
+    if (updatedCreatorRole === 'driver' && (!userLocation || !userLocation.lat || !userLocation.lng)) {
+      console.log('Group creation blocked: Driver location not available', {
+        updatedCreatorRole,
+        userLocation,
+        hasValidLocation
+      });
+      showLocalNotification('Please set your location before creating a ride as a driver', 'error');
       return;
     }
 
@@ -1659,13 +1688,14 @@ function RouteOptimizer({ mode = 'create' }) {
       
       // Get full addresses for all locations
       console.log('Fetching addresses for locations:', {
-        driverLocation: driver.userLocationCoords,
-        destination: destination
+        driverLocation: driver?.userLocationCoords,
+        destination: destination,
+        userLocation: userLocation
       });
 
       // Handle missing driver location gracefully
       let driverAddress = 'Location pending';
-      if (driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng) {
+      if (driver && driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng) {
         try {
           driverAddress = await getAddressFromCoords(driver.userLocationCoords.lat, driver.userLocationCoords.lng);
         } catch (error) {
@@ -1684,22 +1714,22 @@ function RouteOptimizer({ mode = 'create' }) {
         groupName: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
         name: finalRideData.title || `Ride to ${destinationAddress || 'Destination'}`,
         startTime: finalRideData.startTime || new Date().toISOString(),
-        carSeatsAvailable: finalRideData.carSeatsAvailable || carSeatsAvailable,
+        carSeatsAvailable: finalRideData.seatCapacity !== undefined ? finalRideData.seatCapacity : (finalRideData.carSeatsAvailable !== undefined ? finalRideData.carSeatsAvailable : carSeatsAvailable),
         avoidTolls: finalRideData.avoidTolls || (updatedCreatorRole === 'driver' ? avoidTolls : false), // Include tolls preference
         specialNotes: finalRideData.specialNotes || '',
         // Only include driver if creator is a driver
-        ...(updatedCreatorRole === 'driver' ? {
-          driver: {
-            uid: driver.isCreator ? user.uid : driver.id,
-            name: driver.name || 'Unknown Driver',
-            location: driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng ? {
-              lat: driver.userLocationCoords.lat,
-              lng: driver.userLocationCoords.lng
-            } : null,
-            address: driverAddress || 'Location pending',
-            isCreator: driver.isCreator || false,
-            status: 'confirmed',
-            joinedAt: new Date().toISOString(),
+        ...(updatedCreatorRole === 'driver' && driver ? {
+        driver: {
+          uid: driver.isCreator ? user.uid : driver.id,
+          name: driver.name || 'Unknown Driver',
+          location: driver.userLocationCoords && driver.userLocationCoords.lat && driver.userLocationCoords.lng ? {
+            lat: driver.userLocationCoords.lat,
+            lng: driver.userLocationCoords.lng
+          } : null,
+          address: driverAddress || 'Location pending',
+          isCreator: driver.isCreator || false,
+          status: 'confirmed',
+          joinedAt: new Date().toISOString(),
             avoidTolls: updatedCreatorRole === 'driver' ? avoidTolls : false // Include driver's tolls preference
           }
         } : {}),
@@ -1721,21 +1751,21 @@ function RouteOptimizer({ mode = 'create' }) {
           }] : []),
           // Include other passengers
           ...users
-            .filter(u => u.role === 'passenger')
-            .map(passenger => ({
-              name: passenger.name || 'Unknown Passenger',
-              location: passenger.userLocationCoords ? {
-                lat: passenger.userLocationCoords.lat,
-                lng: passenger.userLocationCoords.lng
-              } : null,
-              address: passenger.userLocation || 'Location pending',
-              status: 'pending',
-              tempId: passenger.tempId || null,
-              isCreator: passenger.isCreator || false,
-              uid: passenger.id || null,
-              invitationStatus: 'pending',
-              invitedAt: new Date().toISOString(),
-              lastUpdated: new Date().toISOString()
+          .filter(u => u.role === 'passenger')
+          .map(passenger => ({
+            name: passenger.name || 'Unknown Passenger',
+            location: passenger.userLocationCoords ? {
+              lat: passenger.userLocationCoords.lat,
+              lng: passenger.userLocationCoords.lng
+            } : null,
+            address: passenger.userLocation || 'Location pending',
+            status: 'pending',
+            tempId: passenger.tempId || null,
+            isCreator: passenger.isCreator || false,
+            uid: passenger.id || null,
+            invitationStatus: 'pending',
+            invitedAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
             }))
         ],
         destination: {
@@ -1749,23 +1779,7 @@ function RouteOptimizer({ mode = 'create' }) {
         status: 'forming',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        createdBy: user.uid,
-        metadata: {
-          isOptimized: false,
-          optimizationAttempts: 0,
-          lastOptimizationAttempt: null,
-          optimizationStatus: 'pending',
-          optimizationError: null,
-          groupStatus: 'forming',
-          invitationStatus: {
-            total: users.length,
-            pending: users.filter(u => !u.invitationStatus || u.invitationStatus === 'pending').length,
-            accepted: users.filter(u => u.invitationStatus === 'accepted').length,
-            declined: users.filter(u => u.invitationStatus === 'declined').length,
-            maybe: users.filter(u => u.invitationStatus === 'maybe').length,
-            lastUpdated: new Date().toISOString()
-          }
-        }
+        createdBy: user.uid
       };
 
       // Log the cleaned data

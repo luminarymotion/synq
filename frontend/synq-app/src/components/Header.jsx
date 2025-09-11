@@ -27,7 +27,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import ArrowForwardIosIcon from '@mui/icons-material/ArrowForwardIos';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { markNotificationAsRead, createRideInvitationNotification } from '../services/notificationService';
 import Tooltip from '@mui/material/Tooltip';
@@ -67,6 +67,8 @@ function Header() {
   const [notificationAnchorEl, setNotificationAnchorEl] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [clickedNotificationId, setClickedNotificationId] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
 
   const open = Boolean(anchorEl);
   const notificationOpen = Boolean(notificationAnchorEl);
@@ -104,14 +106,14 @@ function Header() {
 
     const notificationsQuery = query(
       collection(db, 'notifications'),
-      where('recipientId', '==', user.uid),
-      orderBy('createdAt', 'desc')
+      where('userId', '==', user.uid)
+      // Removed orderBy to avoid index requirement
     );
 
     console.log('🔍 Notifications query:', {
       collection: 'notifications',
-      recipientId: user.uid,
-      orderBy: 'createdAt'
+      userId: user.uid,
+      orderBy: 'none (avoiding index requirement)'
     });
 
     const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
@@ -122,9 +124,18 @@ function Header() {
           id: doc.id,
           type: doc.data().type,
           title: doc.data().title,
-          recipientId: doc.data().recipientId
+          userId: doc.data().userId
         }))
       });
+
+      // Additional debugging for empty notifications
+      if (snapshot.empty) {
+        console.log('🔍 No notifications found - checking query parameters:', {
+          userId: user.uid,
+          queryCollection: 'notifications',
+          orderBy: 'createdAt'
+        });
+      }
 
       const notificationsList = [];
       let unread = 0;
@@ -136,7 +147,7 @@ function Header() {
           type: notification.type,
           title: notification.title,
           message: notification.message,
-          recipientId: notification.recipientId,
+          userId: notification.userId,
           createdAt: notification.createdAt,
           createdAtType: typeof notification.createdAt,
           hasToDate: notification.createdAt && typeof notification.createdAt.toDate === 'function'
@@ -145,6 +156,57 @@ function Header() {
         if (!notification.read) {
           unread++;
         }
+      });
+
+      // Sort notifications by createdAt (newest first) since we removed orderBy from query
+      notificationsList.sort((a, b) => {
+        // Handle different timestamp formats
+        const getTimestamp = (notification) => {
+          if (!notification.createdAt) return 0;
+          
+          // If it's a Firestore timestamp with toDate method
+          if (notification.createdAt.toDate && typeof notification.createdAt.toDate === 'function') {
+            return notification.createdAt.toDate().getTime();
+          }
+          
+          // If it's already a Date object
+          if (notification.createdAt instanceof Date) {
+            return notification.createdAt.getTime();
+          }
+          
+          // If it's a timestamp number
+          if (typeof notification.createdAt === 'number') {
+            return notification.createdAt;
+          }
+          
+          // If it's a string, try to parse it
+          if (typeof notification.createdAt === 'string') {
+            const parsed = new Date(notification.createdAt);
+            return isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+          }
+          
+          // If it's an object with seconds/nanoseconds (Firestore timestamp)
+          if (notification.createdAt.seconds) {
+            return notification.createdAt.seconds * 1000 + (notification.createdAt.nanoseconds || 0) / 1000000;
+          }
+          
+          return 0;
+        };
+        
+        const aTime = getTimestamp(a);
+        const bTime = getTimestamp(b);
+        
+        console.log('🕒 Sorting notification timestamps:', {
+          aId: a.id,
+          aTime: aTime,
+          aCreatedAt: a.createdAt,
+          bId: b.id,
+          bTime: bTime,
+          bCreatedAt: b.createdAt,
+          result: bTime - aTime
+        });
+        
+        return bTime - aTime; // Newest first
       });
 
       console.log('📋 Processed notifications:', {
@@ -176,38 +238,120 @@ function Header() {
 
   // Handle notification click and navigation
   const handleNotificationClick = async (notification) => {
+    console.log('🔔 CLICK HANDLER CALLED - Notification clicked:', {
+      id: notification.id,
+      type: notification.type,
+      metadata: notification.metadata,
+      title: notification.title,
+      fullNotification: notification
+    });
+    
     try {
+
+      // Set loading state
+      setClickedNotificationId(notification.id);
+
       // Mark as read first
       await markNotificationAsRead(notification.id);
-      console.log('Notification marked as read:', notification.id);
+      console.log('✅ Notification marked as read:', notification.id);
       
       // Close the notification dropdown
       handleNotificationMenuClose();
       
       // Navigate based on notification type
+      console.log('🧭 Starting navigation logic for type:', notification.type);
       switch (notification.type) {
         case 'ride_invitation':
-          if (notification.rideId) {
-            console.log('🚗 Navigating to ride invitation:', notification.rideId);
-            navigate(`/rides`);
+        case 'ride-invitation': // Support both formats
+          const rideId = notification.metadata?.rideId || notification.rideId;
+          console.log('🚗 Ride invitation - rideId:', rideId, 'metadata:', notification.metadata);
+          if (rideId) {
+            console.log('🚗 Navigating to ride invitation:', rideId);
+            navigate(`/rides/${rideId}`);
+          } else {
+            console.log('⚠️ No ride ID found in notification, navigating to rides list');
+            navigate('/rides');
           }
           break;
+          
         case 'ride_update':
-          if (notification.rideId) {
-            console.log('🔄 Navigating to ride update:', notification.rideId);
-            navigate(`/rides`);
+        case 'ride-update': // Support both formats
+          const updateRideId = notification.metadata?.rideId || notification.rideId;
+          if (updateRideId) {
+            console.log('🔄 Navigating to ride update:', updateRideId);
+            navigate(`/rides/${updateRideId}`);
+          } else {
+            console.log('⚠️ No ride ID found in notification, navigating to rides list');
+            navigate('/rides');
           }
           break;
+          
         case 'friend_request':
-          console.log('👥 Navigating to friends page');
+        case 'friend-request': // Support both formats
+          console.log('👥 Navigating to friends page for friend request');
           navigate('/friends');
           break;
+          
+        case 'friend_request_accepted':
+        case 'friend_request_rejected':
+        case 'friend_added':
+        case 'friend-request-accepted': // Support both formats
+        case 'friend-request-rejected':
+        case 'friend-added':
+          console.log('👥 Navigating to friends page for friend response');
+          navigate('/friends');
+          break;
+          
+        case 'ride_invitation_response':
+        case 'ride-invitation-response': // Support both formats
+          const responseRideId = notification.metadata?.rideId || notification.rideId;
+          if (responseRideId) {
+            console.log('📝 Navigating to ride for invitation response:', responseRideId);
+            navigate(`/rides/${responseRideId}`);
+          } else {
+            console.log('⚠️ No ride ID found in notification, navigating to rides list');
+            navigate('/rides');
+          }
+          break;
+          
         default:
           console.log('📱 Unknown notification type:', notification.type);
+          // For unknown types, try to navigate to a general page
+          navigate('/dashboard');
           break;
       }
     } catch (error) {
-      console.error('Error handling notification click:', error);
+      console.error('❌ Error handling notification click:', error);
+    } finally {
+      // Clear loading state
+      setClickedNotificationId(null);
+    }
+  };
+
+  // Get notification action text for tooltip
+  const getNotificationActionText = (type) => {
+    switch (type) {
+      case 'ride_invitation':
+      case 'ride-invitation':
+        return 'view ride invitation';
+      case 'ride_update':
+      case 'ride-update':
+        return 'view ride updates';
+      case 'ride_invitation_response':
+      case 'ride-invitation-response':
+        return 'view ride response';
+      case 'friend_request':
+      case 'friend-request':
+        return 'view friend request';
+      case 'friend_request_accepted':
+      case 'friend_request_rejected':
+      case 'friend_added':
+      case 'friend-request-accepted':
+      case 'friend-request-rejected':
+      case 'friend-added':
+        return 'view friends';
+      default:
+        return 'view details';
     }
   };
 
@@ -215,10 +359,13 @@ function Header() {
   const getNotificationIcon = (type) => {
     switch (type) {
       case 'ride_invitation':
+      case 'ride-invitation':
         return <DirectionsCarIcon fontSize="small" />;
       case 'ride_update':
+      case 'ride-update':
         return <NotificationsIcon fontSize="small" />;
       case 'friend_request':
+      case 'friend-request':
         return <GroupIcon fontSize="small" />;
       default:
         return <NotificationsIcon fontSize="small" />;
@@ -229,13 +376,61 @@ function Header() {
   const getNotificationColor = (type) => {
     switch (type) {
       case 'ride_invitation':
+      case 'ride-invitation':
         return palette.accent2;
       case 'ride_update':
+      case 'ride-update':
         return palette.accent3;
       case 'friend_request':
+      case 'friend-request':
         return palette.accent;
       default:
         return palette.textSoft;
+    }
+  };
+
+  // Clear all notifications for the current user
+  const clearAllNotifications = async () => {
+    try {
+      console.log('🗑️ Clearing all notifications for user:', user.uid);
+      
+      if (!user?.uid) {
+        console.log('❌ No user found, cannot clear notifications');
+        return;
+      }
+      
+      // Get all notifications for the user
+      const notificationsQuery = query(
+        collection(db, 'notifications'),
+        where('userId', '==', user.uid)
+      );
+      
+      const snapshot = await getDocs(notificationsQuery);
+      
+      if (snapshot.empty) {
+        console.log('📭 No notifications to clear');
+        return;
+      }
+      
+      // Delete all notifications in batches
+      const batch = writeBatch(db);
+      let deleteCount = 0;
+      
+      snapshot.forEach((doc) => {
+        batch.delete(doc.ref);
+        deleteCount++;
+      });
+      
+      await batch.commit();
+      
+      console.log(`✅ Cleared ${deleteCount} notifications`);
+      
+      // Show success message
+      setSuccessMessage(`Cleared ${deleteCount} notifications`);
+      setTimeout(() => setSuccessMessage(null), 3000);
+      
+    } catch (error) {
+      console.error('❌ Error clearing notifications:', error);
     }
   };
 
@@ -340,24 +535,50 @@ function Header() {
                 }
               }}
             >
+              {/* Success Message */}
+              {successMessage && (
+                <Box px={2} py={1} bgcolor={`${palette.accent}20`} borderBottom={`1px solid ${palette.border}`}>
+                  <Typography variant="body2" color={palette.accent2} textAlign="center">
+                    {successMessage}
+                  </Typography>
+                </Box>
+              )}
+              
               <Box px={2} py={1.5} borderBottom={`1px solid ${palette.border}`}>
                 <Box display="flex" justifyContent="space-between" alignItems="center">
                   <Typography variant="h6" fontWeight={600} color={palette.text}>
                     Notifications
                   </Typography>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={createTestNotification}
-                    sx={{ 
-                      fontSize: '0.7rem', 
-                      minWidth: 'auto',
-                      borderColor: palette.accent2,
-                      color: palette.accent2
-                    }}
-                  >
-                    Test
-                  </Button>
+                  <Box display="flex" gap={1}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={createTestNotification}
+                      sx={{ 
+                        fontSize: '0.7rem', 
+                        minWidth: 'auto',
+                        borderColor: palette.accent2,
+                        color: palette.accent2
+                      }}
+                    >
+                      Test
+                    </Button>
+                    {notifications.length > 0 && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={clearAllNotifications}
+                        sx={{ 
+                          fontSize: '0.7rem', 
+                          minWidth: 'auto',
+                          borderColor: palette.accent3,
+                          color: palette.accent3
+                        }}
+                      >
+                        Clear All
+                      </Button>
+                    )}
+                  </Box>
                 </Box>
                 {unreadCount > 0 && (
                   <Chip 
@@ -369,7 +590,13 @@ function Header() {
                 )}
               </Box>
               
-              {console.log('🎨 Rendering notifications dropdown, count:', notifications.length, 'notifications:', notifications) || null}
+              {console.log('🎨 Rendering notifications dropdown, count:', notifications.length, 'notifications:', notifications.map(n => ({
+                id: n.id,
+                type: n.type,
+                title: n.title,
+                metadata: n.metadata,
+                hasOnClick: true
+              }))) || null}
               {notifications.length === 0 ? (
                 <Box px={2} py={3} textAlign="center">
                   <Typography variant="body2" color={palette.textSoft}>
@@ -381,18 +608,28 @@ function Header() {
                   {notifications.map((notification, index) => (
                     <React.Fragment key={notification.id}>
                       <Tooltip 
-                        title={`Click to view ${notification.type === 'ride_invitation' ? 'ride invitation' : notification.type === 'friend_request' ? 'friend request' : 'details'}`}
+                        title={`Click to ${getNotificationActionText(notification.type)}`}
                         placement="left"
                       >
                         <ListItem 
                           sx={{ 
                             px: 2, 
                             py: 1.5,
-                            cursor: 'pointer',
+                            cursor: clickedNotificationId === notification.id ? 'wait' : 'pointer',
                             '&:hover': { bgcolor: palette.card },
-                            bgcolor: !notification.read ? `${palette.accent}10` : 'transparent'
+                            bgcolor: !notification.read ? `${palette.accent}10` : 'transparent',
+                            opacity: clickedNotificationId === notification.id ? 0.7 : 1,
+                            transition: 'opacity 0.2s ease'
                           }}
-                          onClick={() => handleNotificationClick(notification)}
+                          onClick={(e) => {
+                            console.log('🔔 ONCLICK TRIGGERED - Event:', e);
+                            console.log('🔔 ONCLICK TRIGGERED - Notification:', notification);
+                            if (clickedNotificationId === notification.id) {
+                              console.log('⚠️ Notification already being processed, ignoring click');
+                              return;
+                            }
+                            handleNotificationClick(notification);
+                          }}
                         >
                         <ListItemIcon sx={{ color: getNotificationColor(notification.type) }}>
                           {getNotificationIcon(notification.type)}

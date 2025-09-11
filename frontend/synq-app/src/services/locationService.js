@@ -1283,116 +1283,17 @@ export const debugMapboxSearch = async (query = 'food', userLocation = null) => 
 
 
 // Route quality scoring function to select better routes
-export const scoreRouteQuality = (route, waypoints) => {
-  let score = 0;
-  
-  // Prefer shorter routes (but not too short - avoid U-turns)
-  const distanceScore = Math.max(0, 100 - (route.distance * 10));
-  score += distanceScore;
-  
-  // Prefer faster routes
-  const durationScore = Math.max(0, 100 - (route.duration * 2));
-  score += durationScore;
-  
-  // Penalize routes with too many turns
-  if (route.legs && route.legs.length > 0) {
-    const totalSteps = route.legs.reduce((total, leg) => total + (leg.steps?.length || 0), 0);
-    const turnPenalty = Math.min(50, totalSteps * 5); // Penalty for excessive turns
-    score -= turnPenalty;
-  }
-  
-  // Bonus for routes that stay on main roads
-  if (route.weight_name === 'routability') {
-    score += 20; // Prefer routability over traffic
-  }
-  
-  // Penalty for routes that seem to loop around
-  if (waypoints && waypoints.length >= 3) {
-    const startEndDistance = calculateDistanceInternal(
-      waypoints[0].lat || waypoints[0].location?.lat,
-      waypoints[0].lng || waypoints[0].location?.lng,
-      waypoints[waypoints.length - 1].lat || waypoints[waypoints.length - 1].location?.lat,
-      waypoints[waypoints.length - 1].lng || waypoints[waypoints.length - 1].location?.lng
-    );
-    
-    // If route distance is much longer than direct distance, penalize
-    const routeEfficiency = startEndDistance / route.distance;
-    if (routeEfficiency < 0.3) { // Route is more than 3x longer than direct
-      score -= 30;
-    }
-  }
-  
-  return Math.max(0, score);
-};
+// Removed scoreRouteQuality function - simplified routing logic
 
-// Smart route selection that prefers sensible routes
+// Simplified route selection - just return the first route
 export const selectBestRoute = (routes, waypoints, options = {}) => {
   if (!routes || routes.length === 0) return null;
-  if (routes.length === 1) return routes[0];
   
-  const {
-    preferDirect = true,
-    avoidResidential = true,
-    maxDistanceMultiplier = 2.5 // Don't accept routes more than 2.5x direct distance
-  } = options;
-  
-  // Score each route
-  const scoredRoutes = routes.map(route => ({
-    route,
-    score: scoreRouteQuality(route, waypoints)
-  }));
-  
-  // Sort by score (highest first)
-  scoredRoutes.sort((a, b) => b.score - a.score);
-  
-  console.log('🏆 Route quality scores:', scoredRoutes.map(sr => ({
-    score: sr.score,
-    distance: sr.route.distance,
-    duration: sr.route.duration,
-    weight_name: sr.route.weight_name
-  })));
-  
-  // Filter out obviously bad routes
-  const goodRoutes = scoredRoutes.filter(sr => {
-    // Reject routes that are too long compared to direct distance
-    if (waypoints && waypoints.length >= 2) {
-      const startEndDistance = calculateDistanceInternal(
-        waypoints[0].lat || waypoints[0].location?.lat,
-        waypoints[0].lng || waypoints[0].location?.lng,
-        waypoints[waypoints.length - 1].lat || waypoints[waypoints.length - 1].location?.lat,
-        waypoints[waypoints.length - 1].lng || waypoints[waypoints.length - 1].location?.lng
-      );
-      
-      const routeEfficiency = startEndDistance / sr.route.distance;
-      if (routeEfficiency < 0.4) { // Route is more than 2.5x longer than direct
-        console.log('❌ Rejecting inefficient route:', {
-          directDistance: startEndDistance,
-          routeDistance: sr.route.distance,
-          efficiency: routeEfficiency
-        });
-        return false;
-      }
-    }
-    
-    return true;
-  });
-  
-  if (goodRoutes.length === 0) {
-    console.log('⚠️ No good routes found, using best available');
-    return scoredRoutes[0].route;
-  }
-  
-  // If the best route has a very low score, it might be too complex
-  // In this case, we could suggest trying a different routing profile
-  if (goodRoutes[0].score < 30) {
-    console.log('⚠️ Best route has low quality score, consider using mapbox/driving instead of mapbox/driving-traffic');
-  }
-  
-  console.log('✅ Selected best route with score:', goodRoutes[0].score);
-  return goodRoutes[0].route;
+  console.log('🗺️ Using first available route (simplified selection)');
+  return routes[0];
 };
 
-// Enhanced multi-waypoint routing with automatic profile fallback
+// Simplified multi-waypoint routing with automatic profile fallback
 export const getMultiWaypointDirectionsWithFallback = async (waypoints, options = {}) => {
   const {
     profile = ROUTING_PROFILES.DRIVING_TRAFFIC,
@@ -1401,32 +1302,22 @@ export const getMultiWaypointDirectionsWithFallback = async (waypoints, options 
   } = options;
   
   try {
-    console.log('🗺️ Trying primary routing profile:', profile);
+    console.log('🗺️ Getting route with primary profile:', profile);
     
     // Try the primary profile first
-    const primaryRoutes = await getMultiWaypointDirections(waypoints, {
+    const routes = await getMultiWaypointDirections(waypoints, {
       ...otherOptions,
       profile
     });
     
-    if (primaryRoutes && primaryRoutes.length > 0) {
-      const primaryRoute = primaryRoutes[0];
-      
-      // Check if the route quality is acceptable
-      const qualityScore = scoreRouteQuality(primaryRoute, waypoints);
-      console.log('🏆 Primary route quality score:', qualityScore);
-      
-      if (qualityScore >= 40) {
-        console.log('✅ Primary route quality is acceptable, using it');
-        return primaryRoutes;
-      } else {
-        console.log('⚠️ Primary route quality is poor, trying fallback profile:', fallbackProfile);
-      }
+    if (routes && routes.length > 0) {
+      console.log('✅ Route found with primary profile');
+      return routes;
     }
     
-    // If primary route is poor quality, try fallback profile
+    // If primary fails, try fallback profile
     if (profile !== fallbackProfile) {
-      console.log('🔄 Attempting fallback routing with:', fallbackProfile);
+      console.log('🔄 Primary route failed, trying fallback profile:', fallbackProfile);
       
       const fallbackRoutes = await getMultiWaypointDirections(waypoints, {
         ...otherOptions,
@@ -1434,38 +1325,16 @@ export const getMultiWaypointDirectionsWithFallback = async (waypoints, options 
       });
       
       if (fallbackRoutes && fallbackRoutes.length > 0) {
-        const fallbackRoute = fallbackRoutes[0];
-        const fallbackScore = scoreRouteQuality(fallbackRoute, waypoints);
-        console.log('🏆 Fallback route quality score:', fallbackScore);
-        
-        if (fallbackScore > qualityScore) {
-          console.log('✅ Fallback route is better, using it');
-          return fallbackRoutes;
-        }
+        console.log('✅ Route found with fallback profile');
+        return fallbackRoutes;
       }
     }
     
-    // Return the best available route
-    console.log('✅ Using best available route');
-    return primaryRoutes;
+    // If both fail, throw error
+    throw new Error('No route found with any profile');
     
   } catch (error) {
-    console.error('❌ Error in fallback routing:', error);
-    
-    // If primary profile fails, try fallback
-    if (profile !== fallbackProfile) {
-      try {
-        console.log('🔄 Primary profile failed, trying fallback:', fallbackProfile);
-        return await getMultiWaypointDirections(waypoints, {
-          ...otherOptions,
-          profile: fallbackProfile
-        });
-      } catch (fallbackError) {
-        console.error('❌ Fallback profile also failed:', fallbackError);
-        throw fallbackError;
-      }
-    }
-    
+    console.error('❌ Error in getMultiWaypointDirectionsWithFallback:', error);
     throw error;
   }
 };
@@ -1488,8 +1357,7 @@ export const MAPBOX_SERVICE = {
   compareRoutes,
   extractTurnByTurnInstructions,
   getRouteSummary,
-  // Route quality functions
-  scoreRouteQuality,
+  // Route selection functions
   selectBestRoute,
   // Enhanced routing with fallback
   getMultiWaypointDirectionsWithFallback
@@ -1509,8 +1377,7 @@ if (typeof window !== 'undefined') {
   window.compareRoutes = compareRoutes;
   window.extractTurnByTurnInstructions = extractTurnByTurnInstructions;
   window.getRouteSummary = getRouteSummary;
-  // Route quality functions
-  window.scoreRouteQuality = scoreRouteQuality;
+  // Route selection functions
   window.selectBestRoute = selectBestRoute;
   // Enhanced routing with fallback
   window.getMultiWaypointDirectionsWithFallback = getMultiWaypointDirectionsWithFallback;

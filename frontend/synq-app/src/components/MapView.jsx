@@ -221,6 +221,12 @@ function MapView({
     try {
       if (!map.current.getSource(sourceId)) {
         map.current.addSource(sourceId, sourceData);
+        console.log(`✅ Added new source: ${sourceId}`);
+        return true;
+      } else {
+        // Source already exists, update it
+        map.current.getSource(sourceId).setData(sourceData.data);
+        console.log(`✅ Updated existing source: ${sourceId}`);
         return true;
       }
     } catch (error) {
@@ -235,6 +241,10 @@ function MapView({
     try {
       if (!map.current.getLayer(layerData.id)) {
         map.current.addLayer(layerData);
+        console.log(`✅ Added new layer: ${layerData.id}`);
+        return true;
+      } else {
+        console.log(`✅ Layer already exists: ${layerData.id}`);
         return true;
       }
     } catch (error) {
@@ -278,11 +288,16 @@ function MapView({
     
     // Add user locations (only for accepted participants)
     users.forEach(user => {
-      if (user.location && 
-          user.location.lat && 
-          user.location.lng && 
+      // Use pickupLocation if available, otherwise use location
+      const userCoords = user.pickupLocation && user.pickupLocation.lat && user.pickupLocation.lng 
+        ? user.pickupLocation 
+        : user.location;
+        
+      if (userCoords && 
+          userCoords.lat && 
+          userCoords.lng && 
           (user.invitationStatus === 'accepted' || user.role === 'driver')) {
-        allPoints.push({ lat: user.location.lat, lng: user.location.lng });
+        allPoints.push({ lat: userCoords.lat, lng: userCoords.lng });
       }
     });
     
@@ -580,15 +595,20 @@ function MapView({
         });
       }
       
-      // Add user locations (only for accepted participants)
-      users.forEach(user => {
-        if (user.location && 
-            user.location.lat && 
-            user.location.lng && 
-            (user.invitationStatus === 'accepted' || user.role === 'driver')) {
-          allPoints.push({ lat: user.location.lat, lng: user.location.lng });
-        }
-      });
+    // Add user locations (only for accepted participants)
+    users.forEach(user => {
+      // Use pickupLocation if available, otherwise use location
+      const userCoords = user.pickupLocation && user.pickupLocation.lat && user.pickupLocation.lng 
+        ? user.pickupLocation 
+        : user.location;
+        
+      if (userCoords && 
+          userCoords.lat && 
+          userCoords.lng && 
+          (user.invitationStatus === 'accepted' || user.role === 'driver')) {
+        allPoints.push({ lat: userCoords.lat, lng: userCoords.lng });
+      }
+    });
       
       // Add destination
       if (destination && destination.lat && destination.lng) {
@@ -2084,32 +2104,50 @@ function MapView({
       status: u.invitationStatus,
       role: u.role,
       hasLocation: !!(u.location && u.location.lat && u.location.lng),
-      willShow: !!(u.location && u.location.lat && u.location.lng && (u.invitationStatus === 'accepted' || u.role === 'driver'))
+      hasPickupLocation: !!(u.pickupLocation && u.pickupLocation.lat && u.pickupLocation.lng),
+      pickupLocationType: typeof u.pickupLocation,
+      pickupLocationCoords: u.pickupLocation?.lat ? `${u.pickupLocation.lat}, ${u.pickupLocation.lng}` : 'No coords',
+      willShow: !!(((u.location && u.location.lat && u.location.lng) || (u.pickupLocation && u.pickupLocation.lat && u.pickupLocation.lng)) && (u.invitationStatus === 'accepted' || u.role === 'driver'))
     })));
     
     const userFeatures = users
       .filter(user => 
-        user.location && 
-        user.location.lat && 
-        user.location.lng && 
+        ((user.location && user.location.lat && user.location.lng) || (user.pickupLocation && user.pickupLocation.lat && user.pickupLocation.lng)) && 
         (user.invitationStatus === 'accepted' || user.role === 'driver')
       )
-      .map(user => ({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [user.location.lng, user.location.lat]
-        },
-        properties: {
-          id: user.uid,
-          name: user.displayName || user.name,
-          role: user.role,
-          isCreator: user.isCreator,
-          invitationStatus: user.invitationStatus
-        }
-      }));
+      .map(user => {
+        // Use pickupLocation if available, otherwise use location
+        const coords = user.pickupLocation && user.pickupLocation.lat && user.pickupLocation.lng 
+          ? user.pickupLocation 
+          : user.location;
+        
+        return {
+          type: 'Feature',
+          geometry: {
+            type: 'Point',
+            coordinates: [coords.lng, coords.lat]
+          },
+          properties: {
+            id: user.uid,
+            name: user.displayName || user.name,
+            role: user.role,
+            isCreator: user.isCreator,
+            invitationStatus: user.invitationStatus,
+            locationType: user.role === 'driver' ? 'driver' : 'pickup'
+          }
+        };
+      });
+
+    console.log('🗺️ MapView - User features created:', userFeatures.length, userFeatures.map(f => ({
+      uid: f.properties.id,
+      name: f.properties.name,
+      coordinates: f.geometry.coordinates,
+      locationType: f.properties.locationType
+    })));
 
     if (userFeatures.length > 0) {
+      console.log('🗺️ MapView - Adding user markers to map:', userFeatures.length, 'features');
+      
       if (safeAddSource('users-markers', {
         type: 'geojson',
         data: {
@@ -2117,7 +2155,9 @@ function MapView({
           features: userFeatures
         }
       })) {
-        safeAddLayer({
+        console.log('✅ MapView - User markers source added successfully');
+        
+        const layerAdded = safeAddLayer({
           id: 'users-markers-layer',
           type: 'circle',
           source: 'users-markers',
@@ -2133,7 +2173,51 @@ function MapView({
             'circle-stroke-width': 2
           }
         });
+        
+        if (layerAdded) {
+          console.log('✅ MapView - User markers layer added successfully');
+          
+          // Ensure map shows all markers
+          const markerPoints = userFeatures.map(f => ({
+            lat: f.geometry.coordinates[1],
+            lng: f.geometry.coordinates[0]
+          }));
+          
+          if (markerPoints.length > 0) {
+            console.log('🗺️ MapView - Fitting map to show markers:', markerPoints);
+            smoothFitMapToPoints(markerPoints, 50, 1500);
+          }
+          
+          // Debug: Check if markers are visible
+          setTimeout(() => {
+            if (map.current) {
+              const bounds = map.current.getBounds();
+              const center = map.current.getCenter();
+              const zoom = map.current.getZoom();
+              console.log('🗺️ MapView - Map state after adding markers:', {
+                bounds: {
+                  north: bounds.getNorth(),
+                  south: bounds.getSouth(),
+                  east: bounds.getEast(),
+                  west: bounds.getWest()
+                },
+                center: {
+                  lat: center.lat,
+                  lng: center.lng
+                },
+                zoom: zoom,
+                markerCoordinates: userFeatures.map(f => f.geometry.coordinates)
+              });
+            }
+          }, 1000);
+        } else {
+          console.error('❌ MapView - Failed to add user markers layer');
+        }
+      } else {
+        console.error('❌ MapView - Failed to add user markers source');
       }
+    } else {
+      console.log('🗺️ MapView - No user features to display');
     }
 
     // Add destination marker
@@ -2170,11 +2254,16 @@ function MapView({
     
     // Add user locations (only for accepted participants)
     users.forEach(user => {
-      if (user.location && 
-          user.location.lat && 
-          user.location.lng && 
+      // Use pickupLocation if available, otherwise use location
+      const userCoords = user.pickupLocation && user.pickupLocation.lat && user.pickupLocation.lng 
+        ? user.pickupLocation 
+        : user.location;
+        
+      if (userCoords && 
+          userCoords.lat && 
+          userCoords.lng && 
           (user.invitationStatus === 'accepted' || user.role === 'driver')) {
-        allPoints.push({ lat: user.location.lat, lng: user.location.lng });
+        allPoints.push({ lat: userCoords.lat, lng: userCoords.lng });
       }
     });
     

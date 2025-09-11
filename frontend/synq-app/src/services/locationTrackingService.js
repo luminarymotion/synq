@@ -700,7 +700,7 @@ class LocationTrackingService {
       try {
         return await tryGetPosition();
       } catch (error) {
-        if (error.code === 3 && !isRetry) { // Timeout error
+        if (error.code === 3) { // Timeout error
           this.logger.info('Retrying with lower accuracy');
           return await tryGetPosition(true, true);
         }

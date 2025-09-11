@@ -12,7 +12,6 @@ import {
   onSnapshot,
   orderBy,
   writeBatch,
-  increment,
   arrayUnion,
   limit,
   deleteField
@@ -158,34 +157,72 @@ const updateGroup = async (groupId, groupData) => {
 // Generate a unique ride ID
 const generateRideId = async () => {
   try {
-    // Get the latest ride ID from a counter document
-    const counterRef = doc(db, 'counters', 'rideIds');
-    const counterDoc = await getDoc(counterRef);
+    // Use timestamp + random string for unique ID generation
+    const timestamp = Date.now();
+    const randomSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const rideId = `RIDE-${timestamp}-${randomSuffix}`;
     
-    let nextId;
-    if (!counterDoc.exists()) {
-      // Initialize counter if it doesn't exist
-      nextId = 1;
-      await setDoc(counterRef, { count: nextId });
-    } else {
-      // Increment the counter
-      nextId = counterDoc.data().count + 1;
-      await updateDoc(counterRef, { count: increment(1) });
-    }
-    
-    // Format the ID as RIDE-XXXX
-    return `RIDE-${nextId.toString().padStart(4, '0')}`;
+    console.log('Generated ride ID:', rideId);
+    return rideId;
   } catch (error) {
     console.error('Error generating ride ID:', error);
-    throw error;
+    // Fallback to simple timestamp-based ID
+    return `RIDE-${Date.now()}`;
   }
 };
 
 // Update the createRide function to use friendly ride ID as document ID
 const createRide = async (rideData) => {
   try {
+    // Check if user is authenticated
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('User must be authenticated to create a ride');
+    }
+
+    console.log('createRide called with data:', {
+      rideDataKeys: Object.keys(rideData),
+      hasDriver: !!rideData.driver,
+      hasPassengers: !!rideData.passengers,
+      passengerCount: rideData.passengers?.length || 0,
+      createdBy: rideData.createdBy,
+      creatorRole: rideData.creatorRole,
+      currentUserId: currentUser.uid
+    });
+
+    // Log authentication details for debugging
+    console.log('Authentication details:', {
+      isAuthenticated: !!currentUser,
+      uid: currentUser.uid,
+      email: currentUser.email,
+      displayName: currentUser.displayName,
+      emailVerified: currentUser.emailVerified,
+      token: currentUser.accessToken ? 'Present' : 'Missing'
+    });
+
+    // Validate required fields
+    if (!rideData.createdBy) {
+      throw new Error('createdBy field is required');
+    }
+
+    if (!rideData.destination) {
+      throw new Error('destination field is required');
+    }
+
+    if (!rideData.passengers || rideData.passengers.length === 0) {
+      throw new Error('At least one passenger is required');
+    }
+
+    // Ensure the createdBy field matches the current user
+    if (rideData.createdBy !== currentUser.uid) {
+      throw new Error('createdBy field must match the current user ID');
+    }
+
+    // Note: Driver is not required at creation time - drivers will be assigned through RSVP process
+
     // Generate a user-friendly ride ID
     const rideId = await generateRideId();
+    console.log('Generated ride ID:', rideId);
     
     // Use the friendly ride ID as the document ID
     const rideRef = doc(db, 'rides', rideId);
@@ -204,21 +241,21 @@ const createRide = async (rideData) => {
       lastUpdated: null // Timestamp of last route update
     };
 
-    // Create the ride document with enhanced data structure
-    await setDoc(rideRef, {
+    // Prepare the document data
+    const documentData = {
       ...rideData,
       rideId, // Store the ID as a field for easy access
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
       routeDetails,
       // Add passengerUids array for easier querying
-      passengerUids: rideData.passengers.map(p => p.uid).filter(Boolean),
+      passengerUids: rideData.passengers?.map(p => p.uid).filter(Boolean) || [],
       // Add status tracking
       status: 'created', // 'created', 'active', 'completed', 'cancelled'
       statusHistory: [{
         status: 'created',
         timestamp: new Date().toISOString(),
-        updatedBy: rideData.driver?.uid || null
+        updatedBy: rideData.driver?.uid || rideData.createdBy || null
       }],
       // Add metadata
       metadata: {
@@ -226,9 +263,99 @@ const createRide = async (rideData) => {
         optimizationAttempts: 0,
         lastOptimizationAttempt: null,
         optimizationStatus: 'pending', // 'pending', 'in_progress', 'completed', 'failed'
-        optimizationError: null
+        optimizationError: null,
+        groupStatus: 'forming',
+        invitationStatus: {
+          total: rideData.passengers?.length || 0,
+          pending: rideData.passengers?.filter(p => !p.invitationStatus || p.invitationStatus === 'pending').length || 0,
+          accepted: rideData.passengers?.filter(p => p.invitationStatus === 'accepted').length || 0,
+          declined: rideData.passengers?.filter(p => p.invitationStatus === 'declined').length || 0,
+          maybe: rideData.passengers?.filter(p => p.invitationStatus === 'maybe').length || 0,
+          lastUpdated: new Date().toISOString()
+        }
       }
+    };
+
+    // Ensure driver field is present (even if null) for consistency
+    if (!documentData.driver) {
+      documentData.driver = null;
+    }
+
+    // Always add creator to participants map regardless of role
+    if (rideData.createdBy) {
+      console.log('🔧 Adding ride creator to participants map:', {
+        creatorId: rideData.createdBy,
+        creatorRole: rideData.creatorRole,
+        seatCapacity: rideData.seatCapacity !== undefined ? rideData.seatCapacity : (rideData.carSeatsAvailable !== undefined ? rideData.carSeatsAvailable : 4)
+      });
+      
+      // Get creator's location data based on their role
+      let creatorLocation = null;
+      let creatorPickupLocation = null;
+      
+      if (rideData.creatorRole === 'driver') {
+        // For drivers, get location from driver field
+        creatorLocation = rideData.driver?.location || null;
+        creatorPickupLocation = rideData.driver?.location || null;
+      } else if (rideData.creatorRole === 'passenger') {
+        // For passengers, get location from passengers array
+        const creatorPassengerData = rideData.passengers?.find(p => p.uid === rideData.createdBy);
+        creatorLocation = creatorPassengerData?.location || null;
+        creatorPickupLocation = creatorPassengerData?.location || null;
+      }
+      
+      console.log('🔧 Creator location data:', {
+        creatorId: rideData.createdBy,
+        creatorRole: rideData.creatorRole,
+        location: creatorLocation,
+        pickupLocation: creatorPickupLocation
+      });
+      
+      // Create base participant data
+      const creatorParticipantData = {
+        role: rideData.creatorRole, // 'driver' or 'passenger'
+        status: 'accepted',
+        joinedAt: serverTimestamp(),
+        isCreator: true,
+        location: creatorLocation,
+        pickupLocation: creatorPickupLocation,
+        live_location_consent: 'during_ride', // Default to during_ride for better UX
+        locationSharing: false, // Default to false, can be updated later
+        live_sharing_active: false, // NEW - tracks current sharing state
+        proximity_detected: false, // NEW - tracks if within 100m of pickup
+        sharing_activated_at: null, // NEW - when sharing was activated
+        readyTime: null,
+        notes: ''
+      };
+      
+      // Add role-specific fields
+      if (rideData.creatorRole === 'driver') {
+        creatorParticipantData.seatCapacity = rideData.seatCapacity !== undefined ? rideData.seatCapacity : (rideData.carSeatsAvailable !== undefined ? rideData.carSeatsAvailable : 4);
+      }
+      
+      documentData.participants = {
+        ...documentData.participants,
+        [rideData.createdBy]: creatorParticipantData
+      };
+    }
+
+    console.log('Attempting to write document to Firestore:', {
+      collection: 'rides',
+      documentId: rideId,
+      dataKeys: Object.keys(documentData),
+      hasDriver: !!documentData.driver,
+      passengerCount: documentData.passengers?.length || 0,
+      creatorRole: documentData.creatorRole,
+      status: documentData.status
     });
+
+    // Log the full document data for debugging
+    console.log('Full document data being sent:', JSON.stringify(documentData, null, 2));
+
+    // Create the ride document with enhanced data structure
+    await setDoc(rideRef, documentData);
+
+    console.log('Ride document created successfully');
 
     return { 
       success: true, 
@@ -237,6 +364,11 @@ const createRide = async (rideData) => {
     };
   } catch (error) {
     console.error('Error creating ride:', error);
+    console.error('Error details:', {
+      code: error.code,
+      message: error.message,
+      stack: error.stack
+    });
     return { success: false, error };
   }
 };
@@ -1540,10 +1672,19 @@ const getUserRideHistory = async (userId) => {
       orderBy('createdAt', 'desc')
     );
 
-    // Get both driver and passenger rides
-      const [driverSnapshot, passengerSnapshot] = await Promise.all([
+    // Query for rides where user is participant (covers ride creators and RSVP participants)
+    const participantQuery = query(
+      collection(db, 'rides'),
+      where(`participants.${userId}.status`, '==', 'accepted'),
+      where('createdAt', '>=', twentyFourHoursAgo),
+      orderBy('createdAt', 'desc')
+    );
+
+    // Get driver, passenger, and participant rides
+      const [driverSnapshot, passengerSnapshot, participantSnapshot] = await Promise.all([
         getDocs(driverQuery),
-        getDocs(passengerQuery)
+        getDocs(passengerQuery),
+        getDocs(participantQuery)
       ]);
 
     // Combine and process the results
@@ -1557,6 +1698,11 @@ const getUserRideHistory = async (userId) => {
           id: doc.id, 
           ...doc.data(), 
         role: 'passenger'
+        })),
+        ...participantSnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data(), 
+        role: 'participant'
         }))
       ];
 
@@ -2043,18 +2189,24 @@ const respondToRideInvitation = async (rideId, inviteeId, response, details = {}
         pickupLocation: details.pickupLocation || null,
         role: details.role || 'passenger',
         readyTime: details.readyTime || null,
-        locationSharing: details.locationSharing || false,
+        live_location_consent: details.live_location_consent || 'during_ride', // Default to during_ride for better UX
+        locationSharing: details.locationSharing || false, // Keep for backward compatibility
         notes: details.notes || ''
       };
       
       // Add user to ride participants
       updateData[`participants.${inviteeId}`] = {
         role: details.role || 'passenger',
-        status: 'confirmed',
+        status: 'accepted', // Changed from 'confirmed' to 'accepted'
         joinedAt: serverTimestamp(),
         pickupLocation: details.pickupLocation || null,
         readyTime: details.readyTime || null,
-        locationSharing: details.locationSharing || false
+        live_location_consent: details.live_location_consent || 'during_ride', // Default to during_ride for better UX
+        locationSharing: details.locationSharing || false, // Keep for backward compatibility
+        live_sharing_active: false, // NEW - tracks current sharing state
+        proximity_detected: false, // NEW - tracks if within 100m of pickup
+        sharing_activated_at: null, // NEW - when sharing was activated
+        seatCapacity: details.seatCapacity !== undefined ? details.seatCapacity : (details.role === 'driver' ? 4 : null) // Add seat capacity for drivers
       };
     }
     
@@ -2076,6 +2228,52 @@ const respondToRideInvitation = async (rideId, inviteeId, response, details = {}
     return { success: true, message: `Invitation ${response} successfully` };
   } catch (error) {
     console.error('Error responding to ride invitation:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Location Consent Operations
+const updateLocationConsent = async (rideId, userId, consent) => {
+  try {
+    console.log('Updating location consent:', { rideId, userId, consent });
+    
+    const rideRef = doc(db, 'rides', rideId);
+    await updateDoc(rideRef, {
+      [`participants.${userId}.live_location_consent`]: consent,
+      [`participants.${userId}.locationSharing`]: consent !== 'never', // Backward compatibility
+      [`participants.${userId}.live_sharing_active`]: false, // Reset active state
+      [`participants.${userId}.sharing_activated_at`]: null
+    });
+    
+    console.log('✅ Location consent updated successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error updating location consent:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+const toggleLiveSharing = async (rideId, userId, isActive) => {
+  try {
+    console.log('Toggling live sharing:', { rideId, userId, isActive });
+    
+    const rideRef = doc(db, 'rides', rideId);
+    const updateData = {
+      [`participants.${userId}.live_sharing_active`]: isActive
+    };
+    
+    if (isActive) {
+      updateData[`participants.${userId}.sharing_activated_at`] = serverTimestamp();
+    } else {
+      updateData[`participants.${userId}.sharing_activated_at`] = null;
+    }
+    
+    await updateDoc(rideRef, updateData);
+    
+    console.log('✅ Live sharing toggled successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error toggling live sharing:', error);
     return { success: false, error: error.message };
   }
 };
@@ -2128,6 +2326,10 @@ export {
 
   // New function
   testFriendRequestsAccess,
+
+  // Location Consent Operations
+  updateLocationConsent,
+  toggleLiveSharing,
 
   // Ride Invitation Operations
   sendRideInvitation,

@@ -283,6 +283,7 @@ function Dashboard() {
     if (!user) return;
 
     console.log('Setting up ride listeners for dashboard');
+    console.log('Current user:', { uid: user.uid, email: user.email, displayName: user.displayName });
 
     // Simple queries that should work with existing indexes
     const queries = [];
@@ -303,13 +304,22 @@ function Dashboard() {
     );
     queries.push({ query: passengerQuery, type: 'passenger' });
 
-    // Query for rides where user has accepted invitations (not just pending ones)
-    const acceptedInvitationsQuery = query(
+    // Query for rides where user is in participants field (covers ride creators and RSVP participants)
+    const participantQuery = query(
       collection(db, 'rides'),
-      where(`invitations.${user.uid}.status`, '==', 'accepted'),
+      where(`participants.${user.uid}.status`, '==', 'accepted'),
       where('status', 'in', ['active', 'created', 'forming', 'pending', 'ready'])
     );
-    queries.push({ query: acceptedInvitationsQuery, type: 'accepted_invitation' });
+    queries.push({ query: participantQuery, type: 'participant' });
+
+    // Note: We now cover all cases - driver, passenger, and participant fields
+    // This ensures ride creators and RSVP participants are included in active rides
+
+    // console.log('🔍 Dashboard queries setup for user:', user.uid, user.displayName);
+    // console.log('Total queries to execute:', queries.length);
+    // queries.forEach((q, index) => {
+    //   console.log(`Query ${index + 1} (${q.type}):`, q.query);
+    // });
 
     // Set up subscriptions
     const unsubscribes = [];
@@ -317,30 +327,34 @@ function Dashboard() {
     queries.forEach(({ query: firestoreQuery, type }) => {
       const unsubscribe = onSnapshot(firestoreQuery, 
         (snapshot) => {
-          const rides = snapshot.docs.map(doc => ({
+          console.log(`📊 ${type} query returned ${snapshot.docs.length} documents`);
+          let rides = snapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
-            userType: type === 'accepted_invitation' ? 'passenger' : type
+            userType: type === 'accepted_invitation' ? 'passenger' : type === 'participant' ? 'participant' : type
           }));
-          console.log(`${type} rides:`, rides);
-          console.log(`${type} rides details:`, rides.map(ride => ({
-            id: ride.id,
-            status: ride.status,
-            driver: ride.driver?.uid,
-            passengers: ride.passengerUids,
-            createdAt: ride.createdAt
-          })));
+
+          // console.log(`${type} rides:`, rides);
+          // console.log(`${type} rides details:`, rides.map(ride => ({
+          //   id: ride.id,
+          //   status: ride.status,
+          //   driver: ride.driver?.uid,
+          //   driverName: ride.driver?.name || ride.driver?.displayName,
+          //   passengers: ride.passengerUids,
+          //   createdAt: ride.createdAt,
+          //   userType: ride.userType
+          // })));
 
           // Update all rides state
           setAllRides(prevRides => {
             // Remove rides from this type and add new ones
             const filteredRides = prevRides.filter(ride => ride.userType !== type);
             const newRides = [...filteredRides, ...rides];
-            console.log('Updated allRides state:', newRides.map(ride => ({
-              id: ride.id,
-              status: ride.status,
-              userType: ride.userType
-            })));
+            // console.log('Updated allRides state:', newRides.map(ride => ({
+            //   id: ride.id,
+            //   status: ride.status,
+            //   userType: ride.userType
+            // })));
             return newRides;
           });
             setLoading(false);
@@ -377,35 +391,35 @@ function Dashboard() {
 
   // Process and sort rides - now with proper expiration filtering
   const activeRides = useMemo(() => {
-    const seenIds = new Set();
-    const uniqueRides = allRides
-      .filter(ride => {
-        if (seenIds.has(ride.id)) {
+  const seenIds = new Set();
+  const uniqueRides = allRides
+    .filter(ride => {
+      if (seenIds.has(ride.id)) {
+        return false;
+      }
+      seenIds.add(ride.id);
+      
+      // Filter out rides where user has declined invitation (but not for ride creators)
+      if (ride.invitations && ride.invitations[user?.uid] && ride.createdBy !== user?.uid) {
+        const userInvitation = ride.invitations[user.uid];
+        if (userInvitation.status === 'declined') {
+          console.log('Filtering out declined ride:', ride.id);
           return false;
         }
-        seenIds.add(ride.id);
-        
-        // Filter out rides where user has declined invitation
-        if (ride.invitations && ride.invitations[user?.uid]) {
-          const userInvitation = ride.invitations[user.uid];
-          if (userInvitation.status === 'declined') {
-            console.log('Filtering out declined ride:', ride.id);
-            return false;
-          }
           // Only include rides where user has accepted the invitation or is directly participating
           if (userInvitation.status === 'pending') {
             console.log('Filtering out pending invitation ride:', ride.id);
             return false;
           }
-        }
-        
-        return true;
-      })
+      }
+      
+      return true;
+    })
       .filter(ride => {
         // Only include rides that are not expired
         return !isRideExpired(ride);
       })
-      .sort((a, b) => {
+    .sort((a, b) => {
         // Sort by status priority (active first, then ready, then forming, then created, then pending)
         const statusOrder = { 
           active: 0, 
@@ -416,18 +430,18 @@ function Dashboard() {
         };
         const aOrder = statusOrder[a.status] || 5;
         const bOrder = statusOrder[b.status] || 5;
-        
-        if (aOrder !== bOrder) {
-          return aOrder - bOrder;
-        }
-        
-        // Then sort by creation time (newest first)
-        if (a.createdAt && b.createdAt) {
-          return b.createdAt.toDate() - a.createdAt.toDate();
-        }
-        
-        return b.id.localeCompare(a.id);
-      });
+      
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+      
+      // Then sort by creation time (newest first)
+      if (a.createdAt && b.createdAt) {
+        return b.createdAt.toDate() - a.createdAt.toDate();
+      }
+      
+      return b.id.localeCompare(a.id);
+    });
 
     console.log('Final active rides for dashboard (expired filtered out):', uniqueRides);
     return uniqueRides;
@@ -467,12 +481,12 @@ function Dashboard() {
               gap: { xs: 2, sm: 3 }
             }}>
               <Box sx={{ flex: 1 }}>
-                <Typography variant="h4" fontWeight={700} color="#4e342e" mb={1}>
-                  Welcome back, {userName}! <span role="img" aria-label="sparkles">✨</span>
-                </Typography>
+        <Typography variant="h4" fontWeight={700} color="#4e342e" mb={1}>
+          Welcome back, {userName}! <span role="img" aria-label="sparkles">✨</span>
+        </Typography>
                 <Typography variant="body1" color="#7c5e48" mb={3}>
                   Your community is active with 12 rides this week
-                </Typography>
+        </Typography>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <Button 
                     variant="contained" 
@@ -515,7 +529,7 @@ function Dashboard() {
                 }} 
               />
             </Box>
-          </Card>
+            </Card>
 
           {/* Stats Grid - Responsive grid that adapts to screen size */}
           <Box sx={{ 
@@ -531,64 +545,64 @@ function Dashboard() {
               <CardContent sx={{ py: 3, textAlign: 'center' }}>
                 <Typography variant="subtitle2" color="#7c5e48" mb={1}>Active rides today</Typography>
                 <Typography variant="h4" fontWeight={700} color="#4e342e">{activeRides.length}</Typography>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
             <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
               <CardContent sx={{ py: 3, textAlign: 'center' }}>
                 <Typography variant="subtitle2" color="#7c5e48" mb={1}>Groups you've joined</Typography>
                 <Typography variant="h4" fontWeight={700} color="#4e342e">{myGroups}</Typography>
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
             <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
               <CardContent sx={{ py: 3, textAlign: 'center' }}>
                 <Typography variant="subtitle2" color="#7c5e48" mb={1}>Your community rating</Typography>
                 <Typography variant="h4" fontWeight={700} color="#4e342e">4.9</Typography>
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
             <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
               <CardContent sx={{ py: 3, textAlign: 'center' }}>
                 <Typography variant="subtitle2" color="#7c5e48" mb={1}>Miles saved this month</Typography>
                 <Typography variant="h4" fontWeight={700} color="#4e342e">127</Typography>
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
           </Box>
 
           {/* Active Rides Section - Now properly filtered for non-expired rides */}
           <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
             <CardContent sx={{ py: 3 }}>
               <Box display="flex" alignItems="center" justifyContent="space-between" mb={3}>
-                <Typography variant="h6" fontWeight={600} color="#4e342e">
-                  <DirectionsCarIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+              <Typography variant="h6" fontWeight={600} color="#4e342e">
+                    <DirectionsCarIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                   Your Active Rides ({activeRides.length})
-                </Typography>
+              </Typography>
+                  <Button 
+                    component={Link} 
+                    to="/rides" 
+                    variant="text" 
+                    endIcon={<AddIcon />} 
+                    sx={{ color: '#b08968', fontWeight: 600 }}
+                  >
+                View All
+              </Button>
+            </Box>
+              {activeRides.length === 0 ? (
+              <Box display="flex" flexDirection="column" alignItems="center" py={4}>
+                    <DirectionsCarIcon sx={{ fontSize: 48, color: '#b08968', mb: 2 }} />
+                    <Typography color="#b08968" mb={1} fontSize={18}>No active rides</Typography>
+                    <Typography color="#b08968" mb={2} fontSize={15}>Create or join a ride to get started</Typography>
                 <Button 
-                  component={Link} 
-                  to="/rides" 
-                  variant="text" 
-                  endIcon={<AddIcon />} 
-                  sx={{ color: '#b08968', fontWeight: 600 }}
+                  variant="contained" 
+                  startIcon={<AddIcon />} 
+                  onClick={() => navigate('/create-group')}
+                      sx={{ background: '#b08968', color: '#fff', borderRadius: 2, mt: 1, px: 4, fontWeight: 600, fontSize: 16 }}
                 >
-                  View All
+                  Create a Ride
                 </Button>
               </Box>
-              {activeRides.length === 0 ? (
-                <Box display="flex" flexDirection="column" alignItems="center" py={4}>
-                  <DirectionsCarIcon sx={{ fontSize: 48, color: '#b08968', mb: 2 }} />
-                  <Typography color="#b08968" mb={1} fontSize={18}>No active rides</Typography>
-                  <Typography color="#b08968" mb={2} fontSize={15}>Create or join a ride to get started</Typography>
-                  <Button 
-                    variant="contained" 
-                    startIcon={<AddIcon />} 
-                    onClick={() => navigate('/create-group')}
-                    sx={{ background: '#b08968', color: '#fff', borderRadius: 2, mt: 1, px: 4, fontWeight: 600, fontSize: 16 }}
-                  >
-                    Create a Ride
-                  </Button>
-                </Box>
-              ) : (
-                <Stack spacing={2}>
+            ) : (
+              <Stack spacing={2}>
                   {activeRides
-                    .slice(0, 3)
+                  .slice(0, 3)
                     .map(ride => {
                       const statusInfo = getRideStatusInfo(ride);
                       const timeRemaining = getRideTimeRemaining(ride);
@@ -619,9 +633,9 @@ function Dashboard() {
                           />
                           <Box sx={{ flex: 1 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                              <Typography fontWeight={600} color="#4e342e" fontSize={16}>
-                                {ride.groupName || 'Ride Group'}
-                              </Typography>
+                            <Typography fontWeight={600} color="#4e342e" fontSize={16}>
+                              {ride.groupName || 'Ride Group'}
+                            </Typography>
                               <Chip
                                 label={statusInfo.label}
                                 size="small"
@@ -641,17 +655,17 @@ function Dashboard() {
                                ride.destination.address || 'Unknown destination'}
                             </Typography>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                              <Typography variant="caption" color="#b08968" fontSize={12}>
+                            <Typography variant="caption" color="#b08968" fontSize={12}>
                                 {ride.userType === 'driver' ? '🚗 Driver' : '👤 Passenger'}
                               </Typography>
                               <Typography variant="caption" color="#666" fontSize={11}>
                                 ⏰ {timeRemaining}
-                              </Typography>
+                            </Typography>
                             </Box>
-                          </Box>
-                          <Button 
-                            variant="outlined" 
-                            size="small"
+                        </Box>
+                        <Button 
+                          variant="outlined" 
+                          size="small"
                             sx={{ 
                               color: '#b08968', 
                               borderColor: '#b08968',
@@ -660,16 +674,16 @@ function Dashboard() {
                               fontSize: 12,
                               px: 2
                             }}
-                          >
+                        >
                             View
-                          </Button>
-                        </Box>
+                        </Button>
+                      </Box>
                       );
                     })}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
+              </Stack>
+            )}
+          </CardContent>
+        </Card>
 
           {/* Communities and Activity Grid - Side by side on larger screens */}
           <Box sx={{ 
@@ -682,14 +696,14 @@ function Dashboard() {
             <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
               <CardContent sx={{ py: 3 }}>
                 <Box display="flex" alignItems="center" justifyContent="space-between" mb={3}>
-                  <Typography variant="h6" fontWeight={600} color="#4e342e">
+              <Typography variant="h6" fontWeight={600} color="#4e342e">
                     <GroupIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
                     My Communities
-                  </Typography>
-                  <IconButton size="small" sx={{ color: '#b08968' }}>
-                    <AddIcon />
-                  </IconButton>
-                </Box>
+              </Typography>
+              <IconButton size="small" sx={{ color: '#b08968' }}>
+                <AddIcon />
+              </IconButton>
+            </Box>
                 <Stack spacing={2}>
                   <Box display="flex" alignItems="center">
                     <Avatar src="/group2.jpg" sx={{ width: 32, height: 32, mr: 2 }} />
@@ -732,52 +746,52 @@ function Dashboard() {
                     activityFeed.slice(0, 5).map((activity, idx) => (
                       <Box key={activity.id + idx} sx={{ background: '#f9f6ef', borderRadius: 2, p: 2, display: 'flex', alignItems: 'center' }}>
                         <Avatar src={activity.avatar} sx={{ width: 32, height: 32, mr: 2 }} />
-                        <Box>
+                      <Box>
                           <Typography variant="body2" fontWeight={500}>{activity.text}</Typography>
                           <Typography variant="caption" color="#b08968">{activity.time.toLocaleString()}</Typography>
-                        </Box>
                       </Box>
+                    </Box>
                     ))
                   )}
-                </Stack>
-              </CardContent>
-            </Card>
+            </Stack>
+          </CardContent>
+        </Card>
           </Box>
 
-          {/* Quick Actions */}
+        {/* Quick Actions */}
           <Card sx={{ borderRadius: 3, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-            <CardContent sx={{ py: 3 }}>
+              <CardContent sx={{ py: 3 }}>
               <Typography variant="h6" fontWeight={600} color="#4e342e" mb={3}>
-                Quick Actions
-              </Typography>
+              Quick Actions
+            </Typography>
               <Box sx={{ 
                 display: 'grid', 
                 gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, 
                 gap: 2 
               }}>
-                <Button 
-                  variant="contained" 
-                  startIcon={<AddIcon />} 
-                  onClick={() => navigate('/create-group')}
-                  sx={{ background: '#a47551', color: '#fff', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
-                >
-                  Offer a Ride
-                </Button>
-                <Button 
-                  variant="outlined" 
-                  sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
-                >
-                  Find Communities
-                </Button>
+              <Button 
+                variant="contained" 
+                startIcon={<AddIcon />} 
+                onClick={() => navigate('/create-group')}
+                    sx={{ background: '#a47551', color: '#fff', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
+              >
+                    Offer a Ride
+              </Button>
                 <Button 
                   variant="outlined" 
                   sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
                 >
-                  Browse Destinations
-                </Button>
+                    Find Communities
+              </Button>
+                <Button 
+                  variant="outlined" 
+                  sx={{ color: '#b08968', borderColor: '#e0c9b3', borderRadius: 2, fontWeight: 600, fontSize: 16, py: 1.2 }}
+                >
+                    Browse Destinations
+              </Button>
               </Box>
-            </CardContent>
-          </Card>
+          </CardContent>
+        </Card>
 
         </Box>
       </Container>
