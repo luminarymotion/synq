@@ -1,0 +1,5 @@
+[33mf2ef2cb[m[33m ([m[1;36mHEAD[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m Merge pull request #17 from luminarymotion/revert-16-feature/sync-rideflow-both-views
+[33meaca368[m Revert "feature/sync-rideflow-both-views: fixing all bugs in laptop view, the…"
+[33m6b74f4e[m Merge pull request #16 from luminarymotion/feature/sync-rideflow-both-views
+[33m0dad771[m feature/sync-rideflow-both-views: fixing all bugs in laptop view, then reflecting changes into mobile. WIP -> working on fixing live ride view roles, seat logic, handling all use cases
+[33m6db9c01[m Merge pull request #15 from luminarymotion/feature/fixed-map-search
