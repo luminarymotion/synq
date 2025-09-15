@@ -18,6 +18,7 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
+import NotificationsCenter from './NotificationsCenter';
 
 // Ghibli-inspired earthy palette
 const palette = {
@@ -111,9 +112,10 @@ function Header() {
             </Button>
           ))}
         </Stack>
-        {/* Right: User Avatar and Menu */}
+        {/* Right: Notifications and User Avatar */}
         {user && (
-          <Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <NotificationsCenter />
             <IconButton onClick={handleMenuOpen} size="medium">
               <Avatar
                 src={user.photoURL || undefined}

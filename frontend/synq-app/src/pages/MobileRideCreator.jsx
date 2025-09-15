@@ -16,6 +16,7 @@ import MapView from '../components/MapView';
 import UserSearch from '../components/UserSearch';
 import UserTable from '../components/UserTable';
 import UserForm from '../components/UserForm';
+import ReviewRideModal from '../components/ReviewRideModal';
 import { useLocation as useLocationTracking } from '../services/locationTrackingService';
 import { getCoordsFromAddress, getDirections, searchDestinations } from '../services/locationService';
 import { toast } from 'react-hot-toast';
@@ -89,6 +90,7 @@ function MobileRideCreator() {
   const [isLoading, setIsLoading] = useState(false);
   const [showFriendSearch, setShowFriendSearch] = useState(false);
   const [showDestinationSearch, setShowDestinationSearch] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
   
   // Route calculation state
   const [calculatedRoute, setCalculatedRoute] = useState(null);
@@ -146,7 +148,7 @@ function MobileRideCreator() {
   const [lastCalculatedDestination, setLastCalculatedDestination] = useState(null);
   
   // Ride creation flow state
-  const [currentStep, setCurrentStep] = useState('destination'); // 'destination' | 'participants' | 'create'
+  const [currentStep, setCurrentStep] = useState('destination'); // 'destination' | 'participants'
   
   // Draggable panel state
   const [panelHeight, setPanelHeight] = useState(200); // Default height
@@ -1264,7 +1266,14 @@ function MobileRideCreator() {
       return;
     }
 
+    // Show review modal instead of directly creating ride
+    setShowReviewModal(true);
+  };
+
+  const handleConfirmCreateRide = async (reviewData) => {
     setIsLoading(true);
+    setShowReviewModal(false);
+    
     try {
       // Validate and clean participant data
       const validPassengers = participants.map(p => {
@@ -1301,14 +1310,15 @@ function MobileRideCreator() {
         passengers: validPassengers
       });
 
+
       const rideData = {
-        name: rideName || `Ride to ${destination.address || destination.name}`,
+        name: reviewData.rideTitle,
         destination: {
           location: {
             lat: destination.lat,
             lng: destination.lng
           },
-          address: destination.address || destination.name
+          address: reviewData.destination
         },
         driver: {
           uid: user.uid,
@@ -1317,6 +1327,11 @@ function MobileRideCreator() {
           photoURL: user.photoURL || ''
         },
         passengers: validPassengers,
+        // Add review form data
+        description: reviewData.description,
+        plannedDateTime: reviewData.rideTiming === 'planned' ? reviewData.plannedDateTime : null,
+        carSeats: reviewData.role === 'driver' ? reviewData.carSeats : null,
+        additionalNotes: reviewData.additionalNotes,
         createdAt: serverTimestamp(),
         status: 'created'
       };
@@ -1839,12 +1854,6 @@ function MobileRideCreator() {
                 borderRadius: '50%',
                 background: currentStep === 'participants' ? '#1976d2' : '#e0e0e0'
               }} />
-              <Box sx={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: currentStep === 'create' ? '#1976d2' : '#e0e0e0'
-              }} />
             </Box>
             <Typography variant="caption" sx={{ 
               color: '#666', 
@@ -1852,8 +1861,7 @@ function MobileRideCreator() {
               textTransform: 'uppercase',
               letterSpacing: '0.5px'
             }}>
-              {currentStep === 'destination' ? 'Route' : 
-               currentStep === 'participants' ? 'Friends' : 'Create'}
+              {currentStep === 'destination' ? 'Route' : 'Friends'}
             </Typography>
           </Box>
           {currentStep === 'destination' && (
@@ -1987,7 +1995,7 @@ function MobileRideCreator() {
                 <Button
                   variant="contained"
                   size="small"
-                  onClick={() => setCurrentStep('create')}
+                  onClick={handleCreateRide}
                   disabled={participants.length === 0}
                   sx={{ 
                     fontSize: '12px',
@@ -2000,37 +2008,6 @@ function MobileRideCreator() {
             </Box>
           )}
 
-          {currentStep === 'create' && (
-            <Box>
-              <Typography variant="body2" sx={{ fontWeight: 600, color: '#333', mb: 1 }}>
-                Ready to Create Ride
-              </Typography>
-              <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 2 }}>
-                {participants.length + 1} participants • {((routeDetails.distance / 1609.34)).toFixed(1)} mi
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => setCurrentStep('participants')}
-                  disabled={isLoading}
-                  sx={{ fontSize: '12px', flex: 1 }}
-                >
-                  Back
-                </Button>
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={handleCreateRide}
-                  disabled={isLoading}
-                  startIcon={isLoading ? <CircularProgress size={16} /> : null}
-                  sx={{ fontSize: '12px', flex: 1 }}
-                >
-                  {isLoading ? 'Creating...' : 'Create Ride'}
-                </Button>
-              </Box>
-            </Box>
-          )}
           </Box>
         </Box>
       )}
@@ -2109,6 +2086,23 @@ function MobileRideCreator() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Review Ride Modal */}
+      <ReviewRideModal
+        isOpen={showReviewModal}
+        onClose={() => setShowReviewModal(false)}
+        rideData={{
+          name: rideName || `Ride to ${destination?.address || destination?.name || ''}`,
+          destination: destination,
+          currentUserId: user?.uid,
+          driver: {
+            uid: user?.uid,
+            displayName: user?.displayName || user?.email
+          }
+        }}
+        onConfirmCreate={handleConfirmCreateRide}
+        isCreating={isLoading}
+      />
     </Box>
   );
 }

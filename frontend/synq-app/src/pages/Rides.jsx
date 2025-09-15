@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
-import { collection, query, where, onSnapshot, orderBy, getDoc, doc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, getDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { Link, useSearchParams } from 'react-router-dom';
 import { updateRideParticipation } from '../services/firebaseOperations';
 import SimpleLoading from '../components/SimpleLoading';
@@ -46,6 +46,7 @@ function Rides() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [leavingRideId, setLeavingRideId] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
 
   console.log('Rides component rendered:', {
     user: user?.uid,
@@ -268,10 +269,10 @@ function Rides() {
       timestamp: new Date().toISOString()
     });
     
-    // Query for active rides where user is driver
-    const driverActiveQuery = query(
+    // Query for active rides where user is creator
+    const creatorActiveQuery = query(
       collection(db, 'rides'),
-      where('driver.uid', '==', user.uid),
+      where('creator.uid', '==', user.uid),
       where('status', '==', 'active')
     );
 
@@ -282,10 +283,10 @@ function Rides() {
       where('status', '==', 'active')
     );
 
-    // Query for recent rides (within 24 hours) where user is driver
-    const driverRecentQuery = query(
+    // Query for recent rides (within 24 hours) where user is creator
+    const creatorRecentQuery = query(
       collection(db, 'rides'),
-      where('driver.uid', '==', user.uid),
+      where('creator.uid', '==', user.uid),
       where('createdAt', '>=', twentyFourHoursAgo),
       where('status', '==', 'created')
     );
@@ -305,13 +306,13 @@ function Rides() {
     );
 
     console.log('Setting up ride listeners');
-    const unsubscribeDriverActive = onSnapshot(driverActiveQuery, (snapshot) => {
-      console.log('Driver active rides snapshot:', {
+    const unsubscribeCreatorActive = onSnapshot(creatorActiveQuery, (snapshot) => {
+      console.log('Creator active rides snapshot:', {
         empty: snapshot.empty,
         docs: snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
         timestamp: new Date().toISOString()
       });
-      const driverActiveRides = snapshot.docs.map(doc => ({
+      const creatorActiveRides = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
         type: 'active'
@@ -325,9 +326,9 @@ function Rides() {
           type: 'active'
         }));
 
-        const unsubscribeDriverRecent = onSnapshot(driverRecentQuery, (recentSnapshot) => {
-          console.log('Driver recent rides snapshot:', recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-          const driverRecentRides = recentSnapshot.docs.map(doc => ({
+        const unsubscribeCreatorRecent = onSnapshot(creatorRecentQuery, (recentSnapshot) => {
+          console.log('Creator recent rides snapshot:', recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+          const creatorRecentRides = recentSnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
             type: 'recent'
@@ -351,9 +352,9 @@ function Rides() {
 
               // Combine all rides
               const allRides = [
-                ...driverActiveRides,
+                ...creatorActiveRides,
                 ...passengerActiveRides,
-                ...driverRecentRides,
+                ...creatorRecentRides,
                 ...passengerRecentRides,
                 ...pendingInvitationRides
               ];
@@ -416,7 +417,7 @@ function Rides() {
 
       return () => unsubscribePassengerActive();
     }, (error) => {
-      console.error('Error fetching driver active rides:', {
+      console.error('Error fetching creator active rides:', {
         error,
         timestamp: new Date().toISOString()
       });
@@ -425,7 +426,7 @@ function Rides() {
 
     return () => {
       console.log('Cleaning up all ride subscriptions');
-      unsubscribeDriverActive();
+      unsubscribeCreatorActive();
     };
   }, [user, searchParams]);
 
@@ -444,6 +445,11 @@ function Rides() {
   };
 
   const handleLeaveRide = async (rideId) => {
+    if (!user) return;
+    
+    console.log('🚀 Starting leave ride process:', { rideId, userId: user.uid });
+    
+    if (window.confirm('Are you sure you want to leave this ride?')) {
     try {
       setLeavingRideId(rideId);
       const rideDoc = await getDoc(doc(db, 'rides', rideId));
@@ -452,21 +458,120 @@ function Rides() {
       }
 
       const rideData = rideDoc.data();
-      const isDriver = rideData.driverId === user.uid;
+        console.log('📋 Ride data:', {
+          rideId,
+          rideData: {
+            name: rideData.name,
+            creator: rideData.creator,
+            driver: rideData.driver,
+            passengers: rideData.passengers,
+            passengerUids: rideData.passengerUids,
+            invitations: rideData.invitations
+          }
+        });
 
-      // Use updateRideParticipation instead of leaveRide
-      const result = await updateRideParticipation(rideId, user.uid, 'left');
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to leave ride');
-      }
+        const isDriver = rideData.driver?.uid === user.uid;
+        const isCreator = rideData.creator?.uid === user.uid;
+        const isPassenger = rideData.passengerUids?.includes(user.uid);
+        const hasInvitation = rideData.invitations?.[user.uid];
 
-      // Update local state
+        console.log('👤 User role analysis:', {
+          userId: user.uid,
+          isDriver,
+          isCreator,
+          isPassenger,
+          hasInvitation,
+          driverUid: rideData.driver?.uid,
+          creatorUid: rideData.creator?.uid,
+          passengerUids: rideData.passengerUids
+        });
+
+        const rideRef = doc(db, 'rides', rideId);
+        
+        // Handle invitation status if user has a pending invitation
+        if (hasInvitation) {
+          console.log('📧 Updating invitation status to declined');
+          await updateDoc(rideRef, {
+            [`invitations.${user.uid}.status`]: 'declined',
+            [`invitations.${user.uid}.respondedAt`]: serverTimestamp(),
+            [`invitations.${user.uid}.response`]: {
+              status: 'declined',
+              reason: 'User left the ride',
+              leftAt: serverTimestamp()
+            }
+          });
+        }
+
+        if (isDriver) {
+          console.log('🚗 User is driver - cancelling entire ride');
+          // If user is the driver, cancel the entire ride
+          await updateDoc(rideRef, {
+            driver: null,
+            status: 'cancelled',
+            updatedAt: serverTimestamp()
+          });
+        } else if (isCreator) {
+          console.log('👑 User is creator - removing from creator and passenger lists');
+          // If user is the creator, remove them from creator and passenger lists
+          const updatedPassengers = (rideData.passengers || []).filter(p => p.uid !== user.uid);
+          const updatedPassengerUids = (rideData.passengerUids || []).filter(uid => uid !== user.uid);
+          
+          await updateDoc(rideRef, {
+            creator: null,
+            passengers: updatedPassengers,
+            passengerUids: updatedPassengerUids,
+            updatedAt: serverTimestamp()
+          });
+        } else if (isPassenger) {
+          console.log('🚶 User is passenger - removing from passenger lists');
+          // If user is a passenger, remove them from passenger lists
+          const updatedPassengers = (rideData.passengers || []).filter(p => p.uid !== user.uid);
+          const updatedPassengerUids = (rideData.passengerUids || []).filter(uid => uid !== user.uid);
+          
+          await updateDoc(rideRef, {
+            passengers: updatedPassengers,
+            passengerUids: updatedPassengerUids,
+            updatedAt: serverTimestamp()
+          });
+        } else {
+          console.log('❌ User is not associated with this ride in any way');
+          throw new Error('You are not associated with this ride');
+        }
+
+        // Update local state to remove the ride from the list
       setActiveRides(prevRides => prevRides.filter(ride => ride.id !== rideId));
+        
+        // Show success message
+        const rideName = rideData.groupName || rideData.name || 'the ride';
+        setSuccessMessage(`Successfully left ${rideName}`);
+        setError(null); // Clear any previous errors
+        
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setSuccessMessage(null);
+        }, 3000);
+        
+        console.log('✅ Successfully left ride:', rideId);
     } catch (error) {
-      console.error('Error leaving ride:', error);
-      setError(error.message || 'Failed to leave ride');
+        console.error('❌ Error leaving ride:', error);
+        let errorMessage = 'Failed to leave ride';
+        
+        // Provide more specific error messages
+        if (error.message.includes('permission')) {
+          errorMessage = 'You do not have permission to leave this ride';
+        } else if (error.message.includes('not found')) {
+          errorMessage = 'Ride not found or may have been deleted';
+        } else if (error.message.includes('network')) {
+          errorMessage = 'Network error. Please check your connection and try again';
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+        
+        setError(errorMessage);
+        setSuccessMessage(null); // Clear any success message
     } finally {
       setLeavingRideId(null);
+      }
     }
   };
 
@@ -514,6 +619,11 @@ function Rides() {
             {error}
           </Alert>
         )}
+        {successMessage && (
+          <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage(null)}>
+            {successMessage}
+          </Alert>
+        )}
         {/* Quick Actions Section - moved above Active Rides */}
         <Card sx={{ background: palette.card, borderRadius: 4, boxShadow: 2, mb: 4, p: 1 }}>
           <CardContent>
@@ -556,7 +666,7 @@ function Rides() {
                     <Box display="flex" alignItems="center">
                       <Avatar src={ride.groupAvatar || '/default-avatar.png'} alt={ride.groupName} sx={{ width: 48, height: 48, mr: 2, bgcolor: palette.accent }} />
                       <Box>
-                        <Typography fontWeight={600} color={palette.text}>{ride.groupName || 'Ride Group'}</Typography>
+                        <Typography fontWeight={600} color={palette.text}>{ride.name || ride.groupName || 'Ride Group'}</Typography>
                         <Typography variant="body2" color={palette.textSoft}>
                           {!ride.destination ? 'Destination' : 
                            typeof ride.destination === 'string' ? ride.destination : 
@@ -566,8 +676,25 @@ function Rides() {
                       </Box>
                     </Box>
                     <Box>
-                      <Button variant="outlined" color="error" size="small" onClick={() => handleLeaveRide(ride.id)} disabled={leavingRideId === ride.id} sx={{ borderRadius: 2, fontWeight: 600, borderColor: palette.accent2, color: palette.accent2 }}>
-                        Leave
+                      <Button 
+                        variant="outlined" 
+                        color="error" 
+                        size="small" 
+                        onClick={() => handleLeaveRide(ride.id)} 
+                        disabled={leavingRideId === ride.id} 
+                        sx={{ 
+                          borderRadius: 2, 
+                          fontWeight: 600, 
+                          borderColor: palette.accent2, 
+                          color: palette.accent2,
+                          minWidth: '80px',
+                          '&:hover': {
+                            backgroundColor: '#ffebee',
+                            borderColor: '#d32f2f'
+                          }
+                        }}
+                      >
+                        {leavingRideId === ride.id ? 'Leaving...' : 'Leave'}
                       </Button>
                     </Box>
                   </Box>

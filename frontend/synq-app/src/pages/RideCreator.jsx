@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
-import { collection, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
+import { collection, getDocs, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
 import { 
   createRide, 
   updateRide, 
@@ -16,6 +17,7 @@ import MapView from '../components/MapView';
 import UserSearch from '../components/UserSearch';
 import UserTable from '../components/UserTable';
 import UserForm from '../components/UserForm';
+import ReviewRideModal from '../components/ReviewRideModal';
 import { useLocation as useLocationTracking } from '../services/locationTrackingService';
 import { getCoordsFromAddress, getDirections, searchDestinations } from '../services/locationService';
 import { toast } from 'react-hot-toast';
@@ -92,6 +94,9 @@ function RideCreator({ mode = 'create' }) {
   const [isLoading, setIsLoading] = useState(false);
   const [showFriendSearch, setShowFriendSearch] = useState(false);
   const [showDestinationSearch, setShowDestinationSearch] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [createdRideId, setCreatedRideId] = useState(null);
   
   // Route calculation state
   const [calculatedRoute, setCalculatedRoute] = useState(null);
@@ -149,10 +154,10 @@ function RideCreator({ mode = 'create' }) {
   const [lastCalculatedDestination, setLastCalculatedDestination] = useState(null);
   
   // Ride creation flow state
-  const [currentStep, setCurrentStep] = useState('destination'); // 'destination' | 'participants' | 'create'
+  const [currentStep, setCurrentStep] = useState('destination'); // 'destination' | 'participants'
   
   // Draggable panel state
-  const [panelHeight, setPanelHeight] = useState(200); // Default height
+  const [panelHeight, setPanelHeight] = useState(280); // Increased default height to show buttons
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartY, setDragStartY] = useState(0);
   const [dragStartHeight, setDragStartHeight] = useState(0);
@@ -1174,7 +1179,8 @@ function RideCreator({ mode = 'create' }) {
       displayName: friend.profile?.displayName || friend.displayName || friend.name || 'Unknown User',
       photoURL: friend.profile?.photoURL || friend.photoURL || '',
       email: friend.profile?.email || friend.email || '',
-      role: 'passenger',
+      role: 'pending', // Set to pending instead of passenger
+      status: 'invited', // Add status to track invitation state
       isCreator: false
     };
 
@@ -1206,7 +1212,7 @@ function RideCreator({ mode = 'create' }) {
     
     const currentY = e.touches ? e.touches[0].clientY : e.clientY;
     const deltaY = dragStartY - currentY; // Positive when dragging up (reducing height)
-    const newHeight = Math.max(100, Math.min(400, dragStartHeight + deltaY));
+    const newHeight = Math.max(120, Math.min(500, dragStartHeight + deltaY));
     
     setPanelHeight(newHeight);
     e.preventDefault();
@@ -1267,7 +1273,16 @@ function RideCreator({ mode = 'create' }) {
       return;
     }
 
+    // Show review modal instead of directly creating ride
+    setShowReviewModal(true);
+  };
+
+  const handleConfirmCreateRide = async (reviewData) => {
     setIsLoading(true);
+    setShowReviewModal(false);
+    
+    let rideData = null; // Declare rideData outside try block
+    
     try {
       // Validate and clean participant data
       const validPassengers = participants.map(p => {
@@ -1276,7 +1291,7 @@ function RideCreator({ mode = 'create' }) {
           uid: p.uid || p.id,
           displayName: p.displayName || p.name || 'Unknown User',
           photoURL: p.photoURL || '',
-          role: p.role || 'passenger'
+          role: p.role || 'pending'
         };
 
         // Handle location data - set to null if undefined/invalid
@@ -1294,44 +1309,83 @@ function RideCreator({ mode = 'create' }) {
         return passenger;
       });
 
-      console.log('🚗 Creating ride with validated data:', {
-        destination,
-        driver: {
-          uid: user.uid,
-          displayName: user.displayName || user.email,
-          location: userLocation
-        },
-        passengers: validPassengers
-      });
 
+      // Essential data for ride creation only
       const rideData = {
-        name: rideName || `Ride to ${destination.address || destination.name}`,
+        name: reviewData.rideTitle,
         destination: {
           location: {
             lat: destination.lat,
             lng: destination.lng
           },
-          address: destination.address || destination.name
+          address: reviewData.destination
         },
-        driver: {
+        creator: {
           uid: user.uid,
           displayName: user.displayName || user.email,
           location: userLocation,
-          photoURL: user.photoURL || ''
+          photoURL: user.photoURL || '',
+          role: reviewData.role, // 'passenger' or 'driver'
+          carSeats: reviewData.role === 'driver' ? reviewData.carSeats : null
         },
-        passengers: validPassengers,
-        createdAt: serverTimestamp(),
-        status: 'created'
+        description: reviewData.description || '',
+        additionalNotes: reviewData.additionalNotes || '',
+        rideTiming: reviewData.rideTiming,
+        plannedDateTime: reviewData.rideTiming === 'planned' ? reviewData.plannedDateTime : null,
+        status: 'created',
+        createdAt: serverTimestamp()
       };
 
       const result = await createRide(rideData);
+      
       if (result.success) {
         toast.success('Ride created successfully!');
-        navigate(`/ride/${result.rideId}`);
+        setCreatedRideId(result.rideId);
+        setShowSuccessModal(true);
+        setShowReviewModal(false);
       } else {
         throw new Error(result.error);
       }
     } catch (error) {
+      console.error('🚨 Firestore Rules & Data Validation Error:', {
+        // Firebase error details
+        errorCode: error.code,
+        errorMessage: error.message,
+        errorDetails: error.details,
+        
+        // Rule validation analysis
+        ruleAnalysis: {
+          // What the rule checks
+          ruleCondition: 'isAuthenticated() && request.resource.data.driver.uid == request.auth.uid',
+          isAuthenticated: !!user,
+          driverUidFromData: rideData?.driver?.uid,
+          authUidFromRequest: user?.uid,
+          uidMatch: rideData?.driver?.uid === user?.uid,
+          
+          // Data structure validation
+          hasDriverObject: !!rideData?.driver,
+          driverObjectKeys: rideData?.driver ? Object.keys(rideData.driver) : 'no driver',
+          driverUidExists: !!rideData?.driver?.uid,
+          driverUidType: typeof rideData?.driver?.uid,
+          
+          // Additional data checks
+          hasPassengerUids: !!rideData?.passengerUids,
+          passengerUidsType: Array.isArray(rideData?.passengerUids),
+          hasInvitations: !!rideData?.invitations,
+          invitationsType: typeof rideData?.invitations
+        },
+        
+        // Complete data structure for analysis
+        completeDataStructure: rideData ? {
+          topLevelKeys: Object.keys(rideData),
+          driverStructure: rideData.driver,
+          passengerUidsStructure: rideData.passengerUids,
+          invitationsStructure: rideData.invitations
+        } : 'no data',
+        
+        timestamp: new Date().toISOString()
+      });
+      
       console.error('Error creating ride:', error);
       toast.error('Failed to create ride');
     } finally {
@@ -1408,7 +1462,7 @@ function RideCreator({ mode = 'create' }) {
       {/* Back Button - Top Left */}
       <Box sx={{
         position: 'absolute',
-        top: '76px', // Below the main app header
+        top: '30px', // Below the main app header
         left: '12px',
         zIndex: 1002,
         pointerEvents: 'auto'
@@ -1428,37 +1482,12 @@ function RideCreator({ mode = 'create' }) {
         </IconButton>
       </Box>
 
-      {/* Live Tracking Chip - Top Right */}
-      {isTracking && (
-        <Box sx={{
-          position: 'absolute',
-          top: '76px', // Below the main app header
-          right: '12px',
-          zIndex: 1002,
-          pointerEvents: 'auto'
-        }}>
-          <Chip
-            icon={<LocationIcon />}
-            label="Live"
-            size="small"
-            color="success"
-            variant="outlined"
-            sx={{ 
-              fontSize: '0.75rem',
-              background: 'rgba(255, 255, 255, 0.9)',
-              backdropFilter: 'blur(8px)',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-            }}
-          />
-        </Box>
-      )}
-
       {/* Route Calculation Loading Indicator */}
       {isCalculatingRoute && (
         <Box
           sx={{
             position: 'absolute',
-            top: '130px', // Below search bar
+            top: '110px', // Below moved search bar
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 1001,
@@ -1483,7 +1512,7 @@ function RideCreator({ mode = 'create' }) {
         <Box
           sx={{
             position: 'absolute',
-            top: '130px', // Below search bar
+            top: '110px', // Below moved search bar
             left: '50%',
             transform: 'translateX(-50%)',
             zIndex: 1001,
@@ -1508,7 +1537,7 @@ function RideCreator({ mode = 'create' }) {
         className="map-search-bar"
         sx={{
           position: 'absolute',
-          top: '76px', // Same level as back button and live chip
+          top: '30px', // Moved up closer to header
           left: '60px', // Right of back button
           right: '60px', // Left of zoom controls
           zIndex: 1000,
@@ -1857,12 +1886,6 @@ function RideCreator({ mode = 'create' }) {
                 borderRadius: '50%',
                 background: currentStep === 'participants' ? '#1976d2' : '#e0e0e0'
               }} />
-              <Box sx={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: currentStep === 'create' ? '#1976d2' : '#e0e0e0'
-              }} />
             </Box>
             <Typography variant="caption" sx={{ 
               color: '#666', 
@@ -1870,8 +1893,7 @@ function RideCreator({ mode = 'create' }) {
               textTransform: 'uppercase',
               letterSpacing: '0.5px'
             }}>
-              {currentStep === 'destination' ? 'Route' : 
-               currentStep === 'participants' ? 'Friends' : 'Create'}
+              {currentStep === 'destination' ? 'Route' : 'Friends'}
             </Typography>
           </Box>
           {currentStep === 'destination' && (
@@ -1971,9 +1993,10 @@ function RideCreator({ mode = 'create' }) {
                       </Box>
                       <Box sx={{ display: 'flex', gap: 0.5 }}>
                         <Chip 
-                          label={participant.role} 
+                          label={participant.role === 'pending' ? 'Invited' : participant.role} 
                           size="small" 
                           variant="outlined"
+                          color={participant.role === 'pending' ? 'warning' : 'primary'}
                           sx={{ fontSize: '10px', height: '20px' }}
                         />
                         <IconButton
@@ -2005,7 +2028,7 @@ function RideCreator({ mode = 'create' }) {
                 <Button
                   variant="contained"
                   size="small"
-                  onClick={() => setCurrentStep('create')}
+                  onClick={handleCreateRide}
                   disabled={participants.length === 0}
                   sx={{ 
                     fontSize: '12px',
@@ -2018,37 +2041,6 @@ function RideCreator({ mode = 'create' }) {
             </Box>
           )}
 
-          {currentStep === 'create' && (
-            <Box>
-              <Typography variant="body2" sx={{ fontWeight: 600, color: '#333', mb: 1 }}>
-                Ready to Create Ride
-              </Typography>
-              <Typography variant="caption" sx={{ color: '#666', display: 'block', mb: 2 }}>
-                {participants.length + 1} participants • {((routeDetails.distance / 1609.34)).toFixed(1)} mi
-              </Typography>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => setCurrentStep('participants')}
-                  disabled={isLoading}
-                  sx={{ fontSize: '12px', flex: 1 }}
-                >
-                  Back
-                </Button>
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={handleCreateRide}
-                  disabled={isLoading}
-                  startIcon={isLoading ? <CircularProgress size={16} /> : null}
-                  sx={{ fontSize: '12px', flex: 1 }}
-                >
-                  {isLoading ? 'Creating...' : 'Create Ride'}
-                </Button>
-              </Box>
-            </Box>
-          )}
           </Box>
         </Box>
       )}
@@ -2124,6 +2116,66 @@ function RideCreator({ mode = 'create' }) {
             sx={{ borderRadius: '8px' }}
           >
             Done
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Review Ride Modal */}
+      <ReviewRideModal
+        isOpen={showReviewModal}
+        onClose={() => setShowReviewModal(false)}
+        rideData={{
+          name: rideName || `Ride to ${destination?.address || destination?.name || ''}`,
+          destination: destination,
+          currentUserId: user?.uid,
+          creator: {
+            uid: user?.uid,
+            displayName: user?.displayName || user?.email,
+            role: 'passenger' // Default role, user can change in modal
+          }
+        }}
+        onConfirmCreate={handleConfirmCreateRide}
+        isCreating={isLoading}
+      />
+
+      {/* Success Modal */}
+      <Dialog 
+        open={showSuccessModal} 
+        onClose={() => {
+          setShowSuccessModal(false);
+          navigate('/rides');
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle sx={{ background: '#f9f6ef', color: '#4e342e', textAlign: 'center' }}>
+          Ride Created Successfully!
+        </DialogTitle>
+        <DialogContent sx={{ background: '#fff', textAlign: 'center', py: 3 }}>
+          <Avatar sx={{ width: 80, height: 80, mx: 'auto', mb: 2, background: '#4caf50' }}>
+            <CheckIcon sx={{ fontSize: 40 }} />
+          </Avatar>
+          <Typography variant="h6" color="#4e342e" mb={1}>
+            Your ride has been created!
+          </Typography>
+          <Typography variant="body2" color="#7c5e48" mb={2}>
+            You can now invite friends and start your ride when ready.
+          </Typography>
+          <Paper sx={{ p: 2, background: '#f9f6ef', display: 'inline-block' }}>
+            <Typography variant="caption" color="#b08968">Ride ID:</Typography>
+            <Typography variant="body2" fontWeight={600} color="#4e342e">{createdRideId}</Typography>
+          </Paper>
+        </DialogContent>
+        <DialogActions sx={{ background: '#f9f6ef', justifyContent: 'center', pb: 3 }}>
+          <Button 
+            variant="contained"
+            onClick={() => {
+              setShowSuccessModal(false);
+              navigate('/rides');
+            }}
+            sx={{ background: '#a47551', color: '#fff', borderRadius: 2, px: 4 }}
+          >
+            View My Rides
           </Button>
         </DialogActions>
       </Dialog>

@@ -203,21 +203,17 @@ const createRide = async (rideData) => {
       lastUpdated: null // Timestamp of last route update
     };
 
-    // Create the ride document with enhanced data structure
-    await setDoc(rideRef, {
+    // Create the final document data
+    const finalRideData = {
       ...rideData,
       rideId, // Store the ID as a field for easy access
-      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
       routeDetails,
-      // Add passengerUids array for easier querying
-      passengerUids: rideData.passengers.map(p => p.uid).filter(Boolean),
       // Add status tracking
-      status: 'created', // 'created', 'active', 'completed', 'cancelled'
       statusHistory: [{
         status: 'created',
         timestamp: new Date().toISOString(),
-        updatedBy: rideData.driver?.uid || null
+        updatedBy: rideData.creator?.uid || null
       }],
       // Add metadata
       metadata: {
@@ -227,7 +223,10 @@ const createRide = async (rideData) => {
         optimizationStatus: 'pending', // 'pending', 'in_progress', 'completed', 'failed'
         optimizationError: null
       }
-    });
+    };
+    
+    // Create the ride document with enhanced data structure
+    await setDoc(rideRef, finalRideData);
 
     return { 
       success: true, 
@@ -1893,7 +1892,7 @@ if (typeof window !== 'undefined') {
 // Ride Invitation Operations
 const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
   try {
-    console.log('Sending ride invitation:', { rideId, inviterId, inviteeId });
+    console.log('🚀 sendRideInvitation called with:', { rideId, inviterId, inviteeId });
     
     // Get inviter details
     const inviterDoc = await getDoc(doc(db, 'users', inviterId));
@@ -1933,10 +1932,18 @@ const sendRideInvitation = async (rideId, inviterId, inviteeId) => {
     
     // Add invitation to ride document
     const rideRef = doc(db, 'rides', rideId);
+    console.log('📝 Adding invitation to ride document:', {
+      rideId,
+      inviteeId,
+      invitationData: cleanInvitationData
+    });
+    
     await updateDoc(rideRef, {
       [`invitations.${inviteeId}`]: cleanInvitationData,
       updatedAt: serverTimestamp()
     });
+    
+    console.log('✅ Invitation added to ride document successfully');
     
     // Create notification for invitee
     const inviterName = inviterData.profile?.displayName || inviterData.displayName || 'Unknown User';

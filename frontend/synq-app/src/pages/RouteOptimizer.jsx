@@ -5,6 +5,7 @@ import UserForm from '../components/UserForm';
 import MapView from '../components/MapView';
 import UserTable from '../components/UserTable';
 import UserSearch from '../components/UserSearch';
+import ReviewRideModal from '../components/ReviewRideModal';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useUserAuth } from '../services/auth';
 import { db } from '../services/firebase';
@@ -599,6 +600,7 @@ function RouteOptimizer({ mode = 'create' }) {
   const [locationError, setLocationError] = useState(null);
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [groupCreated, setGroupCreated] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [invitationStatus, setInvitationStatus] = useState({
     isSending: false,
@@ -2645,6 +2647,10 @@ function RouteOptimizer({ mode = 'create' }) {
       return;
     }
 
+    // Show review modal instead of directly creating group
+    setShowReviewModal(true);
+    return;
+
     // Validate driver location - but don't block if not available
     if (!driver.userLocationCoords || !driver.userLocationCoords.lat || !driver.userLocationCoords.lng) {
       console.warn('Driver location not available, proceeding with manual location entry');
@@ -2880,6 +2886,174 @@ function RouteOptimizer({ mode = 'create' }) {
       }
     } catch (error) {
       console.error('Error in handleCreateGroup:', {
+        error,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      });
+      showLocalNotification(`Failed to create group: ${error.message || 'Please try again.'}`, 'error');
+    } finally {
+      console.log('Cleaning up group creation state');
+      setIsCreatingGroup(false);
+      setInvitationStatus(prev => ({ ...prev, isSending: false }));
+    }
+  };
+
+  const handleConfirmCreateGroup = async (reviewData) => {
+    setIsCreatingGroup(true);
+    setShowReviewModal(false);
+    
+    try {
+      console.log('Starting group creation process...');
+      setInvitationStatus({
+        isSending: false,
+        sentCount: 0,
+        totalCount: 0,
+        errors: []
+      });
+      
+      // Get full addresses for all locations
+      console.log('Fetching addresses for locations:', {
+        driverLocation: userLocation,
+        destination: destination
+      });
+
+      // Handle missing driver location gracefully
+      let driverAddress = 'Location pending';
+      if (userLocation && userLocation.lat && userLocation.lng) {
+        try {
+          driverAddress = await getAddressFromCoords(userLocation.lat, userLocation.lng);
+          console.log('Driver address resolved:', driverAddress);
+        } catch (addressError) {
+          console.warn('Failed to resolve driver address:', addressError);
+          driverAddress = 'Location pending';
+        }
+      }
+
+      // Get destination address
+      let destinationAddress = reviewData.destination || 'Destination pending';
+      if (!reviewData.destination && destination.lat && destination.lng) {
+        try {
+          destinationAddress = await getAddressFromCoords(destination.lat, destination.lng);
+          console.log('Destination address resolved:', destinationAddress);
+        } catch (addressError) {
+          console.warn('Failed to resolve destination address:', addressError);
+          destinationAddress = 'Destination pending';
+        }
+      }
+
+      // Prepare ride data
+      const rideData = {
+        name: reviewData.rideTitle,
+        destination: {
+          location: {
+            lat: destination.lat,
+            lng: destination.lng
+          },
+          address: destinationAddress
+        },
+        driver: {
+          uid: user.uid,
+          displayName: user.displayName || user.email,
+          location: userLocation,
+          photoURL: user.photoURL || ''
+        },
+        passengers: users.filter(u => u.role === 'passenger').map(passenger => ({
+          uid: passenger.id,
+          displayName: passenger.name,
+          photoURL: passenger.photoURL || '',
+          role: 'pending'
+        })),
+        passengerUids: users.filter(u => u.role === 'passenger').map(u => u.id),
+        invitations: users.filter(u => u.role === 'passenger').reduce((acc, passenger) => {
+          acc[passenger.id] = {
+            status: 'pending',
+            invitedAt: new Date().toISOString(),
+            inviter: {
+              uid: user.uid,
+              displayName: user.displayName || user.email
+            }
+          };
+          return acc;
+        }, {}),
+        // Add review form data
+        description: reviewData.description,
+        plannedDateTime: reviewData.rideTiming === 'planned' ? reviewData.plannedDateTime : null,
+        carSeats: reviewData.role === 'driver' ? reviewData.carSeats : null,
+        additionalNotes: reviewData.additionalNotes,
+        createdAt: new Date().toISOString(),
+        status: 'created'
+      };
+
+      console.log('Creating ride with data:', rideData);
+
+      const result = await createRide(rideData);
+      console.log('Create ride result:', result);
+
+      if (result.success) {
+        console.log('Ride created successfully, ID:', result.rideId);
+        setCreatedRideId(result.rideId);
+        setGroupCreated(true);
+        
+        // Send invitations to passengers
+        const passengers = users.filter(u => u.role === 'passenger');
+        console.log('🔍 Debug invitation sending:', {
+          totalUsers: users.length,
+          usersWithRoles: users.map(u => ({ id: u.id, name: u.name, role: u.role })),
+          passengersFound: passengers.length,
+          passengers: passengers.map(p => ({ id: p.id, name: p.name, role: p.role }))
+        });
+        
+        if (passengers.length > 0) {
+          console.log('Sending invitations to passengers:', passengers);
+          setInvitationStatus({
+            isSending: true,
+            sentCount: 0,
+            totalCount: passengers.length,
+            errors: []
+          });
+
+          for (const passenger of passengers) {
+            try {
+              console.log('🚀 Sending invitation to:', {
+                passengerId: passenger.id,
+                passengerName: passenger.name,
+                rideId: result.rideId,
+                inviterId: user.uid,
+                inviterName: user.displayName || user.email
+              });
+              const invitationResult = await sendRideInvitation(result.rideId, user.uid, passenger.id);
+              
+              if (invitationResult.success) {
+                console.log('Invitation sent successfully to:', passenger.name);
+                setInvitationStatus(prev => ({
+                  ...prev,
+                  sentCount: prev.sentCount + 1
+                }));
+              } else {
+                console.error('Failed to send invitation to:', passenger.name, invitationResult.error);
+                setInvitationStatus(prev => ({
+                  ...prev,
+                  errors: [...prev.errors, { passenger: passenger.name, error: invitationResult.error }]
+                }));
+              }
+            } catch (invitationError) {
+              console.error('Error sending invitation to:', passenger.name, invitationError);
+              setInvitationStatus(prev => ({
+                ...prev,
+                errors: [...prev.errors, { passenger: passenger.name, error: invitationError.message }]
+              }));
+            }
+          }
+        }
+
+        showLocalNotification('Ride created successfully!', 'success');
+      } else {
+        console.error('Failed to create ride:', result.error);
+        showLocalNotification(`Failed to create ride: ${result.error?.message || 'Please try again.'}`, 'error');
+        throw new Error(result.error?.message || 'Failed to create group');
+      }
+    } catch (error) {
+      console.error('Error in handleConfirmCreateGroup:', {
         error,
         stack: error.stack,
         timestamp: new Date().toISOString()
@@ -4613,6 +4787,23 @@ function RouteOptimizer({ mode = 'create' }) {
           </Box>
         </Box>
       )}
+
+      {/* Review Ride Modal */}
+      <ReviewRideModal
+        isOpen={showReviewModal}
+        onClose={() => setShowReviewModal(false)}
+        rideData={{
+          name: form.name || `Ride to ${destination?.address || 'Destination'}`,
+          destination: destination,
+          currentUserId: user?.uid,
+          driver: {
+            uid: user?.uid,
+            displayName: user?.displayName || user?.email
+          }
+        }}
+        onConfirmCreate={handleConfirmCreateGroup}
+        isCreating={isCreatingGroup}
+      />
     </Box>
   );
 }

@@ -130,30 +130,30 @@ service cloud.firestore {
 
     // Rides collection
     match /rides/{rideId} {
-      // Allow reading if user is driver, passenger, or has pending invitation
+      // Allow reading if user is creator, passenger, or has pending invitation
       allow read: if isAuthenticated() && (
-        resource.data.driver.uid == request.auth.uid ||
+        resource.data.creator.uid == request.auth.uid ||
         request.auth.uid in resource.data.passengerUids ||
         (resource.data.invitations != null && 
          request.auth.uid in resource.data.invitations &&
          resource.data.invitations[request.auth.uid].status == 'pending')
       );
       
-      // Allow creating new rides
+      // Allow creating new rides - creator-based approach
       allow create: if isAuthenticated() && 
-        request.resource.data.driver.uid == request.auth.uid;
+        request.resource.data.creator.uid == request.auth.uid;
       
-      // Allow updating if user is driver, passenger, or has an invitation
+      // Allow updating if user is creator, passenger, or has an invitation
       allow update: if isAuthenticated() && (
-        resource.data.driver.uid == request.auth.uid ||
+        resource.data.creator.uid == request.auth.uid ||
         request.auth.uid in resource.data.passengerUids ||
         (resource.data.invitations != null && 
          request.auth.uid in resource.data.invitations)
       );
       
-      // Allow deleting if user is driver
+      // Allow deleting if user is creator
       allow delete: if isAuthenticated() && 
-        resource.data.driver.uid == request.auth.uid;
+        resource.data.creator.uid == request.auth.uid;
     }
 
     // Ride invitations

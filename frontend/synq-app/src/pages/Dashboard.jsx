@@ -60,7 +60,7 @@ function Dashboard() {
         feed.push({
           type: 'ride-created',
           text: `You created a ride to ${ride.destination?.address || 'Unknown destination'}`,
-          time: ride.createdAt ? ride.createdAt.toDate() : new Date(),
+          time: ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate() : new Date(ride.createdAt)) : new Date(),
           avatar: '/ride1.jpg',
           id: ride.id,
         });
@@ -71,7 +71,7 @@ function Dashboard() {
         feed.push({
           type: 'ride-joined',
           text: `You joined a ride to ${ride.destination?.address || 'Unknown destination'}`,
-          time: ride.createdAt ? ride.createdAt.toDate() : new Date(),
+          time: ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate() : new Date(ride.createdAt)) : new Date(),
           avatar: '/ride1.jpg',
           id: ride.id,
         });
@@ -81,7 +81,7 @@ function Dashboard() {
         feed.push({
           type: 'ride-active',
           text: `Ride to ${ride.destination?.address || 'Unknown destination'} is active`,
-          time: ride.createdAt ? ride.createdAt.toDate() : new Date(),
+          time: ride.createdAt ? (ride.createdAt.toDate ? ride.createdAt.toDate() : new Date(ride.createdAt)) : new Date(),
           avatar: '/ride1.jpg',
           id: ride.id,
         });
@@ -90,7 +90,7 @@ function Dashboard() {
         feed.push({
           type: 'ride-completed',
           text: `Completed ride to ${ride.destination?.address || 'Unknown destination'}`,
-          time: ride.completedAt ? ride.completedAt.toDate() : (ride.updatedAt ? ride.updatedAt.toDate() : new Date()),
+          time: ride.completedAt ? (ride.completedAt.toDate ? ride.completedAt.toDate() : new Date(ride.completedAt)) : (ride.updatedAt ? (ride.updatedAt.toDate ? ride.updatedAt.toDate() : new Date(ride.updatedAt)) : new Date()),
           avatar: '/ride1.jpg',
           id: ride.id,
         });
@@ -99,7 +99,7 @@ function Dashboard() {
         feed.push({
           type: 'ride-cancelled',
           text: `Ride to ${ride.destination?.address || 'Unknown destination'} was cancelled`,
-          time: ride.updatedAt ? ride.updatedAt.toDate() : new Date(),
+          time: ride.updatedAt ? (ride.updatedAt.toDate ? ride.updatedAt.toDate() : new Date(ride.updatedAt)) : new Date(),
           avatar: '/ride1.jpg',
           id: ride.id,
         });
@@ -169,14 +169,14 @@ function Dashboard() {
   // Helper function to format time
   const formatTime = (timestamp) => {
     if (!timestamp) return 'N/A';
-    const date = timestamp.toDate();
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   // Helper function to calculate ETA
   const calculateETA = (createdAt) => {
     if (!createdAt) return 'N/A';
-    const startTime = createdAt.toDate();
+    const startTime = createdAt.toDate ? createdAt.toDate() : new Date(createdAt);
     const now = new Date();
     const duration = Math.round((now - startTime) / 1000 / 60); // in minutes
     return `${duration} min ago`;
@@ -191,21 +191,35 @@ function Dashboard() {
     // Simple queries that should work with existing indexes
     const queries = [];
 
-    // Query for rides where user is driver (only active/created rides)
-    const driverQuery = query(
+    // Query for rides where user is creator (ACTIVE and CREATED rides)
+    const creatorActiveQuery = query(
       collection(db, 'rides'),
-      where('driver.uid', '==', user.uid),
-      where('status', 'in', ['active', 'created'])
+      where('creator.uid', '==', user.uid),
+      where('status', '==', 'active')
     );
-    queries.push({ query: driverQuery, type: 'driver' });
+    queries.push({ query: creatorActiveQuery, type: 'creator-active' });
 
-    // Query for rides where user is passenger (only active/created rides)
-    const passengerQuery = query(
+    const creatorCreatedQuery = query(
+      collection(db, 'rides'),
+      where('creator.uid', '==', user.uid),
+      where('status', '==', 'created')
+    );
+    queries.push({ query: creatorCreatedQuery, type: 'creator-created' });
+
+    // Query for rides where user is passenger (ACTIVE and CREATED rides)
+    const passengerActiveQuery = query(
       collection(db, 'rides'),
       where('passengerUids', 'array-contains', user.uid),
-      where('status', 'in', ['active', 'created'])
+      where('status', '==', 'active')
     );
-    queries.push({ query: passengerQuery, type: 'passenger' });
+    queries.push({ query: passengerActiveQuery, type: 'passenger-active' });
+
+    const passengerCreatedQuery = query(
+      collection(db, 'rides'),
+      where('passengerUids', 'array-contains', user.uid),
+      where('status', '==', 'created')
+    );
+    queries.push({ query: passengerCreatedQuery, type: 'passenger-created' });
 
     // Set up subscriptions
     const unsubscribes = [];
@@ -216,13 +230,13 @@ function Dashboard() {
           const rides = snapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data(),
-            userType: type
+            userType: type.includes('creator') ? 'creator' : 'passenger'
           }));
           console.log(`${type} rides:`, rides);
           console.log(`${type} rides details:`, rides.map(ride => ({
             id: ride.id,
             status: ride.status,
-            driver: ride.driver?.uid,
+            creator: ride.creator?.uid,
             passengers: ride.passengerUids,
             createdAt: ride.createdAt
           })));
@@ -399,18 +413,11 @@ function Dashboard() {
       return true;
     })
     .sort((a, b) => {
-      // Sort by status priority (active first, then created, then others)
-      const statusOrder = { active: 0, created: 1, forming: 2, cancelled: 3 };
-      const aOrder = statusOrder[a.status] || 4;
-      const bOrder = statusOrder[b.status] || 4;
-      
-      if (aOrder !== bOrder) {
-        return aOrder - bOrder;
-      }
-      
-      // Then sort by creation time (newest first)
+      // Sort by creation time (newest first) since we only show active rides
       if (a.createdAt && b.createdAt) {
-        return b.createdAt.toDate() - a.createdAt.toDate();
+        const aTime = a.createdAt.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+        const bTime = b.createdAt.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+        return bTime - aTime;
       }
       
       return b.id.localeCompare(a.id);
@@ -553,7 +560,7 @@ function Dashboard() {
                           />
                           <Box sx={{ flex: 1 }}>
                             <Typography fontWeight={600} color="#4e342e" fontSize={16}>
-                              {ride.groupName || 'Ride Group'}
+                              {ride.name || ride.groupName || 'Ride Group'}
                             </Typography>
                             <Typography variant="body2" color="#7c5e48" fontSize={14}>
                               {!ride.destination ? 'No destination' : 
@@ -561,7 +568,7 @@ function Dashboard() {
                                ride.destination.address || 'Unknown destination'}
                             </Typography>
                             <Typography variant="caption" color="#b08968" fontSize={12}>
-                              {ride.status === 'active' ? '🟢 Active' : '🟡 Forming'} • {ride.userType === 'driver' ? 'Driver' : 'Passenger'}
+                              {ride.status === 'active' ? '🟢 Active' : '🟡 Forming'} • {ride.userType === 'creator' ? 'Creator' : 'Passenger'}
                             </Typography>
                         </Box>
                         <Button 
